@@ -189,6 +189,9 @@
     <ClCompile Include="external\unwrap\unwrap2D.c">
       <Filter>Source Files\lib</Filter>
     </ClCompile>
+    <ClCompile Include="src\Acquisition\Planning\ScanPlanner.cpp">
+      <Filter>Source Files\Acquisition</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\stdafx.h">
@@ -247,6 +250,9 @@
     </ClInclude>
     <ClInclude Include="external\unwrap\unwrap2D.h">
       <Filter>Header Files\lib</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Acquisition\Planning\ScanPlanner.h">
+      <Filter>Header Files\Acquisition</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

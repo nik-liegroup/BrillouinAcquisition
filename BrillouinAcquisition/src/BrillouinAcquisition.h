@@ -132,6 +132,23 @@ private:
 	void plotting(PLOT_SETTINGS* plotSettings, long long dim_x, long long dim_y, const std::vector<T>& unpackedBuffer);
 
 	Ui::BrillouinAcquisitionClass* ui;
+	QCheckBox* m_useRoiMaskCheckbox{ nullptr };
+	QAbstractButton* m_editRoiCheckbox{ nullptr };
+	QPushButton* m_clearRoiButton{ nullptr };
+	QCheckBox* m_useSurfaceFollowCheckbox{ nullptr };
+	QSpinBox* m_preScanXYBinSpinBox{ nullptr };
+	QDoubleSpinBox* m_preScanZStepSpinBox{ nullptr };
+	QDoubleSpinBox* m_preScanZTravelSpinBox{ nullptr };
+	QCheckBox* m_useMaxSafeZCheckbox{ nullptr };
+	QDoubleSpinBox* m_maxSafeZSpinBox{ nullptr };
+	QDoubleSpinBox* m_safetyMarginSpinBox{ nullptr };
+	QDoubleSpinBox* m_surfaceDropSpinBox{ nullptr };
+	QCheckBox* m_useMediumReferenceCheckbox{ nullptr };
+	QPushButton* m_measureMediumReferenceButton{ nullptr };
+	QAbstractButton* m_editSpectralProxyRoiCheckbox{ nullptr };
+	QCPItemRect* m_spectralProxyRoiRectItem{ nullptr };
+	QPoint m_spectralProxyDragStart;
+	bool m_spectralProxyDragActive{ false };
 	ScanControl::SCAN_DEVICE m_scanControllerType = ScanControl::SCAN_DEVICE::ZEISSECU;
 	ScanControl::SCAN_DEVICE m_scanControllerTypeTemporary = m_scanControllerType;
 
@@ -172,6 +189,14 @@ private:
 	bool m_locatePositionScanner{ false };
 
 	QCPCurve* m_positionsMarker{ nullptr };
+	QCPCurve* m_positionsMarkerSquare{ nullptr };
+	QCPCurve* m_positionsMarkerInsideRoi{ nullptr };
+	QCPCurve* m_positionsMarkerOutsideRoi{ nullptr };
+	QCPCurve* m_positionsMarkerSquareInsideRoi{ nullptr };
+	QCPCurve* m_positionsMarkerSquareOutsideRoi{ nullptr };
+	QCPCurve* m_roiPolygonMarker{ nullptr };
+	int m_draggedRoiVertexIndex{ -1 };
+	bool m_draggingRoiVertex{ false };
 	std::vector<POINT3> m_positionsMicrometer;	// [µm]		Positions to raster, relative to current start point
 	std::vector<POINT2> m_positionsPixel;		// [pix]	Positions to raster
 	bool m_showPositions{ true };
@@ -489,6 +514,7 @@ private slots:
 	void AOI_changed(const std::vector<POINT3>& orderedPositions);
 	void on_scaleCalibrationChanged(const std::vector<POINT2>& positions);
 	void update_AOI_preview();
+	void updateRoiPolygonPreview();
 
 	// live calibration
 	void on_preCalibration_stateChanged(int);

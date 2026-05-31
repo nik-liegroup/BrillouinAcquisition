@@ -60,6 +60,32 @@ struct BRILLOUIN_SETTINGS {
 			nrCalibrationImages = settings.nrCalibrationImages;
 			calibrationExposureTime = settings.calibrationExposureTime;
 			repetitions = settings.repetitions;
+			useRoiMask = settings.useRoiMask;
+			roiPolygonUm = settings.roiPolygonUm;
+			useSurfaceFollow = settings.useSurfaceFollow;
+			surfaceZOffsetUm = settings.surfaceZOffsetUm;
+			surfaceFollowHalfRangeUm = settings.surfaceFollowHalfRangeUm;
+			preScanXYBin = settings.preScanXYBin;
+			preScanZStepUm = settings.preScanZStepUm;
+			preScanZTravelRangeUm = settings.preScanZTravelRangeUm;
+			preScanXSteps = settings.preScanXSteps;
+			preScanYSteps = settings.preScanYSteps;
+			preScanZSteps = settings.preScanZSteps;
+			preScanZMin = settings.preScanZMin;
+			preScanZMax = settings.preScanZMax;
+			surfaceMetricThreshold = settings.surfaceMetricThreshold;
+			surfaceSmoothSigmaUm = settings.surfaceSmoothSigmaUm;
+			maxSafeZUm = settings.maxSafeZUm;
+			safetyMarginUm = settings.safetyMarginUm;
+			useMaxSafeZSafety = settings.useMaxSafeZSafety;
+			surfaceDropFraction = settings.surfaceDropFraction;
+			surfaceScanDirection = settings.surfaceScanDirection;
+			surfaceProxyRoiLeft = settings.surfaceProxyRoiLeft;
+			surfaceProxyRoiTop = settings.surfaceProxyRoiTop;
+			surfaceProxyRoiWidth = settings.surfaceProxyRoiWidth;
+			surfaceProxyRoiHeight = settings.surfaceProxyRoiHeight;
+			useMediumReference = settings.useMediumReference;
+			mediumReferenceValue = settings.mediumReferenceValue;
 			camera = settings.camera;
 			return *this;
 		}
@@ -74,6 +100,34 @@ struct BRILLOUIN_SETTINGS {
 
 		// repetition parameters
 		REPETITIONS repetitions;
+
+		// Advanced scan planning (future extensions, disabled by default)
+		bool useRoiMask{ false };
+		std::vector<POINT2> roiPolygonUm;
+		bool useSurfaceFollow{ false };
+		double surfaceZOffsetUm{ 0.0 };
+		double surfaceFollowHalfRangeUm{ 10.0 };
+		int preScanXYBin{ 3 };
+		double preScanZStepUm{ 3.0 };
+		double preScanZTravelRangeUm{ 30.0 };
+		int preScanXSteps{ 8 };
+		int preScanYSteps{ 8 };
+		int preScanZSteps{ 20 };
+		double preScanZMin{ -30.0 };
+		double preScanZMax{ 30.0 };
+		double surfaceMetricThreshold{ 0.1 };
+		double surfaceSmoothSigmaUm{ 5.0 };
+		double maxSafeZUm{ 0.0 };
+		double safetyMarginUm{ 5.0 };
+		bool useMaxSafeZSafety{ true };
+		double surfaceDropFraction{ 0.6 };
+		int surfaceScanDirection{ 1 }; // +1 increasing z, -1 decreasing z
+		int surfaceProxyRoiLeft{ 0 };
+		int surfaceProxyRoiTop{ 0 };
+		int surfaceProxyRoiWidth{ 0 };
+		int surfaceProxyRoiHeight{ 0 };
+		bool useMediumReference{ true };
+		double mediumReferenceValue{ 0.0 };
 
 		// ROI parameters
 		const double& xMin{ m_xMin };
@@ -190,6 +244,9 @@ private:
 	void abortMode(std::unique_ptr <StorageWrapper>& storage) override;
 
 	void calibrate(std::unique_ptr <StorageWrapper>& storage);
+	void applySurfaceFollowPlan();
+	double estimateFrameMetric(const std::vector<std::byte>& image) const;
+	bool runSurfacePreScan();
 
 	std::string getRepetitionFilename();
 

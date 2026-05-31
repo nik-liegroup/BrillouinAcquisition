@@ -1,13 +1,39 @@
 #include "stdafx.h"
 #include "Brillouin.h"
+#include "src/Acquisition/Planning/ScanPlanner.h"
 #include "src/lib/math/simplemath.h"
 #include "src/helper/logger.h"
 #include "filesystem"
 
 #include <chrono>
 #include <thread>
+#include <limits>
+#include <map>
+#include <algorithm>
+#include <cmath>
 
 using namespace std::filesystem;
+
+namespace {
+bool isPointInPolygonUm(const POINT2& point, const std::vector<POINT2>& polygon) {
+	if (polygon.size() < 3) {
+		return false;
+	}
+	bool inside = false;
+	size_t j = polygon.size() - 1;
+	for (size_t i = 0; i < polygon.size(); ++i) {
+		const auto& pi = polygon[i];
+		const auto& pj = polygon[j];
+		const bool intersects = ((pi.y > point.y) != (pj.y > point.y))
+			&& (point.x < (pj.x - pi.x) * (point.y - pi.y) / ((pj.y - pi.y) + 1e-12) + pi.x);
+		if (intersects) {
+			inside = !inside;
+		}
+		j = i;
+	}
+	return inside;
+}
+}
 
 /*
  * Public definitions
@@ -430,54 +456,319 @@ void Brillouin::updatePositions() {
 	// Create a local copy of the settings object to prevent subscript-out-of-range error
 	// due to race-condition.
 	auto settings = m_settings;
-	auto nrPositions = settings.xSteps * settings.ySteps * settings.zSteps;
 
-	// Adjust positions vector
-	m_orderedPositions.resize(nrPositions);
-	m_orderedPositionsRelative.resize(nrPositions);
-	m_orderedIndices.resize(nrPositions);
-	// vector indicating if a new line just started and a calibration is allowed
-	m_calibrationAllowed.resize(nrPositions);
-	// Reset its values to false
-	std::fill(m_calibrationAllowed.begin(), m_calibrationAllowed.end(), false);
+	ScanPlannerInput plannerInput{};
+	plannerInput.startPosition = m_startPosition;
+	plannerInput.xMin = settings.xMin;
+	plannerInput.xMax = settings.xMax;
+	plannerInput.xSteps = settings.xSteps;
+	plannerInput.yMin = settings.yMin;
+	plannerInput.yMax = settings.yMax;
+	plannerInput.ySteps = settings.ySteps;
+	plannerInput.zMin = settings.zMin;
+	plannerInput.zMax = settings.zMax;
+	plannerInput.zSteps = settings.zSteps;
+	plannerInput.scanOrderX = m_scanOrder.x;
+	plannerInput.scanOrderY = m_scanOrder.y;
+	plannerInput.scanOrderZ = m_scanOrder.z;
+	plannerInput.useRoiMask = settings.useRoiMask;
+	plannerInput.roiPolygonUm = settings.roiPolygonUm;
 
-	// construct directions vector
-	std::vector<std::vector<double>> directions(3);
-	directions[m_scanOrder.x] = simplemath::linspace(settings.xMin, settings.xMax, settings.xSteps);
-	directions[m_scanOrder.y] = simplemath::linspace(settings.yMin, settings.yMax, settings.ySteps);
-	directions[m_scanOrder.z] = simplemath::linspace(settings.zMin, settings.zMax, settings.zSteps);
+	auto plan = ScanPlanner::buildLegacyCartesianPlan(plannerInput);
+	m_orderedPositions = std::move(plan.orderedPositionsAbsolute);
+	m_orderedPositionsRelative = std::move(plan.orderedPositionsRelative);
+	m_orderedIndices = std::move(plan.orderedIndices);
+	m_calibrationAllowed = std::move(plan.calibrationAllowed);
 
-	gsl::index ll{ 0 };
-	std::vector<double> position(3);
-	std::vector<int> indices(3);
-	for (gsl::index ii{ 0 }; ii < directions[2].size(); ii++) {
-		for (gsl::index jj{ 0 }; jj < directions[1].size(); jj++) {
-			// Allow to calibrate if a new line starts
-			m_calibrationAllowed[ll] = true;
-			for (gsl::index kk{ 0 }; kk < directions[0].size(); kk++) {
-
-				// construct indices vector
-				indices[0] = kk;
-				indices[1] = jj;
-				indices[2] = ii;
-
-				// construct position vector
-				position[0] = directions[0][kk];
-				position[1] = directions[1][jj];
-				position[2] = directions[2][ii];
-
-				// calculate stage positions
-				m_orderedPositionsRelative[ll] = POINT3{ position[m_scanOrder.x], position[m_scanOrder.y], position[m_scanOrder.z] };
-				m_orderedPositions[ll] = m_orderedPositionsRelative[ll] + m_startPosition;
-
-				// fill index vectors
-				m_orderedIndices[ll] = INDEX3{ indices[m_scanOrder.x], indices[m_scanOrder.y], indices[m_scanOrder.z] };
-
-				ll++;
+	// Optional hard safety ceiling for z in surface-follow mode.
+	if (settings.useSurfaceFollow && settings.useMaxSafeZSafety) {
+		const auto zUpperBound = settings.maxSafeZUm - settings.safetyMarginUm;
+		for (gsl::index i{ 0 }; i < (gsl::index)m_orderedPositions.size(); i++) {
+			if (m_orderedPositions[i].z > zUpperBound) {
+				m_orderedPositions[i].z = zUpperBound;
+				m_orderedPositionsRelative[i].z = zUpperBound - m_startPosition.z;
 			}
 		}
 	}
+
 	emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
+}
+
+double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const {
+	if (image.empty()) {
+		return 0.0;
+	}
+
+	const int width = (int)m_settings.camera.roi.width_binned;
+	const int height = (int)m_settings.camera.roi.height_binned;
+	if (width <= 0 || height <= 0) {
+		return 0.0;
+	}
+
+	int roiLeft = std::max(0, m_settings.surfaceProxyRoiLeft);
+	int roiTop = std::max(0, m_settings.surfaceProxyRoiTop);
+	int roiWidth = m_settings.surfaceProxyRoiWidth > 0 ? m_settings.surfaceProxyRoiWidth : width;
+	int roiHeight = m_settings.surfaceProxyRoiHeight > 0 ? m_settings.surfaceProxyRoiHeight : height;
+	roiWidth = std::min(roiWidth, width - roiLeft);
+	roiHeight = std::min(roiHeight, height - roiTop);
+
+	if (roiWidth <= 0 || roiHeight <= 0) {
+		roiLeft = 0; roiTop = 0; roiWidth = width; roiHeight = height;
+	}
+
+	auto getValue = [&](int x, int y) -> double {
+		const auto idx = (size_t)y * width + x;
+		if (m_settings.camera.readout.dataType == "unsigned short") {
+			const auto* data = reinterpret_cast<const unsigned short*>(image.data());
+			return data[idx];
+		}
+		if (m_settings.camera.readout.dataType == "unsigned int") {
+			const auto* data = reinterpret_cast<const unsigned int*>(image.data());
+			return data[idx];
+		}
+		const auto* data = reinterpret_cast<const unsigned char*>(image.data());
+		return data[idx];
+	};
+
+	double signalSum{ 0.0 };
+	int signalCount{ 0 };
+	for (int y = roiTop; y < roiTop + roiHeight; y++) {
+		for (int x = roiLeft; x < roiLeft + roiWidth; x++) {
+			signalSum += getValue(x, y);
+			signalCount++;
+		}
+	}
+	const auto signalMean = signalCount > 0 ? signalSum / signalCount : 0.0;
+
+	// Local background: one-pixel ring around signal ROI, clipped to frame.
+	const int bgLeft = std::max(0, roiLeft - 1);
+	const int bgTop = std::max(0, roiTop - 1);
+	const int bgRight = std::min(width - 1, roiLeft + roiWidth);
+	const int bgBottom = std::min(height - 1, roiTop + roiHeight);
+
+	double bgSum{ 0.0 };
+	int bgCount{ 0 };
+	for (int y = bgTop; y <= bgBottom; y++) {
+		for (int x = bgLeft; x <= bgRight; x++) {
+			const bool insideSignal = (x >= roiLeft && x < roiLeft + roiWidth && y >= roiTop && y < roiTop + roiHeight);
+			if (insideSignal) {
+				continue;
+			}
+			bgSum += getValue(x, y);
+			bgCount++;
+		}
+	}
+	const auto bgMean = bgCount > 0 ? bgSum / bgCount : 0.0;
+	return signalMean - bgMean;
+}
+
+bool Brillouin::runSurfacePreScan() {
+	if (!m_scanControl || !m_andor) {
+		return false;
+	}
+
+	const auto xyBin = std::max(1, m_settings.preScanXYBin);
+	const auto xStepsCoarse = std::max(1, (m_settings.xSteps + xyBin - 1) / xyBin);
+	const auto yStepsCoarse = std::max(1, (m_settings.ySteps + xyBin - 1) / xyBin);
+	const auto zTravel = std::max(0.0, m_settings.preScanZTravelRangeUm);
+	const auto zStep = std::max(1e-6, m_settings.preScanZStepUm);
+	const auto zStepsCoarse = std::max(2, (int)std::floor(zTravel / zStep) + 1);
+
+	if (xStepsCoarse < 1 || yStepsCoarse < 1 || zStepsCoarse < 2) {
+		return false;
+	}
+
+	const auto xSamples = simplemath::linspace(m_settings.xMin, m_settings.xMax, xStepsCoarse);
+	const auto ySamples = simplemath::linspace(m_settings.yMin, m_settings.yMax, yStepsCoarse);
+	// Always scan positive z direction from current position towards sample.
+	auto zSamples = simplemath::linspace(0.0, zTravel, zStepsCoarse);
+
+	std::vector<std::vector<double>> zSurface(ySamples.size(), std::vector<double>(xSamples.size(), 0.0));
+	std::vector<std::vector<bool>> zSurfaceValid(ySamples.size(), std::vector<bool>(xSamples.size(), false));
+	auto frame = std::vector<std::byte>(m_settings.camera.roi.bytesPerFrame);
+
+	// Measure medium reference before scanning if requested.
+	if (m_settings.useMediumReference) {
+		const int refFrames = 5;
+		double refSum = 0.0;
+		for (int i = 0; i < refFrames; i++) {
+			m_andor->getImageForAcquisition(frame.data());
+			refSum += estimateFrameMetric(frame);
+		}
+		m_settings.mediumReferenceValue = refSum / refFrames;
+	}
+
+	const auto dropFraction = std::clamp(m_settings.surfaceDropFraction, 0.0, 0.99);
+
+	for (gsl::index yi{ 0 }; yi < (gsl::index)ySamples.size(); yi++) {
+		for (gsl::index xi{ 0 }; xi < (gsl::index)xSamples.size(); xi++) {
+			const POINT2 coarsePoint{ xSamples[xi], ySamples[yi] };
+			if (m_settings.useRoiMask && !isPointInPolygonUm(coarsePoint, m_settings.roiPolygonUm)) {
+				continue;
+			}
+			std::vector<double> metrics(zSamples.size(), 0.0);
+			auto bestMetric = -std::numeric_limits<double>::infinity();
+			auto bestIndex = size_t{ 0 };
+			bool foundSurface = false;
+			size_t foundIndex = 0;
+
+			for (gsl::index zi{ 0 }; zi < (gsl::index)zSamples.size(); zi++) {
+				const auto zRel = zSamples[zi];
+				const auto target = m_startPosition + POINT3{ xSamples[xi], ySamples[yi], zRel };
+				m_scanControl->setPosition(target);
+				std::this_thread::sleep_for(std::chrono::milliseconds(20));
+				m_andor->getImageForAcquisition(frame.data());
+				const auto metric = estimateFrameMetric(frame);
+				metrics[(size_t)zi] = metric;
+				if (metric > bestMetric) {
+					bestMetric = metric;
+					bestIndex = (size_t)zi;
+				}
+
+				// One-direction stop criterion: find first drop relative to medium reference.
+				if (m_settings.useMediumReference && m_settings.mediumReferenceValue > 1e-12) {
+					const auto thresholdAbs = (1.0 - dropFraction) * m_settings.mediumReferenceValue;
+					if (metric <= thresholdAbs) {
+						foundSurface = true;
+						foundIndex = (size_t)zi;
+						break;
+					}
+				}
+			}
+
+			// Prefer threshold crossing from high signal to low signal if possible,
+			// fallback to maximum metric position.
+			auto surfaceIndex = foundSurface ? foundIndex : bestIndex;
+			if (!foundSurface) {
+				const auto minMetric = *std::min_element(metrics.begin(), metrics.end());
+				const auto maxMetric = *std::max_element(metrics.begin(), metrics.end());
+				const auto denom = std::max(1e-12, maxMetric - minMetric);
+				const auto threshold = std::clamp(m_settings.surfaceMetricThreshold, 0.0, 1.0);
+				for (size_t zi = 0; zi < metrics.size(); zi++) {
+					const auto norm = (metrics[zi] - minMetric) / denom;
+					if (norm <= threshold) {
+						surfaceIndex = zi;
+						break;
+					}
+				}
+			}
+
+			zSurface[yi][xi] = zSamples[surfaceIndex];
+			zSurfaceValid[yi][xi] = true;
+		}
+	}
+
+	// Smooth coarse surface map with a small local mean filter.
+	const auto smoothingPasses = std::max(0, (int)std::round(m_settings.surfaceSmoothSigmaUm / 5.0));
+	for (int pass = 0; pass < smoothingPasses; pass++) {
+		auto smoothed = zSurface;
+		for (gsl::index yi{ 0 }; yi < (gsl::index)zSurface.size(); yi++) {
+			for (gsl::index xi{ 0 }; xi < (gsl::index)zSurface[yi].size(); xi++) {
+				double sum = 0.0;
+				int count = 0;
+				for (int dy = -1; dy <= 1; dy++) {
+					for (int dx = -1; dx <= 1; dx++) {
+						const auto ny = yi + dy;
+						const auto nx = xi + dx;
+						if (ny >= 0 && ny < (gsl::index)zSurface.size()
+							&& nx >= 0 && nx < (gsl::index)zSurface[yi].size()) {
+							sum += zSurface[ny][nx];
+							count++;
+						}
+					}
+				}
+				smoothed[yi][xi] = count > 0 ? sum / count : zSurface[yi][xi];
+			}
+		}
+		zSurface = std::move(smoothed);
+	}
+
+	// Bilinear interpolation on coarse XY map; nearest sample on boundaries.
+	const auto xDense = simplemath::linspace(m_settings.xMin, m_settings.xMax, m_settings.xSteps);
+	const auto yDense = simplemath::linspace(m_settings.yMin, m_settings.yMax, m_settings.ySteps);
+	std::map<std::pair<int, int>, double> zCenterByXYIndex;
+
+	for (gsl::index yi{ 0 }; yi < (gsl::index)yDense.size(); yi++) {
+		for (gsl::index xi{ 0 }; xi < (gsl::index)xDense.size(); xi++) {
+			auto x = xDense[xi];
+			auto y = yDense[yi];
+
+			if (m_settings.useRoiMask && !isPointInPolygonUm(POINT2{ x, y }, m_settings.roiPolygonUm)) {
+				continue;
+			}
+
+			// Robust interpolation for ROI-masked coarse maps:
+			// use inverse-distance weighting over valid coarse samples.
+			double weightedSum = 0.0;
+			double weightNorm = 0.0;
+			bool exactMatch = false;
+			double exactZ = 0.0;
+			for (gsl::index yc{ 0 }; yc < (gsl::index)ySamples.size(); yc++) {
+				for (gsl::index xc{ 0 }; xc < (gsl::index)xSamples.size(); xc++) {
+					if (!zSurfaceValid[yc][xc]) {
+						continue;
+					}
+					const auto dx = x - xSamples[xc];
+					const auto dy = y - ySamples[yc];
+					const auto d2 = dx * dx + dy * dy;
+					if (d2 <= 1e-12) {
+						exactMatch = true;
+						exactZ = zSurface[yc][xc];
+						break;
+					}
+					const auto w = 1.0 / d2;
+					weightedSum += w * zSurface[yc][xc];
+					weightNorm += w;
+				}
+				if (exactMatch) {
+					break;
+				}
+			}
+			if (!exactMatch && weightNorm <= 0.0) {
+				continue;
+			}
+			const auto zInterp = exactMatch ? exactZ : (weightedSum / weightNorm);
+
+			const auto centerZAbs = m_startPosition.z + zInterp + m_settings.surfaceZOffsetUm;
+			zCenterByXYIndex[{ (int)xi, (int)yi }] = centerZAbs;
+		}
+	}
+
+	const auto zMid = 0.5 * (m_settings.zMin + m_settings.zMax);
+	const auto halfRange = std::max(0.0, m_settings.surfaceFollowHalfRangeUm);
+	auto localZOffsets = simplemath::linspace(-halfRange, halfRange, m_settings.zSteps);
+	const auto zUpperBound = m_settings.maxSafeZUm - m_settings.safetyMarginUm;
+
+	for (gsl::index ll{ 0 }; ll < (gsl::index)m_orderedPositions.size(); ll++) {
+		const auto ix = m_orderedIndices[ll].x;
+		const auto iy = m_orderedIndices[ll].y;
+		const auto it = zCenterByXYIndex.find({ ix, iy });
+		if (it == zCenterByXYIndex.end()) {
+			continue;
+		}
+		const auto zIdx = std::clamp(m_orderedIndices[ll].z, 0, (int)localZOffsets.size() - 1);
+		auto localRel = m_orderedPositionsRelative[ll].z - zMid;
+		if (halfRange > 0.0) {
+			localRel = localZOffsets[zIdx];
+		}
+		auto zAbs = it->second + localRel;
+		if (m_settings.useMaxSafeZSafety && zAbs > zUpperBound) {
+			zAbs = zUpperBound;
+		}
+		m_orderedPositions[ll].z = zAbs;
+		m_orderedPositionsRelative[ll].z = zAbs - m_startPosition.z;
+	}
+
+	return true;
+}
+
+void Brillouin::applySurfaceFollowPlan() {
+	if (!m_settings.useSurfaceFollow) {
+		return;
+	}
+	if (runSurfacePreScan()) {
+		emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
+	}
 }
 
 std::string Brillouin::getRepetitionFilename() {
@@ -551,6 +842,7 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	 * Update the positions vector
 	 */
 	updatePositions();
+	applySurfaceFollowPlan();
 
 	/*
 	 * Construct positions vector for H5 file with row-major order: z, x, y
@@ -560,8 +852,12 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	auto directionsY{ simplemath::linspace(m_settings.yMin, m_settings.yMax, m_settings.ySteps) };
 	auto directionsZ{ simplemath::linspace(m_settings.zMin, m_settings.zMax, m_settings.zSteps) };
 
-	// total number of positions to measure
-	auto nrPositions = m_settings.xSteps * m_settings.ySteps * m_settings.zSteps;
+	// total number of positions to measure (can be sparse if ROI masking is active)
+	auto nrPositions = (int)m_orderedPositions.size();
+	if (nrPositions <= 0) {
+		m_abort = true;
+		return;
+	}
 	auto positionsX = std::vector<double>(nrPositions);
 	auto positionsY = std::vector<double>(nrPositions);
 	auto positionsZ = std::vector<double>(nrPositions);
@@ -586,6 +882,32 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	storage->setPositions("x", positionsX, rank, dims);
 	storage->setPositions("y", positionsY, rank, dims);
 	storage->setPositions("z", positionsZ, rank, dims);
+
+	// Explicitly store which grid points were sampled to keep metadata consistent for sparse ROI scans.
+	auto sampledMask = std::vector<double>(nrPositions, 0.0);
+	for (gsl::index ll{ 0 }; ll < (gsl::index)m_orderedIndices.size(); ll++) {
+		const auto idx = m_orderedIndices[ll];
+		const auto flat = idx.z * (m_settings.xSteps * m_settings.ySteps) + idx.y * m_settings.xSteps + idx.x;
+		if (flat >= 0 && flat < nrPositions) {
+			sampledMask[flat] = 1.0;
+		}
+	}
+	storage->setPositions("sampled-mask", sampledMask, rank, dims);
+
+	// Store the actual sampled path as 1D vectors in acquisition order.
+	const int sampledRank{ 1 };
+	hsize_t sampledDims[1] = { (hsize_t)m_orderedPositions.size() };
+	auto sampledX = std::vector<double>(m_orderedPositions.size());
+	auto sampledY = std::vector<double>(m_orderedPositions.size());
+	auto sampledZ = std::vector<double>(m_orderedPositions.size());
+	for (gsl::index ll{ 0 }; ll < (gsl::index)m_orderedPositions.size(); ll++) {
+		sampledX[ll] = m_orderedPositions[ll].x;
+		sampledY[ll] = m_orderedPositions[ll].y;
+		sampledZ[ll] = m_orderedPositions[ll].z;
+	}
+	storage->setPositions("sampled-x", sampledX, sampledRank, sampledDims);
+	storage->setPositions("sampled-y", sampledY, sampledRank, sampledDims);
+	storage->setPositions("sampled-z", sampledZ, sampledRank, sampledDims);
 	delete[] dims;
 
 	// do actual measurement
@@ -624,7 +946,7 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	}
 	std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-	for (gsl::index ll{ 0 }; ll < nrPositions; ll++) {
+	for (gsl::index ll{ 0 }; ll < (gsl::index)nrPositions; ll++) {
 
 		// do live calibration if required and possible at the moment
 		if (m_settings.conCalibration && m_calibrationAllowed[ll]) {
