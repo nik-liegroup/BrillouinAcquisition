@@ -194,6 +194,7 @@ private:
 	QCPCurve* m_positionsMarkerOutsideRoi{ nullptr };
 	QCPCurve* m_positionsMarkerSquareInsideRoi{ nullptr };
 	QCPCurve* m_positionsMarkerSquareOutsideRoi{ nullptr };
+	std::vector<QCPItemLine*> m_positionPathLines;
 	QCPCurve* m_roiPolygonMarker{ nullptr };
 	int m_draggedRoiVertexIndex{ -1 };
 	bool m_draggingRoiVertex{ false };
