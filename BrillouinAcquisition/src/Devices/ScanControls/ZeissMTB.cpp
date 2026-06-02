@@ -176,7 +176,7 @@ void ZeissMTB::init() {
 	} catch (_com_error& e) {
 	}
 	if (!m_positionTimer) {
-		m_positionTimer = new QTimer(this);
+		m_positionTimer = new QTimer();
 		auto connection = QWidget::connect(
 			m_positionTimer,
 			&QTimer::timeout,
@@ -186,7 +186,7 @@ void ZeissMTB::init() {
 	}
 
 	if (!m_elementPositionTimer) {
-		m_elementPositionTimer = new QTimer(this);
+		m_elementPositionTimer = new QTimer();
 		auto connection = QWidget::connect(
 			m_elementPositionTimer,
 			&QTimer::timeout,
