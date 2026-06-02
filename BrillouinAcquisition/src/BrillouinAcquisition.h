@@ -415,6 +415,7 @@ private slots:
 	void cameraODTOptionsChanged(const CAMERA_OPTIONS& options);
 	void showAcqPosition(POINT3, int);
 	void showPosition(POINT3);
+	void updateEstimatedAcquisitionTime();
 	void setHomePositionBounds(BOUNDS);
 	void setCurrentPositionBounds(BOUNDS bounds);
 	void showCalibrationInterval(int);

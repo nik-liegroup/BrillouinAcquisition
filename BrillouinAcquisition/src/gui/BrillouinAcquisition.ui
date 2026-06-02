@@ -2584,7 +2584,7 @@ QTabBar::tab:!selected {
                        <x>8</x>
                        <y>930</y>
                        <width>209</width>
-                       <height>113</height>
+                       <height>137</height>
                       </rect>
                      </property>
                      <property name="title">
@@ -2594,7 +2594,7 @@ QTabBar::tab:!selected {
                       <property name="geometry">
                        <rect>
                         <x>8</x>
-                        <y>88</y>
+                        <y>112</y>
                         <width>192</width>
                         <height>18</height>
                        </rect>
@@ -2615,7 +2615,7 @@ QTabBar::tab:!selected {
                         <x>8</x>
                         <y>15</y>
                         <width>193</width>
-                        <height>65</height>
+                        <height>89</height>
                        </rect>
                       </property>
                       <layout class="QGridLayout" name="gridLayout_2">
@@ -2727,6 +2727,36 @@ border: none;</string>
                          </property>
                          <property name="text">
                           <string>0</string>
+                         </property>
+                         <property name="alignment">
+                          <set>Qt::AlignCenter</set>
+                         </property>
+                         <property name="readOnly">
+                          <bool>true</bool>
+                         </property>
+                        </widget>
+                       </item>
+                       <item row="3" column="0">
+                        <widget class="QLabel" name="estimatedAcquisitionTime_label">
+                         <property name="toolTip">
+                          <string>Exposure-only estimate: exposure time multiplied by frame count and number of grid points.</string>
+                         </property>
+                         <property name="text">
+                          <string>Est. time</string>
+                         </property>
+                        </widget>
+                       </item>
+                       <item row="3" column="1" colspan="2">
+                        <widget class="QLineEdit" name="estimatedAcquisitionTime">
+                         <property name="toolTip">
+                          <string>Exposure-only estimate: exposure time multiplied by frame count and number of grid points.</string>
+                         </property>
+                         <property name="styleSheet">
+                          <string notr="true">background: #E4E4E4;
+border: none;</string>
+                         </property>
+                         <property name="text">
+                          <string>0 s</string>
                          </property>
                          <property name="alignment">
                           <set>Qt::AlignCenter</set>
@@ -4481,6 +4511,7 @@ border: none;</string>
   <tabstop>positionY</tabstop>
   <tabstop>positionZ</tabstop>
   <tabstop>imageNr</tabstop>
+  <tabstop>estimatedAcquisitionTime</tabstop>
   <tabstop>acquisitionFilename</tabstop>
   <tabstop>autoscalePlot_brightfield</tabstop>
   <tabstop>rangeLowerODT</tabstop>

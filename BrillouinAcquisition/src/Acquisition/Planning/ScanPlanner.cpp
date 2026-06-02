@@ -61,7 +61,11 @@ ScanPlannerOutput ScanPlanner::buildLegacyCartesianPlan(const ScanPlannerInput& 
 				const auto absolutePosition = input.gridCoordinatesAbsolute
 					? gridPosition
 					: gridPosition + input.startPosition;
-				const auto relativePosition = absolutePosition - input.startPosition;
+				const POINT3 relativePosition{
+					absolutePosition.x - input.startPosition.x,
+					absolutePosition.y - input.startPosition.y,
+					absolutePosition.z - input.startPosition.z
+				};
 				output.orderedPositionsRelative.push_back(relativePosition);
 				output.orderedPositionsAbsolute.push_back(absolutePosition);
 				output.orderedIndices.push_back(INDEX3{

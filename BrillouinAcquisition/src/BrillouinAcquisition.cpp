@@ -1063,6 +1063,24 @@ void BrillouinAcquisition::showAcqPosition(POINT3 position, int imageNr) {
 	ui->imageNr->setText(QString::number(imageNr));
 }
 
+void BrillouinAcquisition::updateEstimatedAcquisitionTime() {
+	const auto pointCount = m_positionsMicrometer.empty()
+		? (size_t)std::max(1, m_Brillouin->settings.xSteps)
+			* (size_t)std::max(1, m_Brillouin->settings.ySteps)
+			* (size_t)std::max(1, m_Brillouin->settings.zSteps)
+		: m_positionsMicrometer.size();
+	const auto frameCount = std::max(1, m_Brillouin->settings.camera.frameCount);
+	const auto exposureSeconds = std::max(0.0, m_Brillouin->settings.camera.exposureTime);
+	const auto totalSeconds = (int)std::ceil(exposureSeconds * frameCount * (double)pointCount);
+	ui->estimatedAcquisitionTime->setText(formatSeconds(totalSeconds));
+	ui->estimatedAcquisitionTime->setToolTip(
+		QString("Exposure-only estimate: %1 points x %2 frames x %3 s.")
+		.arg((qulonglong)pointCount)
+		.arg(frameCount)
+		.arg(exposureSeconds, 0, 'g', 4)
+	);
+}
+
 void BrillouinAcquisition::showPosition(POINT3 position) {
 	ui->positionX->setText(QString::number(position.x));
 	ui->positionY->setText(QString::number(position.y));
@@ -4024,6 +4042,7 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_spectralProxyRoiRectItem->bottomRight->setCoords(l + w, t + 1);
 		ui->customplot->replot();
 	}
+	updateEstimatedAcquisitionTime();
 }
 
 void BrillouinAcquisition::on_startX_valueChanged(double value) {
@@ -4085,6 +4104,7 @@ void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositio
 		m_positionsPixel = m_scanControl->getPositionsPix(m_positionsMicrometer, m_Brillouin->settings.gridCoordinatesAbsolute);
 		update_AOI_preview();
 	}
+	updateEstimatedAcquisitionTime();
 }
 
 /*
@@ -4599,10 +4619,12 @@ void BrillouinAcquisition::scanOrderChanged(SCAN_ORDER scanOrder) {
 
 void BrillouinAcquisition::on_exposureTime_valueChanged(double value) {
 	m_Brillouin->settings.camera.exposureTime = value;
+	updateEstimatedAcquisitionTime();
 }
 
 void BrillouinAcquisition::on_frameCount_valueChanged(int value) {
 	m_Brillouin->settings.camera.frameCount = value;
+	updateEstimatedAcquisitionTime();
 }
 
 StoragePath BrillouinAcquisition::splitFilePath(QString fullPath) {
