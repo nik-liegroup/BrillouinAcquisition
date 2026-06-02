@@ -14,7 +14,7 @@ using namespace std::filesystem;
 
 namespace {
 	constexpr const char* kSettingsOrg = "Guck Lab";
-	constexpr const char* kSettingsApp = "Brillouin Acquisition Experimental";
+	constexpr const char* kSettingsApp = "Brillouin Acquisition";
 
 	double orient2d(const POINT2& a, const POINT2& b, const POINT2& c) {
 		return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
