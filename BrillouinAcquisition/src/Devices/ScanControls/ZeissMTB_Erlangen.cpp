@@ -1,6 +1,10 @@
 #include "stdafx.h"
 #include "ZeissMTB_Erlangen.h"
 
+namespace {
+	constexpr const char* kMtbUnitMicrometer = "\xB5m";
+}
+
 /*
  * Public definitions
  */
@@ -81,7 +85,7 @@ void ZeissMTB_Erlangen::setPosition(POINT2 position) {
 	if (abs(m_positionStage.x - positionStage.x) > 1e-6) {
 		try {
 			m_positionStage.x = positionStage.x;
-			success = m_stageX->SetPosition(m_positionStage.x, "µm", MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500);
+			success = m_stageX->SetPosition(m_positionStage.x, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500);
 		} catch (_com_error& e) {
 			qDebug() << "Error setting stage X position:" << e.ErrorMessage();
 		}
@@ -89,7 +93,7 @@ void ZeissMTB_Erlangen::setPosition(POINT2 position) {
 	if (abs(m_positionStage.y - positionStage.y) > 1e-6) {
 		try {
 			m_positionStage.y = positionStage.y;
-			success = m_stageY->SetPosition(m_positionStage.y, "µm", MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500);
+			success = m_stageY->SetPosition(m_positionStage.y, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500);
 		} catch (_com_error& e) {
 			qDebug() << "Error setting stage Y position:" << e.ErrorMessage();
 		}
@@ -107,7 +111,7 @@ void ZeissMTB_Erlangen::setPosition(POINT3 position) {
 	if (abs(m_positionFocus - position.z) > 1e-6) {
 		try {
 			m_positionFocus = position.z;
-			success = m_ObjectiveFocus->SetPosition(m_positionFocus, "µm", MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500);
+			success = m_ObjectiveFocus->SetPosition(m_positionFocus, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500);
 		} catch (_com_error& e) {
 			qDebug() << "Error setting focus position:" << e.ErrorMessage();
 		}
@@ -123,7 +127,7 @@ void ZeissMTB_Erlangen::movePosition(POINT2 distance) {
 	if (abs(distance.x) > 1e-6) {
 		try {
 			m_positionStage.x += distance.x;
-			success = m_stageX->SetPosition(distance.x, "µm", (MTBCmdSetModes)(MTBCmdSetModes::MTBCmdSetModes_Synchronous | MTBCmdSetModes::MTBCmdSetModes_Relative), 500);
+			success = m_stageX->SetPosition(distance.x, kMtbUnitMicrometer, (MTBCmdSetModes)(MTBCmdSetModes::MTBCmdSetModes_Synchronous | MTBCmdSetModes::MTBCmdSetModes_Relative), 500);
 		} catch (_com_error& e) {
 			qDebug() << "Error moving stage X:" << e.ErrorMessage();
 		}
@@ -131,7 +135,7 @@ void ZeissMTB_Erlangen::movePosition(POINT2 distance) {
 	if (abs(distance.y) > 1e-6) {
 		try {
 			m_positionStage.y += distance.y;
-			success = m_stageY->SetPosition(distance.y, "µm", (MTBCmdSetModes)(MTBCmdSetModes::MTBCmdSetModes_Synchronous | MTBCmdSetModes::MTBCmdSetModes_Relative), 500);
+			success = m_stageY->SetPosition(distance.y, kMtbUnitMicrometer, (MTBCmdSetModes)(MTBCmdSetModes::MTBCmdSetModes_Synchronous | MTBCmdSetModes::MTBCmdSetModes_Relative), 500);
 		} catch (_com_error& e) {
 			qDebug() << "Error moving stage Y:" << e.ErrorMessage();
 		}
@@ -143,15 +147,15 @@ void ZeissMTB_Erlangen::movePosition(POINT2 distance) {
 POINT3 ZeissMTB_Erlangen::getPosition(PositionType positionType) {
 	if (m_stageX && m_stageY) {
 		try {
-			m_positionStage.x = m_stageX->GetPosition("µm");
-			m_positionStage.y = m_stageY->GetPosition("µm");
+			m_positionStage.x = m_stageX->GetPosition(kMtbUnitMicrometer);
+			m_positionStage.y = m_stageY->GetPosition(kMtbUnitMicrometer);
 		} catch (_com_error& e) {
 			qDebug() << "Error getting stage position:" << e.ErrorMessage();
 		}
 	}
 	if (m_ObjectiveFocus) {
 		try {
-			m_positionFocus = m_ObjectiveFocus->GetPosition("µm");
+			m_positionFocus = m_ObjectiveFocus->GetPosition(kMtbUnitMicrometer);
 		} catch (_com_error& e) {
 			qDebug() << "Error getting focus position:" << e.ErrorMessage();
 		}
