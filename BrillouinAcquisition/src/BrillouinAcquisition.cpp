@@ -714,6 +714,8 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 
 			connect(m_absoluteGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
 				m_Brillouin->settings.gridCoordinatesAbsolute = enabled;
+				ui->setHome->setDisabled(enabled);
+				ui->moveHome->setDisabled(enabled);
 				QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
 				update_AOI_preview();
 			});
@@ -1658,7 +1660,8 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 	ui->stepsZ->setDisabled(running);
 	ui->camera_playPause->setDisabled(running);
 	ui->camera_singleShot->setDisabled(running);
-	ui->setHome->setDisabled(running);
+	ui->setHome->setDisabled(running || m_Brillouin->settings.gridCoordinatesAbsolute);
+	ui->moveHome->setDisabled(running || m_Brillouin->settings.gridCoordinatesAbsolute);
 	ui->setPositionX->setDisabled(running);
 	ui->setPositionY->setDisabled(running);
 	ui->setPositionZ->setDisabled(running);
@@ -4035,6 +4038,9 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		const QSignalBlocker blocker(*m_absoluteGridCheckbox);
 		m_absoluteGridCheckbox->setChecked(m_Brillouin->settings.gridCoordinatesAbsolute);
 	}
+	const auto homeControlsDisabled = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
+	ui->setHome->setDisabled(homeControlsDisabled);
+	ui->moveHome->setDisabled(homeControlsDisabled);
 	if (m_editSpectralProxyRoiCheckbox) {
 		m_editSpectralProxyRoiCheckbox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
 	}
@@ -4509,6 +4515,9 @@ void BrillouinAcquisition::on_savePosition_clicked() {
 }
 
 void BrillouinAcquisition::on_setHome_clicked() {
+	if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+		return;
+	}
 	QMetaObject::invokeMethod(
 		m_scanControl,
 		[&m_scanControl = m_scanControl]() {
@@ -4519,7 +4528,7 @@ void BrillouinAcquisition::on_setHome_clicked() {
 }
 
 void BrillouinAcquisition::on_moveHome_clicked() {
-	if (m_enabledModes == ACQUISITION_MODE::NONE) {
+	if (m_enabledModes == ACQUISITION_MODE::NONE && !m_Brillouin->settings.gridCoordinatesAbsolute) {
 		QMetaObject::invokeMethod(
 			m_scanControl,
 			[&m_scanControl = m_scanControl]() {
