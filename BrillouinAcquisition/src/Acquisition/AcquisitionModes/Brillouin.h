@@ -86,6 +86,8 @@ struct BRILLOUIN_SETTINGS {
 			surfaceProxyRoiHeight = settings.surfaceProxyRoiHeight;
 			useMediumReference = settings.useMediumReference;
 			mediumReferenceValue = settings.mediumReferenceValue;
+			mediumReferenceFrameCount = settings.mediumReferenceFrameCount;
+			gridCoordinatesAbsolute = settings.gridCoordinatesAbsolute;
 			camera = settings.camera;
 			return *this;
 		}
@@ -128,6 +130,8 @@ struct BRILLOUIN_SETTINGS {
 		int surfaceProxyRoiHeight{ 0 };
 		bool useMediumReference{ true };
 		double mediumReferenceValue{ 0.0 };
+		int mediumReferenceFrameCount{ 5 };
+		bool gridCoordinatesAbsolute{ false };
 
 		// ROI parameters
 		const double& xMin{ m_xMin };

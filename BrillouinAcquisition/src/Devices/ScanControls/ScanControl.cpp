@@ -268,16 +268,17 @@ ScaleCalibrationData ScanControl::getScaleCalibration() {
 	return m_scaleCalibration;
 }
 
-std::vector<POINT2> ScanControl::getPositionsPix(const std::vector<POINT3>& positionsMicrometer) {
+std::vector<POINT2> ScanControl::getPositionsPix(const std::vector<POINT3>& positionsMicrometer, bool positionsAreAbsolute) {
 	// Cache the requested positions so we can re-emit updated positions
 	// in case the scale calibration changes
 	m_AOI_positions = positionsMicrometer;
+	m_AOI_positionsAbsolute = positionsAreAbsolute;
 
 	return convertPositionsToPix();
 };
 
 /*
- * Function converts a position in pixel to a position im µm.
+ * Function converts a position in pixel to a position in um.
  * This is relative to the origin (pixOrigin) and not on an absolute scale e.g. of the translation stage.
  */
 POINT2 ScanControl::pixToMicroMeter(POINT2 positionPix) {
@@ -302,12 +303,12 @@ void ScanControl::setPresetAfter(ScanPreset presetType) {}
 void ScanControl::calculateBounds() {
 	// Bounds of the stage
 	m_absoluteBounds = {
-		-150000,	// [µm] minimal x-value
-		 150000,	// [µm] maximal x-value
-		-150000,	// [µm] minimal y-value
-		 150000,	// [µm] maximal y-value
-		-150000,	// [µm] minimal z-value
-		 150000		// [µm] maximal z-value
+		-150000,	// [um] minimal x-value
+		 150000,	// [um] maximal x-value
+		-150000,	// [um] minimal y-value
+		 150000,	// [um] maximal y-value
+		-150000,	// [um] minimal z-value
+		 150000		// [um] maximal z-value
 	};
 }
 
@@ -349,9 +350,9 @@ void ScanControl::calculateCurrentPositionBounds(POINT3 currentPosition) {
  */
 void ScanControl::announcePositions() {
 	// Measurement mode and stage position didn't change significantly --> do nothing
-	if (m_measurementMode && abs(m_positionStageOld - m_positionStage) < 1e-6) return;
+	if ((m_measurementMode || m_AOI_positionsAbsolute) && abs(m_positionStageOld - m_positionStage) < 1e-6) return;
 	// Preview mode and scanner position didn't change significantly --> do nothing
-	if (!m_measurementMode && abs(m_positionScannerOld - m_positionScanner) < 1e-6) return;
+	if (!m_measurementMode && !m_AOI_positionsAbsolute && abs(m_positionScannerOld - m_positionScanner) < 1e-6) return;
 
 	// Set new positions if they have significantly changed
 	m_positionScannerOld = m_positionScanner;
@@ -381,8 +382,11 @@ std::vector<POINT2> ScanControl::convertPositionsToPix() {
 
 	// In normal mode, the positions are shown relative to the scanner position.
 	auto offset = m_positionScanner;
+	if (m_AOI_positionsAbsolute) {
+		offset = POINT2{} - m_positionStage;
+	}
 	// In measurement mode, the positions are shown relative to the start position.
-	if (this->m_measurementMode) {
+	else if (this->m_measurementMode) {
 		offset = this->m_startPosition - m_positionStage;
 	}
 

@@ -144,7 +144,8 @@ private:
 	QDoubleSpinBox* m_safetyMarginSpinBox{ nullptr };
 	QDoubleSpinBox* m_surfaceDropSpinBox{ nullptr };
 	QCheckBox* m_useMediumReferenceCheckbox{ nullptr };
-	QPushButton* m_measureMediumReferenceButton{ nullptr };
+	QSpinBox* m_mediumReferenceFrameCountSpinBox{ nullptr };
+	QCheckBox* m_absoluteGridCheckbox{ nullptr };
 	QAbstractButton* m_editSpectralProxyRoiCheckbox{ nullptr };
 	QCPItemRect* m_spectralProxyRoiRectItem{ nullptr };
 	QPoint m_spectralProxyDragStart;

@@ -47,19 +47,23 @@ ScanPlannerOutput ScanPlanner::buildLegacyCartesianPlan(const ScanPlannerInput& 
 				position[1] = directions[1][jj];
 				position[2] = directions[2][ii];
 
-				POINT3 relativePosition{
+				POINT3 gridPosition{
 					position[input.scanOrderX],
 					position[input.scanOrderY],
 					position[input.scanOrderZ]
 				};
 				if (isRoiActive) {
-					if (!isPointInPolygon(POINT2{ relativePosition.x, relativePosition.y }, input.roiPolygonUm)) {
+					if (!isPointInPolygon(POINT2{ gridPosition.x, gridPosition.y }, input.roiPolygonUm)) {
 						continue;
 					}
 				}
 
+				const auto absolutePosition = input.gridCoordinatesAbsolute
+					? gridPosition
+					: gridPosition + input.startPosition;
+				const auto relativePosition = absolutePosition - input.startPosition;
 				output.orderedPositionsRelative.push_back(relativePosition);
-				output.orderedPositionsAbsolute.push_back(relativePosition + input.startPosition);
+				output.orderedPositionsAbsolute.push_back(absolutePosition);
 				output.orderedIndices.push_back(INDEX3{
 					indices[input.scanOrderX],
 					indices[input.scanOrderY],

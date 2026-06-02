@@ -449,7 +449,11 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			event->accept();
 			const auto posX = m_ODTPlot.plotHandle->xAxis->pixelToCoord(event->pos().x());
 			const auto posY = m_ODTPlot.plotHandle->yAxis->pixelToCoord(event->pos().y());
-			const auto positionInUm = m_scanControl->pixToMicroMeter(POINT2{ posX, posY });
+			auto positionInUm = m_scanControl->pixToMicroMeter(POINT2{ posX, posY });
+			if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+				const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+				positionInUm += POINT2{ stagePosition.x, stagePosition.y };
+			}
 			auto& poly = m_Brillouin->settings.roiPolygonUm;
 			if (m_draggedRoiVertexIndex >= 0 && m_draggedRoiVertexIndex < (int)poly.size()) {
 				poly[(size_t)m_draggedRoiVertexIndex] = positionInUm;
@@ -599,7 +603,8 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_safetyMarginSpinBox = ui->safetyMarginSpinBox;
 			m_surfaceDropSpinBox = ui->surfaceDropSpinBox;
 			m_useMediumReferenceCheckbox = ui->useMediumReferenceCheckbox;
-			m_measureMediumReferenceButton = ui->measureMediumReferenceButton;
+			m_mediumReferenceFrameCountSpinBox = ui->mediumReferenceFrameCountSpinBox;
+			m_absoluteGridCheckbox = ui->absoluteGridCheckbox;
 			m_editSpectralProxyRoiCheckbox = ui->editSpectralProxyRoiCheckbox;
 
 			connect(m_useRoiMaskCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
@@ -661,7 +666,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				if (m_safetyMarginSpinBox) m_safetyMarginSpinBox->setEnabled(safetyInputsEnabled);
 				if (m_surfaceDropSpinBox) m_surfaceDropSpinBox->setEnabled(enabled);
 				if (m_useMediumReferenceCheckbox) m_useMediumReferenceCheckbox->setEnabled(enabled);
-				if (m_measureMediumReferenceButton) m_measureMediumReferenceButton->setEnabled(enabled);
+				if (m_mediumReferenceFrameCountSpinBox) m_mediumReferenceFrameCountSpinBox->setEnabled(enabled && m_Brillouin->settings.useMediumReference);
 				if (m_editSpectralProxyRoiCheckbox) m_editSpectralProxyRoiCheckbox->setEnabled(enabled);
 				update_AOI_preview();
 			});
@@ -696,158 +701,21 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 
 			connect(m_useMediumReferenceCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
 				m_Brillouin->settings.useMediumReference = enabled;
+				if (m_mediumReferenceFrameCountSpinBox) {
+					m_mediumReferenceFrameCountSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow && enabled);
+				}
 			});
 
-			connect(m_measureMediumReferenceButton, &QPushButton::clicked, this, [this]() {
-				if (m_andor == nullptr) {
-					QMessageBox::warning(this, "Measure ref failed", "Brillouin camera is not available.");
-					return;
-				}
-				if (!m_andor->getConnectionStatus()) {
-					QMessageBox::warning(this, "Measure ref failed", "Brillouin camera is not connected.");
-					return;
-				}
-				const auto requestedCameraSettings = m_Brillouin->settings.camera;
-				const int proxyRoiLeft = m_Brillouin->settings.surfaceProxyRoiLeft;
-				const int proxyRoiTop = m_Brillouin->settings.surfaceProxyRoiTop;
-				const int proxyRoiWidth = m_Brillouin->settings.surfaceProxyRoiWidth;
-				const int proxyRoiHeight = m_Brillouin->settings.surfaceProxyRoiHeight;
-				if (m_measureMediumReferenceButton) {
-					m_measureMediumReferenceButton->setEnabled(false);
-				}
-				statusBar()->showMessage("Measuring medium reference...", 0);
-
-				QMetaObject::invokeMethod(
-					m_andor,
-					[this, requestedCameraSettings, proxyRoiLeft, proxyRoiTop, proxyRoiWidth, proxyRoiHeight]() {
-						auto finish = [this](bool ok, double refValue, CAMERA_SETTINGS actualCameraSettings, QString errorMessage) {
-							QMetaObject::invokeMethod(
-								this,
-								[this, ok, refValue, actualCameraSettings, errorMessage]() {
-									if (m_measureMediumReferenceButton) {
-										m_measureMediumReferenceButton->setEnabled(m_Brillouin->settings.useSurfaceFollow);
-									}
-									if (!ok) {
-										QMessageBox::warning(this, "Measure ref failed", errorMessage);
-										statusBar()->clearMessage();
-										return;
-									}
-
-									m_Brillouin->settings.camera = actualCameraSettings;
-									m_Brillouin->settings.mediumReferenceValue = refValue;
-									const double currentDropFraction = std::clamp(m_Brillouin->settings.surfaceDropFraction, 0.0, 1.0);
-									const double dropoffValue = refValue * (1.0 - currentDropFraction);
-									m_Brillouin->settings.surfaceMetricThreshold = dropoffValue;
-
-									// Convenience: set Brillouin plot scale to [dropoff, ref], while still allowing manual edits afterwards.
-									m_BrillouinPlot.autoscale = false;
-									if (ui->autoscalePlot) {
-										const QSignalBlocker blocker(ui->autoscalePlot);
-										ui->autoscalePlot->setChecked(false);
-									}
-									m_BrillouinPlot.cLim.lower = std::min(dropoffValue, refValue);
-									m_BrillouinPlot.cLim.upper = std::max(dropoffValue, refValue);
-									updatePlot(m_BrillouinPlot);
-
-									statusBar()->showMessage(
-										QString("Medium ref set: %1 | dropoff: %2 | scale min/max applied")
-										.arg(refValue, 0, 'g', 6)
-										.arg(dropoffValue, 0, 'g', 6),
-										7000
-									);
-								},
-								Qt::QueuedConnection
-							);
-						};
-
-						m_andor->startAcquisition(requestedCameraSettings);
-						auto actualCameraSettings = m_andor->getSettings();
-						const int width = (int)actualCameraSettings.roi.width_binned;
-						const int height = (int)actualCameraSettings.roi.height_binned;
-						if (width <= 0 || height <= 0) {
-							m_andor->stopAcquisition();
-							finish(false, 0.0, actualCameraSettings, "Invalid camera ROI size. Start camera preview once and retry.");
-							return;
-						}
-
-						size_t bytesPerPixel = 1;
-						if (actualCameraSettings.readout.dataType == "unsigned short") {
-							bytesPerPixel = sizeof(unsigned short);
-						} else if (actualCameraSettings.readout.dataType == "unsigned int") {
-							bytesPerPixel = sizeof(unsigned int);
-						}
-						const auto expectedBytes = (size_t)width * (size_t)height * bytesPerPixel;
-						const auto bytesPerFrameSetting = (size_t)std::max<int64_t>(0, (int64_t)actualCameraSettings.roi.bytesPerFrame);
-						const auto bytesPerFrame = std::max(expectedBytes, bytesPerFrameSetting);
-						if (bytesPerFrame == 0) {
-							m_andor->stopAcquisition();
-							finish(false, 0.0, actualCameraSettings, "Invalid expected frame size.");
-							return;
-						}
-
-						auto frame = std::vector<std::byte>(bytesPerFrame);
-						auto metricFromFrame = [&](const std::vector<std::byte>& image) -> double {
-							if (image.empty()) {
-								return 0.0;
-							}
-							int roiLeft = std::max(0, proxyRoiLeft);
-							int roiTop = std::max(0, proxyRoiTop);
-							int roiWidth = proxyRoiWidth > 0 ? proxyRoiWidth : width;
-							int roiHeight = proxyRoiHeight > 0 ? proxyRoiHeight : height;
-							roiWidth = std::min(roiWidth, width - roiLeft);
-							roiHeight = std::min(roiHeight, height - roiTop);
-							if (roiWidth <= 0 || roiHeight <= 0) {
-								roiLeft = 0; roiTop = 0; roiWidth = width; roiHeight = height;
-							}
-							auto getValue = [&](int x, int y) -> double {
-								const auto idx = (size_t)y * width + x;
-								if (actualCameraSettings.readout.dataType == "unsigned short") {
-									return reinterpret_cast<const unsigned short*>(image.data())[idx];
-								}
-								if (actualCameraSettings.readout.dataType == "unsigned int") {
-									return reinterpret_cast<const unsigned int*>(image.data())[idx];
-								}
-								return reinterpret_cast<const unsigned char*>(image.data())[idx];
-							};
-							double signalSum = 0.0;
-							int signalCount = 0;
-							for (int y = roiTop; y < roiTop + roiHeight; y++) {
-								for (int x = roiLeft; x < roiLeft + roiWidth; x++) {
-									signalSum += getValue(x, y);
-									signalCount++;
-								}
-							}
-							const auto signalMean = signalCount > 0 ? signalSum / signalCount : 0.0;
-							const int bgLeft = std::max(0, roiLeft - 1);
-							const int bgTop = std::max(0, roiTop - 1);
-							const int bgRight = std::min(width - 1, roiLeft + roiWidth);
-							const int bgBottom = std::min(height - 1, roiTop + roiHeight);
-							double bgSum = 0.0;
-							int bgCount = 0;
-							for (int y = bgTop; y <= bgBottom; y++) {
-								for (int x = bgLeft; x <= bgRight; x++) {
-									const bool insideSignal = (x >= roiLeft && x < roiLeft + roiWidth && y >= roiTop && y < roiTop + roiHeight);
-									if (insideSignal) continue;
-									bgSum += getValue(x, y);
-									bgCount++;
-								}
-							}
-							const auto bgMean = bgCount > 0 ? bgSum / bgCount : 0.0;
-							return signalMean - bgMean;
-						};
-
-						const int n = 5;
-						double sum = 0.0;
-						for (int i = 0; i < n; i++) {
-							m_andor->getImageForAcquisition(frame.data(), false);
-							sum += metricFromFrame(frame);
-						}
-						m_andor->stopAcquisition();
-						finish(true, sum / n, actualCameraSettings, QString{});
-					},
-					Qt::QueuedConnection
-				);
+			connect(m_mediumReferenceFrameCountSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+				m_Brillouin->settings.mediumReferenceFrameCount = std::max(1, value);
 			});
+
+			connect(m_absoluteGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				m_Brillouin->settings.gridCoordinatesAbsolute = enabled;
+				QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
+				update_AOI_preview();
+			});
+
 
 			connect(m_editSpectralProxyRoiCheckbox, &QAbstractButton::toggled, this, [this](bool enabled) {
 				if (enabled) {
@@ -996,7 +864,12 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 			int bestIdx = -1;
 			double bestDist2 = maxDistPix * maxDistPix;
 			for (size_t i = 0; i < poly.size(); ++i) {
-				const auto pPix = m_scanControl->microMeterToPix(poly[i]);
+				auto pUm = poly[i];
+				if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+					const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+					pUm -= POINT2{ stagePosition.x, stagePosition.y };
+				}
+				const auto pPix = m_scanControl->microMeterToPix(pUm);
 				const auto dx = pPix.x - pix.x;
 				const auto dy = pPix.y - pix.y;
 				const auto d2 = dx * dx + dy * dy;
@@ -1026,7 +899,11 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 				return;
 			}
 
-			const auto positionInUm = m_scanControl->pixToMicroMeter(positionInPix);
+			auto positionInUm = m_scanControl->pixToMicroMeter(positionInPix);
+			if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+				const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+				positionInUm += POINT2{ stagePosition.x, stagePosition.y };
+			}
 			m_Brillouin->settings.roiPolygonUm.push_back(positionInUm);
 			if (m_Brillouin->settings.roiPolygonUm.size() >= 3) {
 				m_Brillouin->settings.useRoiMask = true;
@@ -4125,8 +4002,14 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_useMediumReferenceCheckbox->setChecked(m_Brillouin->settings.useMediumReference);
 		m_useMediumReferenceCheckbox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
 	}
-	if (m_measureMediumReferenceButton) {
-		m_measureMediumReferenceButton->setEnabled(m_Brillouin->settings.useSurfaceFollow);
+	if (m_mediumReferenceFrameCountSpinBox) {
+		const QSignalBlocker blocker(*m_mediumReferenceFrameCountSpinBox);
+		m_mediumReferenceFrameCountSpinBox->setValue(std::max(1, m_Brillouin->settings.mediumReferenceFrameCount));
+		m_mediumReferenceFrameCountSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow && m_Brillouin->settings.useMediumReference);
+	}
+	if (m_absoluteGridCheckbox) {
+		const QSignalBlocker blocker(*m_absoluteGridCheckbox);
+		m_absoluteGridCheckbox->setChecked(m_Brillouin->settings.gridCoordinatesAbsolute);
 	}
 	if (m_editSpectralProxyRoiCheckbox) {
 		m_editSpectralProxyRoiCheckbox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
@@ -4199,7 +4082,7 @@ void BrillouinAcquisition::on_showOverlay_stateChanged(int show) {
 void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositions) {
 	if (m_scanControl) {
 		m_positionsMicrometer = orderedPositions;
-		m_positionsPixel = m_scanControl->getPositionsPix(m_positionsMicrometer);
+		m_positionsPixel = m_scanControl->getPositionsPix(m_positionsMicrometer, m_Brillouin->settings.gridCoordinatesAbsolute);
 		update_AOI_preview();
 	}
 }
@@ -4224,8 +4107,15 @@ void BrillouinAcquisition::update_AOI_preview() {
 		std::vector<POINT2> roiPolygonPix;
 		if (colorByRoi && m_scanControl) {
 			roiPolygonPix.reserve(m_Brillouin->settings.roiPolygonUm.size());
+			const auto stagePosition = m_Brillouin->settings.gridCoordinatesAbsolute
+				? m_scanControl->getPosition(PositionType::STAGE)
+				: POINT3{};
 			for (const auto& p : m_Brillouin->settings.roiPolygonUm) {
-				roiPolygonPix.push_back(m_scanControl->microMeterToPix(p));
+				auto pUm = p;
+				if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+					pUm -= POINT2{ stagePosition.x, stagePosition.y };
+				}
+				roiPolygonPix.push_back(m_scanControl->microMeterToPix(pUm));
 			}
 		}
 		QVector<double> squareX;
@@ -4483,11 +4373,22 @@ void BrillouinAcquisition::updateRoiPolygonPreview() {
 
 	std::vector<POINT2> roiPolygonPix;
 	roiPolygonPix.reserve(roiPolygon.size() + 1);
+	const auto stagePosition = m_Brillouin->settings.gridCoordinatesAbsolute
+		? m_scanControl->getPosition(PositionType::STAGE)
+		: POINT3{};
 	for (const auto& p : roiPolygon) {
-		roiPolygonPix.push_back(m_scanControl->microMeterToPix(p));
+		auto pUm = p;
+		if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+			pUm -= POINT2{ stagePosition.x, stagePosition.y };
+		}
+		roiPolygonPix.push_back(m_scanControl->microMeterToPix(pUm));
 	}
 	if (roiPolygon.size() >= 3) {
-		roiPolygonPix.push_back(m_scanControl->microMeterToPix(roiPolygon[0]));
+		auto pUm = roiPolygon[0];
+		if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+			pUm -= POINT2{ stagePosition.x, stagePosition.y };
+		}
+		roiPolygonPix.push_back(m_scanControl->microMeterToPix(pUm));
 	}
 	QVector<double> xPos(roiPolygonPix.size());
 	QVector<double> yPos(roiPolygonPix.size());
@@ -4929,6 +4830,8 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-surface-drop-fraction", m_Brillouin->settings.surfaceDropFraction);
 	settings.setValue("brillouin-use-medium-reference", m_Brillouin->settings.useMediumReference);
 	settings.setValue("brillouin-medium-reference-value", m_Brillouin->settings.mediumReferenceValue);
+	settings.setValue("brillouin-medium-reference-frame-count", m_Brillouin->settings.mediumReferenceFrameCount);
+	settings.setValue("brillouin-grid-coordinates-absolute", m_Brillouin->settings.gridCoordinatesAbsolute);
 	settings.setValue("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft);
 	settings.setValue("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop);
 	settings.setValue("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth);
@@ -5046,6 +4949,8 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.surfaceDropFraction = settings.value("brillouin-surface-drop-fraction", m_Brillouin->settings.surfaceDropFraction).toDouble();
 	m_Brillouin->settings.useMediumReference = settings.value("brillouin-use-medium-reference", m_Brillouin->settings.useMediumReference).toBool();
 	m_Brillouin->settings.mediumReferenceValue = settings.value("brillouin-medium-reference-value", m_Brillouin->settings.mediumReferenceValue).toDouble();
+	m_Brillouin->settings.mediumReferenceFrameCount = settings.value("brillouin-medium-reference-frame-count", m_Brillouin->settings.mediumReferenceFrameCount).toInt();
+	m_Brillouin->settings.gridCoordinatesAbsolute = settings.value("brillouin-grid-coordinates-absolute", m_Brillouin->settings.gridCoordinatesAbsolute).toBool();
 	m_Brillouin->settings.surfaceProxyRoiLeft = settings.value("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft).toInt();
 	m_Brillouin->settings.surfaceProxyRoiTop = settings.value("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop).toInt();
 	m_Brillouin->settings.surfaceProxyRoiWidth = settings.value("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth).toInt();

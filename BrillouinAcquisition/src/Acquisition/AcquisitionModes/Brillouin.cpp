@@ -473,6 +473,7 @@ void Brillouin::updatePositions() {
 	plannerInput.scanOrderZ = m_scanOrder.z;
 	plannerInput.useRoiMask = settings.useRoiMask;
 	plannerInput.roiPolygonUm = settings.roiPolygonUm;
+	plannerInput.gridCoordinatesAbsolute = settings.gridCoordinatesAbsolute;
 
 	auto plan = ScanPlanner::buildLegacyCartesianPlan(plannerInput);
 	m_orderedPositions = std::move(plan.orderedPositionsAbsolute);
@@ -491,7 +492,7 @@ void Brillouin::updatePositions() {
 		}
 	}
 
-	emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
+	emit(s_orderedPositionsChanged(m_settings.gridCoordinatesAbsolute ? m_orderedPositions : m_orderedPositionsRelative));
 }
 
 double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const {
@@ -589,7 +590,7 @@ bool Brillouin::runSurfacePreScan() {
 
 	// Measure medium reference before scanning if requested.
 	if (m_settings.useMediumReference) {
-		const int refFrames = 5;
+		const int refFrames = std::max(1, m_settings.mediumReferenceFrameCount);
 		double refSum = 0.0;
 		for (int i = 0; i < refFrames; i++) {
 			m_andor->getImageForAcquisition(frame.data());
@@ -614,7 +615,10 @@ bool Brillouin::runSurfacePreScan() {
 
 			for (gsl::index zi{ 0 }; zi < (gsl::index)zSamples.size(); zi++) {
 				const auto zRel = zSamples[zi];
-				const auto target = m_startPosition + POINT3{ xSamples[xi], ySamples[yi], zRel };
+				const auto xyPosition = m_settings.gridCoordinatesAbsolute
+					? POINT3{ xSamples[xi], ySamples[yi], 0.0 }
+					: m_startPosition + POINT3{ xSamples[xi], ySamples[yi], 0.0 };
+				const auto target = POINT3{ xyPosition.x, xyPosition.y, m_startPosition.z + zRel };
 				m_scanControl->setPosition(target);
 				std::this_thread::sleep_for(std::chrono::milliseconds(20));
 				m_andor->getImageForAcquisition(frame.data());
@@ -767,7 +771,7 @@ void Brillouin::applySurfaceFollowPlan() {
 		return;
 	}
 	if (runSurfacePreScan()) {
-		emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
+		emit(s_orderedPositionsChanged(m_settings.gridCoordinatesAbsolute ? m_orderedPositions : m_orderedPositionsRelative));
 	}
 }
 
@@ -865,9 +869,9 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	for (gsl::index ii{ 0 }; ii < m_settings.zSteps; ii++) {
 		for (gsl::index jj{ 0 }; jj < m_settings.xSteps; jj++) {
 			for (gsl::index kk{ 0 }; kk < m_settings.ySteps; kk++) {
-				positionsX[posIndex] = directionsX[jj] + m_startPosition.x;
-				positionsY[posIndex] = directionsY[kk] + m_startPosition.y;
-				positionsZ[posIndex] = directionsZ[ii] + m_startPosition.z;
+				positionsX[posIndex] = m_settings.gridCoordinatesAbsolute ? directionsX[jj] : directionsX[jj] + m_startPosition.x;
+				positionsY[posIndex] = m_settings.gridCoordinatesAbsolute ? directionsY[kk] : directionsY[kk] + m_startPosition.y;
+				positionsZ[posIndex] = m_settings.gridCoordinatesAbsolute ? directionsZ[ii] : directionsZ[ii] + m_startPosition.z;
 				posIndex++;
 			}
 		}
