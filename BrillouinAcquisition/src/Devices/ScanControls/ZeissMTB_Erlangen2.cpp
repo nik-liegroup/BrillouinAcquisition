@@ -177,7 +177,7 @@ void ZeissMTB_Erlangen2::init() {
 	}
 
 	if (!m_positionTimer) {
-		m_positionTimer = new QTimer();
+		m_positionTimer = new QTimer(this);
 		auto connection = QWidget::connect(
 			m_positionTimer,
 			&QTimer::timeout,
@@ -187,7 +187,7 @@ void ZeissMTB_Erlangen2::init() {
 	}
 
 	if (!m_elementPositionTimer) {
-		m_elementPositionTimer = new QTimer();
+		m_elementPositionTimer = new QTimer(this);
 		auto connection = QWidget::connect(
 			m_elementPositionTimer,
 			&QTimer::timeout,

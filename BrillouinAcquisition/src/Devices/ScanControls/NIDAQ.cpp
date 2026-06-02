@@ -150,7 +150,7 @@ void NIDAQ::init() {
 	}
 
 	if (!m_elementPositionTimer) {
-		m_elementPositionTimer = new QTimer();
+		m_elementPositionTimer = new QTimer(this);
 		auto connection = QWidget::connect(
 			m_elementPositionTimer,
 			&QTimer::timeout,
