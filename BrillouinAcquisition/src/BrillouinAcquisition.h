@@ -48,6 +48,13 @@ typedef struct {
 	STAGE_SETTINGS stage;
 } SETTINGS_DEVICES;
 
+enum class BrightfieldViewRotation {
+	Rot0 = 0,
+	Rot90 = 1,
+	Rot180 = 2,
+	Rot270 = 3
+};
+
 enum ROI_SOURCE {
 	BOX,
 	PLOT
@@ -188,6 +195,10 @@ private:
 	QCPGraph* m_positionScannerMarker{ nullptr };
 	POINT2 m_positionScanner{ -1, -1 };
 	bool m_locatePositionScanner{ false };
+	BrightfieldViewRotation m_brightfieldViewRotation{ BrightfieldViewRotation::Rot0 };
+	bool m_brightfieldRotationCounterClockwise{ false };
+	int m_brightfieldRawWidth{ 1 };
+	int m_brightfieldRawHeight{ 1 };
 
 	QCPCurve* m_positionsMarker{ nullptr };
 	QCPCurve* m_positionsMarkerSquare{ nullptr };
@@ -365,6 +376,14 @@ private slots:
 	void initializePlot(PLOT_SETTINGS plotSettings);
 
 	void drawPositionScannerMarker(POINT2 positionScanner);
+	POINT2 brightfieldRawToDisplay(POINT2 point) const;
+	POINT2 brightfieldDisplayToRaw(POINT2 point) const;
+	int brightfieldDisplayWidth() const;
+	int brightfieldDisplayHeight() const;
+	bool isBrightfieldRotated90() const;
+	QString brightfieldRotationText() const;
+	void updateBrightfieldRotationButton();
+	void applyBrightfieldRotationChanged();
 
 	void xAxisRangeChangedODT(const QCPRange& newRange);
 	void yAxisRangeChangedODT(const QCPRange& newRange);
@@ -448,6 +467,8 @@ private slots:
 	void on_pixelEncodingODT_currentIndexChanged(const QString& text);
 
 	void on_camera_displayMode_currentIndexChanged(const QString& text);
+	void on_brightfieldRotationButton_clicked();
+	void on_brightfieldRotationCcw_stateChanged(int state);
 	void on_setBackground_clicked();
 
 	void applyGradient(const PLOT_SETTINGS& plotSettings);

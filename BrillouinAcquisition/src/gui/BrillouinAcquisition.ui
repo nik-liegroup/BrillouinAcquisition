@@ -4056,6 +4056,38 @@ border: none;</string>
            </widget>
           </item>
           <item>
+           <widget class="QPushButton" name="brightfieldRotationButton">
+            <property name="toolTip">
+             <string>Rotate the brightfield view and overlays by 90 degrees.</string>
+            </property>
+            <property name="minimumSize">
+             <size>
+              <width>70</width>
+              <height>20</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>80</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>Rot 0 deg</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="brightfieldRotationCcw">
+            <property name="toolTip">
+             <string>Cycle the rotation button counter-clockwise.</string>
+            </property>
+            <property name="text">
+             <string>CCW</string>
+            </property>
+           </widget>
+          </item>
+          <item>
            <widget class="QPushButton" name="addFocusMarker_brightfield">
             <property name="minimumSize">
              <size>
@@ -4514,6 +4546,8 @@ border: none;</string>
   <tabstop>estimatedAcquisitionTime</tabstop>
   <tabstop>acquisitionFilename</tabstop>
   <tabstop>autoscalePlot_brightfield</tabstop>
+  <tabstop>brightfieldRotationButton</tabstop>
+  <tabstop>brightfieldRotationCcw</tabstop>
   <tabstop>rangeLowerODT</tabstop>
   <tabstop>rangeUpperODT</tabstop>
   <tabstop>camera_singleShot_brightfield</tabstop>
