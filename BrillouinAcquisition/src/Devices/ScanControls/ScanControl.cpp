@@ -268,6 +268,10 @@ ScaleCalibrationData ScanControl::getScaleCalibration() {
 	return m_scaleCalibration;
 }
 
+std::vector<POINT2> ScanControl::getPositionsPix(const std::vector<POINT3>& positionsMicrometer) {
+	return getPositionsPix(positionsMicrometer, false);
+}
+
 std::vector<POINT2> ScanControl::getPositionsPix(const std::vector<POINT3>& positionsMicrometer, bool positionsAreAbsolute) {
 	// Cache the requested positions so we can re-emit updated positions
 	// in case the scale calibration changes

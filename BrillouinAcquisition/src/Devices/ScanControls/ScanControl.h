@@ -187,7 +187,8 @@ public slots:
 	void setScaleCalibration(const ScaleCalibrationData& scaleCalibration);
 	ScaleCalibrationData getScaleCalibration();
 
-	std::vector<POINT2> getPositionsPix(const std::vector<POINT3>& positionsMicrometer, bool positionsAreAbsolute = false);
+	std::vector<POINT2> getPositionsPix(const std::vector<POINT3>& positionsMicrometer);
+	std::vector<POINT2> getPositionsPix(const std::vector<POINT3>& positionsMicrometer, bool positionsAreAbsolute);
 
 	virtual POINT2 pixToMicroMeter(POINT2 positionPix);
 	virtual POINT2 microMeterToPix(POINT2 positionMicrometer);

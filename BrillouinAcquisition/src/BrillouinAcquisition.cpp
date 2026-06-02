@@ -1069,14 +1069,14 @@ void BrillouinAcquisition::updateEstimatedAcquisitionTime() {
 			* (size_t)std::max(1, m_Brillouin->settings.ySteps)
 			* (size_t)std::max(1, m_Brillouin->settings.zSteps)
 		: m_positionsMicrometer.size();
-	const auto frameCount = std::max(1, m_Brillouin->settings.camera.frameCount);
+	const auto frameCount = std::max<int64_t>(1, m_Brillouin->settings.camera.frameCount);
 	const auto exposureSeconds = std::max(0.0, m_Brillouin->settings.camera.exposureTime);
 	const auto totalSeconds = (int)std::ceil(exposureSeconds * frameCount * (double)pointCount);
 	ui->estimatedAcquisitionTime->setText(formatSeconds(totalSeconds));
 	ui->estimatedAcquisitionTime->setToolTip(
 		QString("Exposure-only estimate: %1 points x %2 frames x %3 s.")
 		.arg((qulonglong)pointCount)
-		.arg(frameCount)
+		.arg((qlonglong)frameCount)
 		.arg(exposureSeconds, 0, 'g', 4)
 	);
 }
