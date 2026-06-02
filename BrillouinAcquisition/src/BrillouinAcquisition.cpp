@@ -4194,29 +4194,6 @@ void BrillouinAcquisition::update_AOI_preview() {
 				roiPolygonPix.push_back(m_scanControl->microMeterToPix(p));
 			}
 		}
-		for (auto* line : m_positionPathLines) {
-			ui->customplot_brightfield->removeItem(line);
-		}
-		m_positionPathLines.clear();
-		if (m_positionsPixel.size() > 1) {
-			m_positionPathLines.reserve(m_positionsPixel.size() - 1);
-			for (size_t i = 1; i < m_positionsPixel.size(); i++) {
-				QPen pen;
-				if (colorByRoi) {
-					const bool insideStart = pointInPolygon(m_positionsPixel[i - 1], roiPolygonPix);
-					const bool insideEnd = pointInPolygon(m_positionsPixel[i], roiPolygonPix);
-					pen.setColor(insideStart && insideEnd ? QColor(0, 170, 0) : Qt::red);
-				} else {
-					pen.setColor(Qt::red);
-				}
-				pen.setWidth(2);
-				auto* line = new QCPItemLine(ui->customplot_brightfield);
-				line->setPen(pen);
-				line->start->setCoords(m_positionsPixel[i - 1].x, m_positionsPixel[i - 1].y);
-				line->end->setCoords(m_positionsPixel[i].x, m_positionsPixel[i].y);
-				m_positionPathLines.push_back(line);
-			}
-		}
 		QVector<double> squareX;
 		QVector<double> squareY;
 		if (showSurfaceSquares && !m_positionsPixel.empty()) {
@@ -4291,7 +4268,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 
 			if (!m_positionsMarkerInsideRoi) {
 				m_positionsMarkerInsideRoi = new QCPCurve(ui->customplot_brightfield->xAxis, ui->customplot_brightfield->yAxis);
-				m_positionsMarkerInsideRoi->setLineStyle(QCPCurve::lsNone);
+				m_positionsMarkerInsideRoi->setLineStyle(QCPCurve::lsLine);
 				QPen pen;
 				pen.setColor(QColor(0, 170, 0));
 				pen.setWidth(2);
@@ -4316,7 +4293,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 			}
 			if (!m_positionsMarkerOutsideRoi) {
 				m_positionsMarkerOutsideRoi = new QCPCurve(ui->customplot_brightfield->xAxis, ui->customplot_brightfield->yAxis);
-				m_positionsMarkerOutsideRoi->setLineStyle(QCPCurve::lsNone);
+				m_positionsMarkerOutsideRoi->setLineStyle(QCPCurve::lsLine);
 				QPen pen;
 				pen.setColor(Qt::red);
 				pen.setWidth(2);
@@ -4356,7 +4333,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 			// Single-color legacy marker when ROI mask is not active.
 			if (!m_positionsMarker) {
 				m_positionsMarker = new QCPCurve(ui->customplot_brightfield->xAxis, ui->customplot_brightfield->yAxis);
-				m_positionsMarker->setLineStyle(QCPCurve::lsNone);
+				m_positionsMarker->setLineStyle(QCPCurve::lsLine);
 				QPen pen;
 				pen.setColor(Qt::red);
 				pen.setWidth(2);
@@ -4401,11 +4378,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 			}
 		}
 		ui->customplot_brightfield->replot();
-	} else if (m_positionsMarker || m_positionsMarkerSquare || m_positionsMarkerInsideRoi || m_positionsMarkerOutsideRoi || m_positionsMarkerSquareInsideRoi || m_positionsMarkerSquareOutsideRoi || !m_positionPathLines.empty()) {
-		for (auto* line : m_positionPathLines) {
-			ui->customplot_brightfield->removeItem(line);
-		}
-		m_positionPathLines.clear();
+	} else if (m_positionsMarker || m_positionsMarkerSquare || m_positionsMarkerInsideRoi || m_positionsMarkerOutsideRoi || m_positionsMarkerSquareInsideRoi || m_positionsMarkerSquareOutsideRoi) {
 		if (ui->customplot_brightfield->removePlottable(m_positionsMarker)) {
 			m_positionsMarker = nullptr;
 		}
