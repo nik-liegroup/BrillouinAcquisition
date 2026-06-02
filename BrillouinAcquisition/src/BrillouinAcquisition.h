@@ -43,6 +43,12 @@ typedef struct {
 
 } STAGE_SETTINGS;
 
+enum class BrightfieldViewRotation {
+	None = 0,
+	Clockwise90 = 1,
+	CounterClockwise90 = 2
+};
+
 typedef struct {
 	CAMERA_SETTINGS camera;
 	STAGE_SETTINGS stage;
@@ -188,6 +194,9 @@ private:
 	QCPGraph* m_positionScannerMarker{ nullptr };
 	POINT2 m_positionScanner{ -1, -1 };
 	bool m_locatePositionScanner{ false };
+	BrightfieldViewRotation m_brightfieldViewRotation{ BrightfieldViewRotation::None };
+	int m_brightfieldRawWidth{ 1 };
+	int m_brightfieldRawHeight{ 1 };
 
 	QCPCurve* m_positionsMarker{ nullptr };
 	QCPCurve* m_positionsMarkerSquare{ nullptr };
@@ -365,6 +374,11 @@ private slots:
 	void initializePlot(PLOT_SETTINGS plotSettings);
 
 	void drawPositionScannerMarker(POINT2 positionScanner);
+	POINT2 brightfieldRawToDisplay(POINT2 point) const;
+	POINT2 brightfieldDisplayToRaw(POINT2 point) const;
+	int brightfieldDisplayWidth() const;
+	int brightfieldDisplayHeight() const;
+	bool isBrightfieldRotated90() const;
 
 	void xAxisRangeChangedODT(const QCPRange& newRange);
 	void yAxisRangeChangedODT(const QCPRange& newRange);
@@ -448,6 +462,7 @@ private slots:
 	void on_pixelEncodingODT_currentIndexChanged(const QString& text);
 
 	void on_camera_displayMode_currentIndexChanged(const QString& text);
+	void on_brightfieldRotation_currentIndexChanged(int index);
 	void on_setBackground_clicked();
 
 	void applyGradient(const PLOT_SETTINGS& plotSettings);

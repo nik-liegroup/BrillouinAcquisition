@@ -449,7 +449,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			event->accept();
 			const auto posX = m_ODTPlot.plotHandle->xAxis->pixelToCoord(event->pos().x());
 			const auto posY = m_ODTPlot.plotHandle->yAxis->pixelToCoord(event->pos().y());
-			auto positionInUm = m_scanControl->pixToMicroMeter(POINT2{ posX, posY });
+			auto positionInUm = m_scanControl->pixToMicroMeter(brightfieldDisplayToRaw(POINT2{ posX, posY }));
 			if (m_Brillouin->settings.gridCoordinatesAbsolute) {
 				const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
 				const auto homePosition = m_scanControl->getHomePosition();
@@ -855,6 +855,7 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 	auto posY = m_ODTPlot.plotHandle->yAxis->pixelToCoord(position.y());
 
 	auto positionInPix = POINT2{ posX, posY };
+	auto positionInRawPix = brightfieldDisplayToRaw(positionInPix);
 
 	const auto roiEditEnabled = (m_editRoiCheckbox != nullptr && m_editRoiCheckbox->isChecked());
 	const auto modifiers = QApplication::keyboardModifiers();
@@ -875,7 +876,7 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 					pUm += POINT2{ homePosition.x, homePosition.y };
 					pUm -= POINT2{ stagePosition.x, stagePosition.y };
 				}
-				const auto pPix = m_scanControl->microMeterToPix(pUm);
+				const auto pPix = brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm));
 				const auto dx = pPix.x - pix.x;
 				const auto dy = pPix.y - pix.y;
 				const auto d2 = dx * dx + dy * dy;
@@ -905,7 +906,7 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 				return;
 			}
 
-			auto positionInUm = m_scanControl->pixToMicroMeter(positionInPix);
+			auto positionInUm = m_scanControl->pixToMicroMeter(positionInRawPix);
 			if (m_Brillouin->settings.gridCoordinatesAbsolute) {
 				const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
 				const auto homePosition = m_scanControl->getHomePosition();
@@ -925,7 +926,7 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 
 	// If we currently select the new focus, don't move there
 	if (m_locatePositionScanner) {
-		m_scanControl->locatePositionScanner(positionInPix);
+		m_scanControl->locatePositionScanner(positionInRawPix);
 	} else {
 		auto xRange = m_ODTPlot.plotHandle->xAxis->range();
 		auto yRange = m_ODTPlot.plotHandle->yAxis->range();
@@ -937,8 +938,8 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 		// Set laser focus to this position
 		QMetaObject::invokeMethod(
 			m_scanControl,
-			[&m_scanControl = m_scanControl, positionInPix]() {
-				m_scanControl->setPositionInPix(positionInPix);
+			[&m_scanControl = m_scanControl, positionInRawPix]() {
+				m_scanControl->setPositionInPix(positionInRawPix);
 			},
 			Qt::QueuedConnection
 		);
@@ -1030,8 +1031,10 @@ void BrillouinAcquisition::cameraODTOptionsChanged(const CAMERA_OPTIONS& options
 
 	// Adjust plotting range only when neither preview nor acquisition are running
 	if (!(m_brightfieldCamera->m_isPreviewRunning || m_brightfieldCamera->m_isAcquisitionRunning)) {
-		m_ODTPlot.plotHandle->xAxis->setRange(QCPRange(1, options.ROIWidthLimits[1]));
-		m_ODTPlot.plotHandle->yAxis->setRange(QCPRange(1, options.ROIHeightLimits[1]));
+		m_brightfieldRawWidth = std::max(1, (int)options.ROIWidthLimits[1]);
+		m_brightfieldRawHeight = std::max(1, (int)options.ROIHeightLimits[1]);
+		m_ODTPlot.plotHandle->xAxis->setRange(QCPRange(1, brightfieldDisplayWidth()));
+		m_ODTPlot.plotHandle->yAxis->setRange(QCPRange(1, brightfieldDisplayHeight()));
 
 		ui->ROIHeightODT->setValue(options.ROIHeightLimits[1]);
 		ui->ROITopODT->setValue(0);
@@ -1382,6 +1385,30 @@ void BrillouinAcquisition::on_camera_displayMode_currentIndexChanged(const QStri
 		m_ODTPlot.gradient = CustomGradientPreset::gpGrayscale;
 	}
 	applyGradient(m_ODTPlot);
+}
+
+void BrillouinAcquisition::on_brightfieldRotation_currentIndexChanged(int index) {
+	switch (index) {
+	case 1:
+		m_brightfieldViewRotation = BrightfieldViewRotation::Clockwise90;
+		break;
+	case 2:
+		m_brightfieldViewRotation = BrightfieldViewRotation::CounterClockwise90;
+		break;
+	case 0:
+	default:
+		m_brightfieldViewRotation = BrightfieldViewRotation::None;
+		break;
+	}
+	m_ODTPlot.colorMap->data()->setSize(brightfieldDisplayWidth(), brightfieldDisplayHeight());
+	m_ODTPlot.colorMap->data()->setRange(QCPRange(1, brightfieldDisplayWidth()), QCPRange(1, brightfieldDisplayHeight()));
+	m_ODTPlot.plotHandle->xAxis->setRange(QCPRange(1, brightfieldDisplayWidth()));
+	m_ODTPlot.plotHandle->yAxis->setRange(QCPRange(1, brightfieldDisplayHeight()));
+	if (m_scanControl) {
+		AOI_changed(m_positionsMicrometer);
+		drawPositionScannerMarker(m_positionScanner);
+	}
+	updateImageODT();
 }
 
 void BrillouinAcquisition::on_setBackground_clicked() {
@@ -1980,8 +2007,9 @@ void BrillouinAcquisition::on_addFocusMarker_brightfield_clicked() {
 
 void BrillouinAcquisition::drawPositionScannerMarker(POINT2 positionScanner) {
 	m_positionScanner = positionScanner;
+	const auto positionScannerDisplay = brightfieldRawToDisplay(positionScanner);
 	// Don't draw if outside of image
-	if (m_positionScanner.x < 0 || m_positionScanner.y < 0)	{
+	if (positionScannerDisplay.x < 0 || positionScannerDisplay.y < 0)	{
 		return;
 	}
 
@@ -1997,8 +2025,53 @@ void BrillouinAcquisition::drawPositionScannerMarker(POINT2 positionScanner) {
 		scatterStyle.setSize(8);
 		m_positionScannerMarker->setScatterStyle(scatterStyle);
 	}
-	m_positionScannerMarker->setData(QVector<double>{m_positionScanner.x}, QVector<double>{m_positionScanner.y});
+	m_positionScannerMarker->setData(QVector<double>{positionScannerDisplay.x}, QVector<double>{positionScannerDisplay.y});
 	ui->customplot_brightfield->replot();
+}
+
+bool BrillouinAcquisition::isBrightfieldRotated90() const {
+	return m_brightfieldViewRotation == BrightfieldViewRotation::Clockwise90
+		|| m_brightfieldViewRotation == BrightfieldViewRotation::CounterClockwise90;
+}
+
+int BrillouinAcquisition::brightfieldDisplayWidth() const {
+	return isBrightfieldRotated90()
+		? std::max(1, m_brightfieldRawHeight)
+		: std::max(1, m_brightfieldRawWidth);
+}
+
+int BrillouinAcquisition::brightfieldDisplayHeight() const {
+	return isBrightfieldRotated90()
+		? std::max(1, m_brightfieldRawWidth)
+		: std::max(1, m_brightfieldRawHeight);
+}
+
+POINT2 BrillouinAcquisition::brightfieldRawToDisplay(POINT2 point) const {
+	const auto rawWidth = std::max(1, m_brightfieldRawWidth);
+	const auto rawHeight = std::max(1, m_brightfieldRawHeight);
+	switch (m_brightfieldViewRotation) {
+	case BrightfieldViewRotation::Clockwise90:
+		return POINT2{ rawHeight - point.y + 1.0, point.x };
+	case BrightfieldViewRotation::CounterClockwise90:
+		return POINT2{ point.y, rawWidth - point.x + 1.0 };
+	case BrightfieldViewRotation::None:
+	default:
+		return point;
+	}
+}
+
+POINT2 BrillouinAcquisition::brightfieldDisplayToRaw(POINT2 point) const {
+	const auto rawWidth = std::max(1, m_brightfieldRawWidth);
+	const auto rawHeight = std::max(1, m_brightfieldRawHeight);
+	switch (m_brightfieldViewRotation) {
+	case BrightfieldViewRotation::Clockwise90:
+		return POINT2{ point.y, rawHeight - point.x + 1.0 };
+	case BrightfieldViewRotation::CounterClockwise90:
+		return POINT2{ rawWidth - point.y + 1.0, point.x };
+	case BrightfieldViewRotation::None:
+	default:
+		return point;
+	}
 }
 
 void BrillouinAcquisition::on_rangeLower_valueChanged(int value) {
@@ -2037,11 +2110,11 @@ void BrillouinAcquisition::updateCLimRange(QSpinBox *lower, QSpinBox *upper, QCP
 }
 
 void BrillouinAcquisition::xAxisRangeChangedODT(const QCPRange &newRange) {
-	m_ODTPlot.plotHandle->xAxis->setRange(newRange.bounded(1, m_cameraOptionsODT.ROIWidthLimits[1]));
+	m_ODTPlot.plotHandle->xAxis->setRange(newRange.bounded(1, brightfieldDisplayWidth()));
 }
 
 void BrillouinAcquisition::yAxisRangeChangedODT(const QCPRange &newRange) {
-	m_ODTPlot.plotHandle->yAxis->setRange(newRange.bounded(1, m_cameraOptionsODT.ROIHeightLimits[1]));
+	m_ODTPlot.plotHandle->yAxis->setRange(newRange.bounded(1, brightfieldDisplayHeight()));
 }
 
 void BrillouinAcquisition::xAxisRangeChanged(QCPRange &newRange) {
@@ -2200,9 +2273,19 @@ void BrillouinAcquisition::applyCameraSettings() {
 
 void BrillouinAcquisition::updatePlotLimits(const PLOT_SETTINGS& plotSettings,	const CAMERA_OPTIONS& options, const CAMERA_ROI& roi) {
 	// set the properties of the colormap to the correct values of the preview buffer
-	plotSettings.colorMap->data()->setSize(roi.width_binned, roi.height_binned);
-	QCPRange xRange = QCPRange(roi.left, roi.left + roi.width_physical - 1);
-	QCPRange yRange = QCPRange(roi.bottom, roi.bottom + roi.height_physical - 1);
+	auto displayWidth = (int)roi.width_binned;
+	auto displayHeight = (int)roi.height_binned;
+	auto xRange = QCPRange(roi.left, roi.left + roi.width_physical - 1);
+	auto yRange = QCPRange(roi.bottom, roi.bottom + roi.height_physical - 1);
+	if (plotSettings.plotHandle == ui->customplot_brightfield) {
+		m_brightfieldRawWidth = std::max(1, (int)roi.width_binned);
+		m_brightfieldRawHeight = std::max(1, (int)roi.height_binned);
+		displayWidth = brightfieldDisplayWidth();
+		displayHeight = brightfieldDisplayHeight();
+		xRange = QCPRange(1, displayWidth);
+		yRange = QCPRange(1, displayHeight);
+	}
+	plotSettings.colorMap->data()->setSize(displayWidth, displayHeight);
 	plotSettings.colorMap->data()->setRange(xRange, yRange);
 
 	QCPRange xRangeCurrent = plotSettings.plotHandle->xAxis->range();
@@ -2331,11 +2414,26 @@ void BrillouinAcquisition::plot(PLOT_SETTINGS* plotSettings, long long dim_x, lo
 template <typename T>
 void BrillouinAcquisition::plotting(PLOT_SETTINGS* plotSettings, long long dim_x, long long dim_y, const std::vector<T>& unpackedBuffer) {
 	// images are given row by row, starting at the top left
+	const bool rotateBrightfield = plotSettings == &m_ODTPlot && m_brightfieldViewRotation != BrightfieldViewRotation::None;
+	if (plotSettings == &m_ODTPlot) {
+		m_brightfieldRawWidth = std::max(1, (int)dim_x);
+		m_brightfieldRawHeight = std::max(1, (int)dim_y);
+		if (rotateBrightfield) {
+			plotSettings->colorMap->data()->setSize(brightfieldDisplayWidth(), brightfieldDisplayHeight());
+			plotSettings->colorMap->data()->setRange(QCPRange(1, brightfieldDisplayWidth()), QCPRange(1, brightfieldDisplayHeight()));
+		}
+	}
 	int tIndex{ 0 };
 	for (gsl::index yIndex{ 0 }; yIndex < dim_y; ++yIndex) {
 		for (gsl::index xIndex{ 0 }; xIndex < dim_x; ++xIndex) {
 			tIndex = yIndex * dim_x + xIndex;
-			plotSettings->colorMap->data()->setCell(xIndex, dim_y - yIndex - 1, unpackedBuffer[tIndex]);
+			if (rotateBrightfield) {
+				const auto rawPoint = POINT2{ (double)xIndex + 1.0, (double)(dim_y - yIndex) };
+				const auto displayPoint = brightfieldRawToDisplay(rawPoint);
+				plotSettings->colorMap->data()->setCell((int)displayPoint.x - 1, (int)displayPoint.y - 1, unpackedBuffer[tIndex]);
+			} else {
+				plotSettings->colorMap->data()->setCell(xIndex, dim_y - yIndex - 1, unpackedBuffer[tIndex]);
+			}
 		}
 	}
 	if (plotSettings->autoscale) {
@@ -4114,6 +4212,9 @@ void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositio
 	if (m_scanControl) {
 		m_positionsMicrometer = orderedPositions;
 		m_positionsPixel = m_scanControl->getPositionsPix(m_positionsMicrometer, m_Brillouin->settings.gridCoordinatesAbsolute);
+		std::transform(m_positionsPixel.begin(), m_positionsPixel.end(), m_positionsPixel.begin(),
+			[this](POINT2 point) { return brightfieldRawToDisplay(point); }
+		);
 		update_AOI_preview();
 	}
 	updateEstimatedAcquisitionTime();
@@ -4124,6 +4225,9 @@ void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositio
  */
 void BrillouinAcquisition::on_scaleCalibrationChanged(const std::vector<POINT2>& positions) {
 	m_positionsPixel = positions;
+	std::transform(m_positionsPixel.begin(), m_positionsPixel.end(), m_positionsPixel.begin(),
+		[this](POINT2 point) { return brightfieldRawToDisplay(point); }
+	);
 	update_AOI_preview();
 }
 
@@ -4151,7 +4255,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 					pUm += POINT2{ homePosition.x, homePosition.y };
 					pUm -= POINT2{ stagePosition.x, stagePosition.y };
 				}
-				roiPolygonPix.push_back(m_scanControl->microMeterToPix(pUm));
+				roiPolygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
 			}
 		}
 		QVector<double> squareX;
@@ -4421,7 +4525,7 @@ void BrillouinAcquisition::updateRoiPolygonPreview() {
 			pUm += POINT2{ homePosition.x, homePosition.y };
 			pUm -= POINT2{ stagePosition.x, stagePosition.y };
 		}
-		roiPolygonPix.push_back(m_scanControl->microMeterToPix(pUm));
+		roiPolygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
 	}
 	if (roiPolygon.size() >= 3) {
 		auto pUm = roiPolygon[0];
@@ -4429,7 +4533,7 @@ void BrillouinAcquisition::updateRoiPolygonPreview() {
 			pUm += POINT2{ homePosition.x, homePosition.y };
 			pUm -= POINT2{ stagePosition.x, stagePosition.y };
 		}
-		roiPolygonPix.push_back(m_scanControl->microMeterToPix(pUm));
+		roiPolygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
 	}
 	QVector<double> xPos(roiPolygonPix.size());
 	QVector<double> yPos(roiPolygonPix.size());
@@ -4840,6 +4944,7 @@ void BrillouinAcquisition::writeSettings() {
 	settings.beginGroup("devices-settings");
 	settings.setValue("stage-laser-position-x", m_positionScanner.x);
 	settings.setValue("stage-laser-position-y", m_positionScanner.y);
+	settings.setValue("brightfield-view-rotation", (int)m_brightfieldViewRotation);
 	settings.setValue("stage-x-min", m_Brillouin->settings.xMin);
 	settings.setValue("stage-x-max", m_Brillouin->settings.xMax);
 	settings.setValue("stage-x-steps", m_Brillouin->settings.xSteps);
@@ -4959,6 +5064,12 @@ void BrillouinAcquisition::readSettings() {
 	auto posX = settings.value("stage-laser-position-x");
 	auto posY = settings.value("stage-laser-position-y");
 	m_positionScanner = POINT2(posX.toDouble(), posY.toDouble());
+	const auto brightfieldRotation = settings.value("brightfield-view-rotation", (int)m_brightfieldViewRotation).toInt();
+	m_brightfieldViewRotation = (BrightfieldViewRotation)std::clamp(brightfieldRotation, 0, 2);
+	if (ui->brightfieldRotation) {
+		const QSignalBlocker blocker(ui->brightfieldRotation);
+		ui->brightfieldRotation->setCurrentIndex((int)m_brightfieldViewRotation);
+	}
 	m_Brillouin->settings.setXMin(settings.value("stage-x-min", m_Brillouin->settings.xMin).toInt());
 	m_Brillouin->settings.setXMax(settings.value("stage-x-max", m_Brillouin->settings.xMax).toInt());
 	m_Brillouin->settings.setXSteps(settings.value("stage-x-steps", m_Brillouin->settings.xSteps).toInt());
