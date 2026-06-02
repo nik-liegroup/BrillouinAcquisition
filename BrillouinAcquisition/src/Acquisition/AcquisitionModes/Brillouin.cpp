@@ -459,9 +459,6 @@ void Brillouin::updatePositions() {
 
 	ScanPlannerInput plannerInput{};
 	plannerInput.startPosition = m_startPosition;
-	if (settings.gridCoordinatesAbsolute && m_scanControl) {
-		plannerInput.absoluteCoordinateOrigin = m_scanControl->getHomePosition();
-	}
 	plannerInput.xMin = settings.xMin;
 	plannerInput.xMax = settings.xMax;
 	plannerInput.xSteps = settings.xSteps;
@@ -496,17 +493,7 @@ void Brillouin::updatePositions() {
 	}
 
 	if (m_settings.gridCoordinatesAbsolute) {
-		std::vector<POINT3> positionsInDisplayCoordinates;
-		positionsInDisplayCoordinates.reserve(m_orderedPositions.size());
-		const auto origin = plannerInput.absoluteCoordinateOrigin;
-		for (const auto& position : m_orderedPositions) {
-			positionsInDisplayCoordinates.push_back(POINT3{
-				position.x - origin.x,
-				position.y - origin.y,
-				position.z - origin.z
-			});
-		}
-		emit(s_orderedPositionsChanged(positionsInDisplayCoordinates));
+		emit(s_orderedPositionsChanged(m_orderedPositions));
 	} else {
 		emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
 	}
@@ -634,8 +621,7 @@ bool Brillouin::runSurfacePreScan() {
 				const auto zRel = zSamples[zi];
 				const auto xyPosition = [&]() {
 					if (m_settings.gridCoordinatesAbsolute) {
-						const auto origin = m_scanControl->getHomePosition();
-						return POINT3{ origin.x + xSamples[xi], origin.y + ySamples[yi], 0.0 };
+						return POINT3{ xSamples[xi], ySamples[yi], 0.0 };
 					}
 					return POINT3{ m_startPosition.x + xSamples[xi], m_startPosition.y + ySamples[yi], 0.0 };
 				}();
@@ -792,18 +778,8 @@ void Brillouin::applySurfaceFollowPlan() {
 		return;
 	}
 	if (runSurfacePreScan()) {
-		if (m_settings.gridCoordinatesAbsolute && m_scanControl) {
-			std::vector<POINT3> positionsInDisplayCoordinates;
-			positionsInDisplayCoordinates.reserve(m_orderedPositions.size());
-			const auto origin = m_scanControl->getHomePosition();
-			for (const auto& position : m_orderedPositions) {
-				positionsInDisplayCoordinates.push_back(POINT3{
-					position.x - origin.x,
-					position.y - origin.y,
-					position.z - origin.z
-				});
-			}
-			emit(s_orderedPositionsChanged(positionsInDisplayCoordinates));
+		if (m_settings.gridCoordinatesAbsolute) {
+			emit(s_orderedPositionsChanged(m_orderedPositions));
 		} else {
 			emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
 		}

@@ -128,7 +128,6 @@ public:
 	virtual void movePosition(POINT2 distance);
 	virtual void movePosition(const POINT3& distance);
 	virtual POINT3 getPosition(PositionType positionType = PositionType::BOTH);
-	POINT3 getHomePosition() const;
 
 	typedef enum class enScanDevice {
 		ZEISSECU = 0,

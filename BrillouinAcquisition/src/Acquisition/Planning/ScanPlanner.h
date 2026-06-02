@@ -7,7 +7,6 @@
 
 struct ScanPlannerInput {
 	POINT3 startPosition;
-	POINT3 absoluteCoordinateOrigin;
 	double xMin{ 0.0 };
 	double xMax{ 0.0 };
 	int xSteps{ 1 };

@@ -40,10 +40,6 @@ POINT3 ScanControl::getPosition(PositionType positionType) {
 	return POINT3{ pos.x, pos.y, m_positionFocus };
 }
 
-POINT3 ScanControl::getHomePosition() const {
-	return m_homePosition;
-}
-
 /*
  * Public slots
  */
@@ -55,6 +51,7 @@ void ScanControl::setPositionRelativeX(double positionX) {
 	position.x = m_homePosition.x + positionX;
 
 	setPosition(position);
+	announcePosition();
 }
 
 void ScanControl::setPositionRelativeY(double positionY) {
@@ -64,6 +61,7 @@ void ScanControl::setPositionRelativeY(double positionY) {
 	position.y = m_homePosition.y + positionY;
 
 	setPosition(position);
+	announcePosition();
 }
 
 void ScanControl::setPositionRelativeZ(double positionZ) {
@@ -73,6 +71,7 @@ void ScanControl::setPositionRelativeZ(double positionZ) {
 	position.z = m_homePosition.z + positionZ;
 
 	setPosition(position);
+	announcePosition();
 }
 
 void ScanControl::locatePositionScanner(POINT2 positionLaserPix) {
@@ -172,6 +171,7 @@ bool ScanControl::isPresetActive(ScanPreset presetType) {
 void ScanControl::announcePosition() {
 	auto point = getPosition();
 	emit(currentPosition(point - m_homePosition));
+	announcePositions();
 }
 
 void ScanControl::startAnnouncing() {
@@ -391,7 +391,7 @@ std::vector<POINT2> ScanControl::convertPositionsToPix() {
 	// In normal mode, the positions are shown relative to the scanner position.
 	auto offset = m_positionScanner;
 	if (m_AOI_positionsAbsolute) {
-		offset = POINT2{ m_homePosition.x - m_positionStage.x, m_homePosition.y - m_positionStage.y };
+		offset = POINT2{} - m_positionStage;
 	}
 	// In measurement mode, the positions are shown relative to the start position.
 	else if (this->m_measurementMode) {
