@@ -707,111 +707,145 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 					QMessageBox::warning(this, "Measure ref failed", "Brillouin camera is not connected.");
 					return;
 				}
-				const auto cameraSettings = m_andor->getSettings();
-				m_Brillouin->settings.camera = cameraSettings;
-				const int width = (int)cameraSettings.roi.width_binned;
-				const int height = (int)cameraSettings.roi.height_binned;
-				if (width <= 0 || height <= 0) {
-					QMessageBox::warning(this, "Measure ref failed", "Invalid camera ROI size. Start camera preview once and retry.");
-					return;
+				const auto requestedCameraSettings = m_Brillouin->settings.camera;
+				const int proxyRoiLeft = m_Brillouin->settings.surfaceProxyRoiLeft;
+				const int proxyRoiTop = m_Brillouin->settings.surfaceProxyRoiTop;
+				const int proxyRoiWidth = m_Brillouin->settings.surfaceProxyRoiWidth;
+				const int proxyRoiHeight = m_Brillouin->settings.surfaceProxyRoiHeight;
+				if (m_measureMediumReferenceButton) {
+					m_measureMediumReferenceButton->setEnabled(false);
 				}
-				size_t bytesPerPixel = 1;
-				if (cameraSettings.readout.dataType == "unsigned short") {
-					bytesPerPixel = sizeof(unsigned short);
-				} else if (cameraSettings.readout.dataType == "unsigned int") {
-					bytesPerPixel = sizeof(unsigned int);
-				}
-				const auto expectedBytes = (size_t)width * (size_t)height * bytesPerPixel;
-				const auto bytesPerFrameSetting = (size_t)std::max<int64_t>(0, (int64_t)cameraSettings.roi.bytesPerFrame);
-				if (expectedBytes == 0) {
-					QMessageBox::warning(
-						this,
-						"Measure ref failed",
-						QString("Invalid expected frame size (%1 bytes).").arg((qulonglong)expectedBytes)
-					);
-					return;
-				}
-				const auto bytesPerFrame = std::max(expectedBytes, bytesPerFrameSetting);
-				auto frame = std::vector<std::byte>(bytesPerFrame);
-				auto metricFromFrame = [this](const std::vector<std::byte>& image) -> double {
-					const int width = (int)m_Brillouin->settings.camera.roi.width_binned;
-					const int height = (int)m_Brillouin->settings.camera.roi.height_binned;
-					if (width <= 0 || height <= 0 || image.empty()) {
-						return 0.0;
-					}
-					int roiLeft = std::max(0, m_Brillouin->settings.surfaceProxyRoiLeft);
-					int roiTop = std::max(0, m_Brillouin->settings.surfaceProxyRoiTop);
-					int roiWidth = m_Brillouin->settings.surfaceProxyRoiWidth > 0 ? m_Brillouin->settings.surfaceProxyRoiWidth : width;
-					int roiHeight = m_Brillouin->settings.surfaceProxyRoiHeight > 0 ? m_Brillouin->settings.surfaceProxyRoiHeight : height;
-					roiWidth = std::min(roiWidth, width - roiLeft);
-					roiHeight = std::min(roiHeight, height - roiTop);
-					if (roiWidth <= 0 || roiHeight <= 0) {
-						roiLeft = 0; roiTop = 0; roiWidth = width; roiHeight = height;
-					}
-					auto getValue = [&](int x, int y) -> double {
-						const auto idx = (size_t)y * width + x;
-						if (m_Brillouin->settings.camera.readout.dataType == "unsigned short") {
-							return reinterpret_cast<const unsigned short*>(image.data())[idx];
-						}
-						if (m_Brillouin->settings.camera.readout.dataType == "unsigned int") {
-							return reinterpret_cast<const unsigned int*>(image.data())[idx];
-						}
-						return reinterpret_cast<const unsigned char*>(image.data())[idx];
-					};
-					double signalSum = 0.0;
-					int signalCount = 0;
-					for (int y = roiTop; y < roiTop + roiHeight; y++) {
-						for (int x = roiLeft; x < roiLeft + roiWidth; x++) {
-							signalSum += getValue(x, y);
-							signalCount++;
-						}
-					}
-					const auto signalMean = signalCount > 0 ? signalSum / signalCount : 0.0;
-					const int bgLeft = std::max(0, roiLeft - 1);
-					const int bgTop = std::max(0, roiTop - 1);
-					const int bgRight = std::min(width - 1, roiLeft + roiWidth);
-					const int bgBottom = std::min(height - 1, roiTop + roiHeight);
-					double bgSum = 0.0;
-					int bgCount = 0;
-					for (int y = bgTop; y <= bgBottom; y++) {
-						for (int x = bgLeft; x <= bgRight; x++) {
-							const bool insideSignal = (x >= roiLeft && x < roiLeft + roiWidth && y >= roiTop && y < roiTop + roiHeight);
-							if (insideSignal) continue;
-							bgSum += getValue(x, y);
-							bgCount++;
-						}
-					}
-					const auto bgMean = bgCount > 0 ? bgSum / bgCount : 0.0;
-					return signalMean - bgMean;
-				};
+				statusBar()->showMessage("Measuring medium reference...", 0);
 
-				const int n = 5;
-				double sum = 0.0;
-				for (int i = 0; i < n; i++) {
-					m_andor->getImageForAcquisition(frame.data(), false);
-					sum += metricFromFrame(frame);
-				}
-				m_Brillouin->settings.mediumReferenceValue = sum / n;
-				const double refValue = m_Brillouin->settings.mediumReferenceValue;
-				const double dropFraction = std::clamp(m_Brillouin->settings.surfaceDropFraction, 0.0, 1.0);
-				const double dropoffValue = refValue * (1.0 - dropFraction);
-				m_Brillouin->settings.surfaceMetricThreshold = dropoffValue;
+				QMetaObject::invokeMethod(
+					m_andor,
+					[this, requestedCameraSettings, proxyRoiLeft, proxyRoiTop, proxyRoiWidth, proxyRoiHeight]() {
+						auto finish = [this](bool ok, double refValue, CAMERA_SETTINGS actualCameraSettings, QString errorMessage) {
+							QMetaObject::invokeMethod(
+								this,
+								[this, ok, refValue, actualCameraSettings, errorMessage]() {
+									if (m_measureMediumReferenceButton) {
+										m_measureMediumReferenceButton->setEnabled(m_Brillouin->settings.useSurfaceFollow);
+									}
+									if (!ok) {
+										QMessageBox::warning(this, "Measure ref failed", errorMessage);
+										statusBar()->clearMessage();
+										return;
+									}
 
-				// Convenience: set Brillouin plot scale to [dropoff, ref], while still allowing manual edits afterwards.
-				m_BrillouinPlot.autoscale = false;
-				if (ui->autoscalePlot) {
-					const QSignalBlocker blocker(ui->autoscalePlot);
-					ui->autoscalePlot->setChecked(false);
-				}
-				m_BrillouinPlot.cLim.lower = std::min(dropoffValue, refValue);
-				m_BrillouinPlot.cLim.upper = std::max(dropoffValue, refValue);
-				updatePlot(m_BrillouinPlot);
+									m_Brillouin->settings.camera = actualCameraSettings;
+									m_Brillouin->settings.mediumReferenceValue = refValue;
+									const double currentDropFraction = std::clamp(m_Brillouin->settings.surfaceDropFraction, 0.0, 1.0);
+									const double dropoffValue = refValue * (1.0 - currentDropFraction);
+									m_Brillouin->settings.surfaceMetricThreshold = dropoffValue;
 
-				statusBar()->showMessage(
-					QString("Medium ref set: %1 | dropoff: %2 | scale min/max applied")
-					.arg(refValue, 0, 'g', 6)
-					.arg(dropoffValue, 0, 'g', 6),
-					7000
+									// Convenience: set Brillouin plot scale to [dropoff, ref], while still allowing manual edits afterwards.
+									m_BrillouinPlot.autoscale = false;
+									if (ui->autoscalePlot) {
+										const QSignalBlocker blocker(ui->autoscalePlot);
+										ui->autoscalePlot->setChecked(false);
+									}
+									m_BrillouinPlot.cLim.lower = std::min(dropoffValue, refValue);
+									m_BrillouinPlot.cLim.upper = std::max(dropoffValue, refValue);
+									updatePlot(m_BrillouinPlot);
+
+									statusBar()->showMessage(
+										QString("Medium ref set: %1 | dropoff: %2 | scale min/max applied")
+										.arg(refValue, 0, 'g', 6)
+										.arg(dropoffValue, 0, 'g', 6),
+										7000
+									);
+								},
+								Qt::QueuedConnection
+							);
+						};
+
+						m_andor->startAcquisition(requestedCameraSettings);
+						auto actualCameraSettings = m_andor->getSettings();
+						const int width = (int)actualCameraSettings.roi.width_binned;
+						const int height = (int)actualCameraSettings.roi.height_binned;
+						if (width <= 0 || height <= 0) {
+							m_andor->stopAcquisition();
+							finish(false, 0.0, actualCameraSettings, "Invalid camera ROI size. Start camera preview once and retry.");
+							return;
+						}
+
+						size_t bytesPerPixel = 1;
+						if (actualCameraSettings.readout.dataType == "unsigned short") {
+							bytesPerPixel = sizeof(unsigned short);
+						} else if (actualCameraSettings.readout.dataType == "unsigned int") {
+							bytesPerPixel = sizeof(unsigned int);
+						}
+						const auto expectedBytes = (size_t)width * (size_t)height * bytesPerPixel;
+						const auto bytesPerFrameSetting = (size_t)std::max<int64_t>(0, (int64_t)actualCameraSettings.roi.bytesPerFrame);
+						const auto bytesPerFrame = std::max(expectedBytes, bytesPerFrameSetting);
+						if (bytesPerFrame == 0) {
+							m_andor->stopAcquisition();
+							finish(false, 0.0, actualCameraSettings, "Invalid expected frame size.");
+							return;
+						}
+
+						auto frame = std::vector<std::byte>(bytesPerFrame);
+						auto metricFromFrame = [&](const std::vector<std::byte>& image) -> double {
+							if (image.empty()) {
+								return 0.0;
+							}
+							int roiLeft = std::max(0, proxyRoiLeft);
+							int roiTop = std::max(0, proxyRoiTop);
+							int roiWidth = proxyRoiWidth > 0 ? proxyRoiWidth : width;
+							int roiHeight = proxyRoiHeight > 0 ? proxyRoiHeight : height;
+							roiWidth = std::min(roiWidth, width - roiLeft);
+							roiHeight = std::min(roiHeight, height - roiTop);
+							if (roiWidth <= 0 || roiHeight <= 0) {
+								roiLeft = 0; roiTop = 0; roiWidth = width; roiHeight = height;
+							}
+							auto getValue = [&](int x, int y) -> double {
+								const auto idx = (size_t)y * width + x;
+								if (actualCameraSettings.readout.dataType == "unsigned short") {
+									return reinterpret_cast<const unsigned short*>(image.data())[idx];
+								}
+								if (actualCameraSettings.readout.dataType == "unsigned int") {
+									return reinterpret_cast<const unsigned int*>(image.data())[idx];
+								}
+								return reinterpret_cast<const unsigned char*>(image.data())[idx];
+							};
+							double signalSum = 0.0;
+							int signalCount = 0;
+							for (int y = roiTop; y < roiTop + roiHeight; y++) {
+								for (int x = roiLeft; x < roiLeft + roiWidth; x++) {
+									signalSum += getValue(x, y);
+									signalCount++;
+								}
+							}
+							const auto signalMean = signalCount > 0 ? signalSum / signalCount : 0.0;
+							const int bgLeft = std::max(0, roiLeft - 1);
+							const int bgTop = std::max(0, roiTop - 1);
+							const int bgRight = std::min(width - 1, roiLeft + roiWidth);
+							const int bgBottom = std::min(height - 1, roiTop + roiHeight);
+							double bgSum = 0.0;
+							int bgCount = 0;
+							for (int y = bgTop; y <= bgBottom; y++) {
+								for (int x = bgLeft; x <= bgRight; x++) {
+									const bool insideSignal = (x >= roiLeft && x < roiLeft + roiWidth && y >= roiTop && y < roiTop + roiHeight);
+									if (insideSignal) continue;
+									bgSum += getValue(x, y);
+									bgCount++;
+								}
+							}
+							const auto bgMean = bgCount > 0 ? bgSum / bgCount : 0.0;
+							return signalMean - bgMean;
+						};
+
+						const int n = 5;
+						double sum = 0.0;
+						for (int i = 0; i < n; i++) {
+							m_andor->getImageForAcquisition(frame.data(), false);
+							sum += metricFromFrame(frame);
+						}
+						m_andor->stopAcquisition();
+						finish(true, sum / n, actualCameraSettings, QString{});
+					},
+					Qt::QueuedConnection
 				);
 			});
 
