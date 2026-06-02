@@ -51,6 +51,7 @@ void ScanControl::setPositionRelativeX(double positionX) {
 	position.x = m_homePosition.x + positionX;
 
 	setPosition(position);
+	announcePosition();
 }
 
 void ScanControl::setPositionRelativeY(double positionY) {
@@ -60,6 +61,7 @@ void ScanControl::setPositionRelativeY(double positionY) {
 	position.y = m_homePosition.y + positionY;
 
 	setPosition(position);
+	announcePosition();
 }
 
 void ScanControl::setPositionRelativeZ(double positionZ) {
@@ -69,6 +71,7 @@ void ScanControl::setPositionRelativeZ(double positionZ) {
 	position.z = m_homePosition.z + positionZ;
 
 	setPosition(position);
+	announcePosition();
 }
 
 void ScanControl::locatePositionScanner(POINT2 positionLaserPix) {
@@ -168,6 +171,7 @@ bool ScanControl::isPresetActive(ScanPreset presetType) {
 void ScanControl::announcePosition() {
 	auto point = getPosition();
 	emit(currentPosition(point - m_homePosition));
+	announcePositions();
 }
 
 void ScanControl::startAnnouncing() {

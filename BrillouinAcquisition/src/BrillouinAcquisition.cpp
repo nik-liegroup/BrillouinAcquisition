@@ -3273,14 +3273,7 @@ void BrillouinAcquisition::initScanControl() {
 		m_scanControl,
 		&ScanControl::currentPosition,
 		this,
-		[this](POINT3 position) {
-			showPosition(position);
-			if (m_Brillouin->settings.gridCoordinatesAbsolute) {
-				m_positionsPixel = m_scanControl->getPositionsPix(m_positionsMicrometer, true);
-				update_AOI_preview();
-				updateRoiPolygonPreview();
-			}
-		}
+		[this](POINT3 position) { showPosition(position); }
 	);
 	connection = QWidget::connect(
 		&buttonDelegate,
