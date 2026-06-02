@@ -459,6 +459,9 @@ void Brillouin::updatePositions() {
 
 	ScanPlannerInput plannerInput{};
 	plannerInput.startPosition = m_startPosition;
+	if (settings.gridCoordinatesAbsolute && m_scanControl) {
+		plannerInput.absoluteCoordinateOrigin = m_scanControl->getHomePosition();
+	}
 	plannerInput.xMin = settings.xMin;
 	plannerInput.xMax = settings.xMax;
 	plannerInput.xSteps = settings.xSteps;
@@ -492,7 +495,21 @@ void Brillouin::updatePositions() {
 		}
 	}
 
-	emit(s_orderedPositionsChanged(m_settings.gridCoordinatesAbsolute ? m_orderedPositions : m_orderedPositionsRelative));
+	if (m_settings.gridCoordinatesAbsolute) {
+		std::vector<POINT3> positionsInDisplayCoordinates;
+		positionsInDisplayCoordinates.reserve(m_orderedPositions.size());
+		const auto origin = plannerInput.absoluteCoordinateOrigin;
+		for (const auto& position : m_orderedPositions) {
+			positionsInDisplayCoordinates.push_back(POINT3{
+				position.x - origin.x,
+				position.y - origin.y,
+				position.z - origin.z
+			});
+		}
+		emit(s_orderedPositionsChanged(positionsInDisplayCoordinates));
+	} else {
+		emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
+	}
 }
 
 double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const {
@@ -615,9 +632,13 @@ bool Brillouin::runSurfacePreScan() {
 
 			for (gsl::index zi{ 0 }; zi < (gsl::index)zSamples.size(); zi++) {
 				const auto zRel = zSamples[zi];
-				const auto xyPosition = m_settings.gridCoordinatesAbsolute
-					? POINT3{ xSamples[xi], ySamples[yi], 0.0 }
-					: m_startPosition + POINT3{ xSamples[xi], ySamples[yi], 0.0 };
+				const auto xyPosition = [&]() {
+					if (m_settings.gridCoordinatesAbsolute) {
+						const auto origin = m_scanControl->getHomePosition();
+						return POINT3{ origin.x + xSamples[xi], origin.y + ySamples[yi], 0.0 };
+					}
+					return POINT3{ m_startPosition.x + xSamples[xi], m_startPosition.y + ySamples[yi], 0.0 };
+				}();
 				const auto target = POINT3{ xyPosition.x, xyPosition.y, m_startPosition.z + zRel };
 				m_scanControl->setPosition(target);
 				std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -771,7 +792,21 @@ void Brillouin::applySurfaceFollowPlan() {
 		return;
 	}
 	if (runSurfacePreScan()) {
-		emit(s_orderedPositionsChanged(m_settings.gridCoordinatesAbsolute ? m_orderedPositions : m_orderedPositionsRelative));
+		if (m_settings.gridCoordinatesAbsolute && m_scanControl) {
+			std::vector<POINT3> positionsInDisplayCoordinates;
+			positionsInDisplayCoordinates.reserve(m_orderedPositions.size());
+			const auto origin = m_scanControl->getHomePosition();
+			for (const auto& position : m_orderedPositions) {
+				positionsInDisplayCoordinates.push_back(POINT3{
+					position.x - origin.x,
+					position.y - origin.y,
+					position.z - origin.z
+				});
+			}
+			emit(s_orderedPositionsChanged(positionsInDisplayCoordinates));
+		} else {
+			emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
+		}
 	}
 }
 

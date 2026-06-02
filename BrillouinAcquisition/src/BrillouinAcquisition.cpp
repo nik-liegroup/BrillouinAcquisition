@@ -452,7 +452,9 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			auto positionInUm = m_scanControl->pixToMicroMeter(POINT2{ posX, posY });
 			if (m_Brillouin->settings.gridCoordinatesAbsolute) {
 				const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+				const auto homePosition = m_scanControl->getHomePosition();
 				positionInUm += POINT2{ stagePosition.x, stagePosition.y };
+				positionInUm -= POINT2{ homePosition.x, homePosition.y };
 			}
 			auto& poly = m_Brillouin->settings.roiPolygonUm;
 			if (m_draggedRoiVertexIndex >= 0 && m_draggedRoiVertexIndex < (int)poly.size()) {
@@ -867,6 +869,8 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 				auto pUm = poly[i];
 				if (m_Brillouin->settings.gridCoordinatesAbsolute) {
 					const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+					const auto homePosition = m_scanControl->getHomePosition();
+					pUm += POINT2{ homePosition.x, homePosition.y };
 					pUm -= POINT2{ stagePosition.x, stagePosition.y };
 				}
 				const auto pPix = m_scanControl->microMeterToPix(pUm);
@@ -902,7 +906,9 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 			auto positionInUm = m_scanControl->pixToMicroMeter(positionInPix);
 			if (m_Brillouin->settings.gridCoordinatesAbsolute) {
 				const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+				const auto homePosition = m_scanControl->getHomePosition();
 				positionInUm += POINT2{ stagePosition.x, stagePosition.y };
+				positionInUm -= POINT2{ homePosition.x, homePosition.y };
 			}
 			m_Brillouin->settings.roiPolygonUm.push_back(positionInUm);
 			if (m_Brillouin->settings.roiPolygonUm.size() >= 3) {
@@ -4130,9 +4136,13 @@ void BrillouinAcquisition::update_AOI_preview() {
 			const auto stagePosition = m_Brillouin->settings.gridCoordinatesAbsolute
 				? m_scanControl->getPosition(PositionType::STAGE)
 				: POINT3{};
+			const auto homePosition = m_Brillouin->settings.gridCoordinatesAbsolute
+				? m_scanControl->getHomePosition()
+				: POINT3{};
 			for (const auto& p : m_Brillouin->settings.roiPolygonUm) {
 				auto pUm = p;
 				if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+					pUm += POINT2{ homePosition.x, homePosition.y };
 					pUm -= POINT2{ stagePosition.x, stagePosition.y };
 				}
 				roiPolygonPix.push_back(m_scanControl->microMeterToPix(pUm));
@@ -4396,9 +4406,13 @@ void BrillouinAcquisition::updateRoiPolygonPreview() {
 	const auto stagePosition = m_Brillouin->settings.gridCoordinatesAbsolute
 		? m_scanControl->getPosition(PositionType::STAGE)
 		: POINT3{};
+	const auto homePosition = m_Brillouin->settings.gridCoordinatesAbsolute
+		? m_scanControl->getHomePosition()
+		: POINT3{};
 	for (const auto& p : roiPolygon) {
 		auto pUm = p;
 		if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+			pUm += POINT2{ homePosition.x, homePosition.y };
 			pUm -= POINT2{ stagePosition.x, stagePosition.y };
 		}
 		roiPolygonPix.push_back(m_scanControl->microMeterToPix(pUm));
@@ -4406,6 +4420,7 @@ void BrillouinAcquisition::updateRoiPolygonPreview() {
 	if (roiPolygon.size() >= 3) {
 		auto pUm = roiPolygon[0];
 		if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+			pUm += POINT2{ homePosition.x, homePosition.y };
 			pUm -= POINT2{ stagePosition.x, stagePosition.y };
 		}
 		roiPolygonPix.push_back(m_scanControl->microMeterToPix(pUm));

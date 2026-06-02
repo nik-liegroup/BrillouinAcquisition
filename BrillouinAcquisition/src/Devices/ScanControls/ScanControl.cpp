@@ -40,6 +40,10 @@ POINT3 ScanControl::getPosition(PositionType positionType) {
 	return POINT3{ pos.x, pos.y, m_positionFocus };
 }
 
+POINT3 ScanControl::getHomePosition() const {
+	return m_homePosition;
+}
+
 /*
  * Public slots
  */
@@ -387,7 +391,7 @@ std::vector<POINT2> ScanControl::convertPositionsToPix() {
 	// In normal mode, the positions are shown relative to the scanner position.
 	auto offset = m_positionScanner;
 	if (m_AOI_positionsAbsolute) {
-		offset = POINT2{} - m_positionStage;
+		offset = POINT2{ m_homePosition.x - m_positionStage.x, m_homePosition.y - m_positionStage.y };
 	}
 	// In measurement mode, the positions are shown relative to the start position.
 	else if (this->m_measurementMode) {
