@@ -5265,7 +5265,7 @@ void BrillouinAcquisition::readSettings() {
 	settings.beginGroup("devices-settings");
 	auto posX = settings.value("stage-laser-position-x");
 	auto posY = settings.value("stage-laser-position-y");
-	m_positionScanner = POINT2(posX.toDouble(), posY.toDouble());
+	m_positionScanner = POINT2{ posX.toDouble(), posY.toDouble() };
 	const auto brightfieldRotationDegrees = settings.value("brightfield-view-rotation-degrees", (int)m_brightfieldViewRotation * 90).toInt();
 	m_brightfieldViewRotation = (BrightfieldViewRotation)std::clamp(brightfieldRotationDegrees / 90, 0, 3);
 	updateBrightfieldRotationButton();
