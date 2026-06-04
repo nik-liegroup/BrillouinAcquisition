@@ -4382,57 +4382,6 @@ void BrillouinAcquisition::update_AOI_preview() {
 		const bool colorByRoi = m_scanControl
 			&& m_Brillouin->settings.useRoiMask
 			&& m_Brillouin->settings.roiPolygonUm.size() >= 3;
-		auto positionsPixelForPreview = m_positionsPixel;
-		if (colorByRoi && m_scanControl) {
-			const auto& settings = m_Brillouin->settings;
-			auto scanOrderX = ui->buttonGroup->checkedId();
-			auto scanOrderY = ui->buttonGroup_2->checkedId();
-			auto scanOrderZ = ui->buttonGroup_3->checkedId();
-			if (scanOrderX < 0) scanOrderX = 0;
-			if (scanOrderY < 0) scanOrderY = 1;
-			if (scanOrderZ < 0) scanOrderZ = 2;
-
-			std::vector<std::vector<double>> directions(3);
-			directions[(size_t)scanOrderX] = simplemath::linspace(settings.xMin, settings.xMax, settings.xSteps);
-			directions[(size_t)scanOrderY] = simplemath::linspace(settings.yMin, settings.yMax, settings.ySteps);
-			directions[(size_t)scanOrderZ] = simplemath::linspace(settings.zMin, settings.zMax, settings.zSteps);
-
-			std::vector<POINT3> previewPositionsUm;
-			previewPositionsUm.reserve((size_t)settings.xSteps * (size_t)settings.ySteps * (size_t)settings.zSteps);
-			std::vector<double> position(3);
-			for (size_t ii = 0; ii < directions[2].size(); ii++) {
-				for (size_t jj = 0; jj < directions[1].size(); jj++) {
-					for (size_t kk = 0; kk < directions[0].size(); kk++) {
-						position[0] = directions[0][kk];
-						position[1] = directions[1][jj];
-						position[2] = directions[2][ii];
-						POINT3 gridPosition{
-							position[(size_t)scanOrderX],
-							position[(size_t)scanOrderY],
-							position[(size_t)scanOrderZ]
-						};
-						if (settings.gridCoordinatesAbsolute) {
-							gridPosition += settings.absoluteGridOriginUm;
-						}
-						previewPositionsUm.push_back(gridPosition);
-					}
-				}
-			}
-
-			positionsPixelForPreview.clear();
-			positionsPixelForPreview.reserve(previewPositionsUm.size());
-			const auto previewOffset = settings.gridCoordinatesAbsolute
-				? POINT2{
-					-m_scanControl->getPosition(PositionType::STAGE).x,
-					-m_scanControl->getPosition(PositionType::STAGE).y
-				}
-				: m_scanControl->pixToMicroMeter(m_positionScanner);
-			for (const auto& point : previewPositionsUm) {
-				positionsPixelForPreview.push_back(
-					brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ point.x, point.y } + previewOffset))
-				);
-			}
-		}
 		std::vector<POINT2> roiPolygonPix;
 		if (colorByRoi && m_scanControl) {
 			roiPolygonPix.reserve(m_Brillouin->settings.roiPolygonUm.size());
@@ -4453,17 +4402,17 @@ void BrillouinAcquisition::update_AOI_preview() {
 		}
 		QVector<double> squareX;
 		QVector<double> squareY;
-		if (showSurfaceSquares && !positionsPixelForPreview.empty()) {
+		if (showSurfaceSquares && !m_positionsPixel.empty()) {
 			const auto xyBin = std::max(1, m_Brillouin->settings.preScanXYBin);
-			double minX = positionsPixelForPreview.front().x;
-			double maxX = positionsPixelForPreview.front().x;
-			double minY = positionsPixelForPreview.front().y;
-			double maxY = positionsPixelForPreview.front().y;
+			double minX = m_positionsPixel.front().x;
+			double maxX = m_positionsPixel.front().x;
+			double minY = m_positionsPixel.front().y;
+			double maxY = m_positionsPixel.front().y;
 			std::vector<double> xs;
 			std::vector<double> ys;
-			xs.reserve(positionsPixelForPreview.size());
-			ys.reserve(positionsPixelForPreview.size());
-			for (const auto& p : positionsPixelForPreview) {
+			xs.reserve(m_positionsPixel.size());
+			ys.reserve(m_positionsPixel.size());
+			for (const auto& p : m_positionsPixel) {
 				minX = std::min(minX, p.x);
 				maxX = std::max(maxX, p.x);
 				minY = std::min(minY, p.y);
@@ -4506,13 +4455,13 @@ void BrillouinAcquisition::update_AOI_preview() {
 			QVector<double> yInside;
 			QVector<double> xOutside;
 			QVector<double> yOutside;
-			xInside.reserve((int)positionsPixelForPreview.size());
-			yInside.reserve((int)positionsPixelForPreview.size());
-			xOutside.reserve((int)positionsPixelForPreview.size());
-			yOutside.reserve((int)positionsPixelForPreview.size());
+			xInside.reserve((int)m_positionsPixel.size());
+			yInside.reserve((int)m_positionsPixel.size());
+			xOutside.reserve((int)m_positionsPixel.size());
+			yOutside.reserve((int)m_positionsPixel.size());
 
-			for (gsl::index i{ 0 }; i < (gsl::index)positionsPixelForPreview.size(); i++) {
-				const auto& posPix = positionsPixelForPreview[(size_t)i];
+			for (gsl::index i{ 0 }; i < (gsl::index)m_positionsPixel.size(); i++) {
+				const auto& posPix = m_positionsPixel[(size_t)i];
 				const bool inside = pointInPolygon(POINT2{ posPix.x, posPix.y }, roiPolygonPix);
 				if (inside) {
 					xInside.push_back(posPix.x);
@@ -4579,10 +4528,10 @@ void BrillouinAcquisition::update_AOI_preview() {
 				m_positionsMarkerSquareInsideRoi = nullptr;
 			}
 		} else {
-			QVector<double> xPos(positionsPixelForPreview.size());
-			QVector<double> yPos(positionsPixelForPreview.size());
+			QVector<double> xPos(m_positionsPixel.size());
+			QVector<double> yPos(m_positionsPixel.size());
 			int index{ 0 };
-			for (auto const& position : positionsPixelForPreview) {
+			for (auto const& position : m_positionsPixel) {
 				xPos[index] = position.x;
 				yPos[index] = position.y;
 				++index;
