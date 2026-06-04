@@ -2103,7 +2103,7 @@ QTabBar::tab:!selected {
                        <x>8</x>
                        <y>224</y>
                        <width>193</width>
-                       <height>450</height>
+                       <height>315</height>
                       </rect>
                      </property>
                      <layout class="QGridLayout" name="advancedPlanningGrid">
@@ -2423,11 +2423,11 @@ QTabBar::tab:!selected {
                    </widget>
                     <widget class="QGroupBox" name="liveCalibration">
                      <property name="geometry">
-                      <rect>
-                       <x>8</x>
-                       <y>780</y>
-                       <width>209</width>
-                       <height>137</height>
+                       <rect>
+                        <x>8</x>
+                       <y>641</y>
+                        <width>209</width>
+                        <height>137</height>
                       </rect>
                      </property>
                      <property name="title">
@@ -2860,11 +2860,11 @@ border: none;</string>
                       <bool>true</bool>
                      </property>
                      <property name="geometry">
-                      <rect>
-                       <x>8</x>
-                       <y>685</y>
-                       <width>209</width>
-                       <height>89</height>
+                       <rect>
+                        <x>8</x>
+                       <y>546</y>
+                        <width>209</width>
+                        <height>89</height>
                       </rect>
                      </property>
                      <property name="title">
@@ -4164,16 +4164,6 @@ border: none;</string>
            </widget>
           </item>
           <item>
-           <widget class="QCheckBox" name="brightfieldRotationCcw">
-            <property name="toolTip">
-             <string>Cycle the rotation button counter-clockwise.</string>
-            </property>
-            <property name="text">
-             <string>CCW</string>
-            </property>
-           </widget>
-          </item>
-          <item>
            <widget class="QPushButton" name="addFocusMarker_brightfield">
             <property name="minimumSize">
              <size>
@@ -4633,7 +4623,6 @@ border: none;</string>
   <tabstop>acquisitionFilename</tabstop>
   <tabstop>autoscalePlot_brightfield</tabstop>
   <tabstop>brightfieldRotationButton</tabstop>
-  <tabstop>brightfieldRotationCcw</tabstop>
   <tabstop>rangeLowerODT</tabstop>
   <tabstop>rangeUpperODT</tabstop>
   <tabstop>camera_singleShot_brightfield</tabstop>

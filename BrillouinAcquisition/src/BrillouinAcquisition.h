@@ -201,7 +201,6 @@ private:
 	POINT2 m_positionScanner{ -1, -1 };
 	bool m_locatePositionScanner{ false };
 	BrightfieldViewRotation m_brightfieldViewRotation{ BrightfieldViewRotation::Rot0 };
-	bool m_brightfieldRotationCounterClockwise{ false };
 	int m_brightfieldRawWidth{ 1 };
 	int m_brightfieldRawHeight{ 1 };
 
@@ -476,7 +475,6 @@ private slots:
 
 	void on_camera_displayMode_currentIndexChanged(const QString& text);
 	void on_brightfieldRotationButton_clicked();
-	void on_brightfieldRotationCcw_stateChanged(int state);
 	void on_setBackground_clicked();
 
 	void applyGradient(const PLOT_SETTINGS& plotSettings);
