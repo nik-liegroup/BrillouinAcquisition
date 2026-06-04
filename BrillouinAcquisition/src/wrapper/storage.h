@@ -71,6 +71,9 @@ public slots:
 	void s_finishedQueueing();
 
 private:
+	bool queuesEmpty() const;
+	void finishIfReady();
+
 	bool m_finished{ false };
 	bool m_observeQueues{ false };
 	bool m_finishedQueueing{ false };

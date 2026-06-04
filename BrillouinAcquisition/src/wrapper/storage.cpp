@@ -15,6 +15,10 @@ StorageWrapper::~StorageWrapper() {
 			auto img = m_payloadQueueBrillouin_short.dequeue();
 			delete img;
 		}
+		while (!m_payloadQueueBrillouin_int.isEmpty()) {
+			auto img = m_payloadQueueBrillouin_int.dequeue();
+			delete img;
+		}
 		while (!m_payloadQueueODT_char.isEmpty()) {
 			auto img = m_payloadQueueODT_char.dequeue();
 			delete img;
@@ -103,10 +107,12 @@ void StorageWrapper::s_enqueueCalibration(CALIBRATION<unsigned int>* cal) {
 
 void StorageWrapper::s_finishedQueueing() {
 	m_finishedQueueing = true;
+	finishIfReady();
 }
 
 void StorageWrapper::startWritingQueues() {
 	m_observeQueues = true;
+	m_finished = false;
 	m_finishedQueueing = false;
 	emit(started());
 	m_queueTimer->start(50);
@@ -117,6 +123,30 @@ void StorageWrapper::stopWritingQueues() {
 	m_finished = true;
 	m_queueTimer->stop();
 	m_finishedQueueing = true;
+	emit(finished());
+}
+
+bool StorageWrapper::queuesEmpty() const {
+	return m_payloadQueueBrillouin_char.isEmpty()
+		&& m_payloadQueueBrillouin_short.isEmpty()
+		&& m_payloadQueueBrillouin_int.isEmpty()
+		&& m_payloadQueueODT_char.isEmpty()
+		&& m_payloadQueueODT_short.isEmpty()
+		&& m_payloadQueueFluorescence_char.isEmpty()
+		&& m_payloadQueueFluorescence_short.isEmpty()
+		&& m_calibrationQueue_char.isEmpty()
+		&& m_calibrationQueue_short.isEmpty()
+		&& m_calibrationQueue_int.isEmpty();
+}
+
+void StorageWrapper::finishIfReady() {
+	if (m_finished || !m_finishedQueueing || !queuesEmpty()) {
+		return;
+	}
+	if (m_queueTimer) {
+		m_queueTimer->stop();
+	}
+	m_finished = true;
 	emit(finished());
 }
 
@@ -243,8 +273,5 @@ void StorageWrapper::s_writeQueues() {
 		cal = nullptr;
 	}
 
-	if (m_finishedQueueing) {
-		m_queueTimer->stop();
-		emit(finished());
-	}
+	finishIfReady();
 }

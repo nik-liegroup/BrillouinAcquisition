@@ -84,12 +84,5 @@ ScanPlannerOutput ScanPlanner::buildLegacyCartesianPlan(const ScanPlannerInput& 
 		}
 	}
 
-	// Safety fallback: invalid/too-strict ROI must never result in an empty plan.
-	if (isRoiActive && output.orderedPositionsRelative.empty()) {
-		auto fallbackInput = input;
-		fallbackInput.useRoiMask = false;
-		return buildLegacyCartesianPlan(fallbackInput);
-	}
-
 	return output;
 }

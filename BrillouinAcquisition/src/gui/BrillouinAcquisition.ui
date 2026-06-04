@@ -2108,7 +2108,7 @@ QTabBar::tab:!selected {
                      </property>
                      <layout class="QGridLayout" name="advancedPlanningGrid">
                       <property name="verticalSpacing">
-                       <number>6</number>
+                       <number>3</number>
                       </property>
                       <property name="leftMargin">
                        <number>0</number>
@@ -2128,17 +2128,23 @@ QTabBar::tab:!selected {
                          <string>ROI setup</string>
                         </property>
                         <layout class="QGridLayout" name="roiSetupGrid">
+                         <property name="horizontalSpacing">
+                          <number>4</number>
+                         </property>
+                         <property name="verticalSpacing">
+                          <number>2</number>
+                         </property>
                          <property name="leftMargin">
-                          <number>6</number>
+                          <number>4</number>
                          </property>
                          <property name="topMargin">
-                          <number>6</number>
+                          <number>4</number>
                          </property>
                          <property name="rightMargin">
-                          <number>6</number>
+                          <number>4</number>
                          </property>
                          <property name="bottomMargin">
-                          <number>6</number>
+                          <number>4</number>
                          </property>
                          <item row="0" column="0">
                           <widget class="QCheckBox" name="useRoiMaskCheckbox">
@@ -2164,7 +2170,7 @@ QTabBar::tab:!selected {
                            </property>
                           </widget>
                          </item>
-                         <item row="2" column="0" colspan="2">
+                         <item row="1" column="0">
                           <widget class="QCheckBox" name="absoluteGridCheckbox">
                            <property name="toolTip">
                             <string>Use the current software home as the shifted absolute x/y/z origin when enabled.</string>
@@ -2183,17 +2189,23 @@ QTabBar::tab:!selected {
                          <string>Surface scanning</string>
                         </property>
                         <layout class="QGridLayout" name="surfaceScanningGrid">
+                         <property name="horizontalSpacing">
+                          <number>4</number>
+                         </property>
+                         <property name="verticalSpacing">
+                          <number>2</number>
+                         </property>
                          <property name="leftMargin">
-                          <number>6</number>
+                          <number>4</number>
                          </property>
                          <property name="topMargin">
-                          <number>6</number>
+                          <number>4</number>
                          </property>
                          <property name="rightMargin">
-                          <number>6</number>
+                          <number>4</number>
                          </property>
                          <property name="bottomMargin">
-                          <number>6</number>
+                          <number>4</number>
                          </property>
                          <item row="0" column="0" colspan="2">
                           <widget class="QCheckBox" name="useSurfaceFollowCheckbox">
@@ -2346,11 +2358,11 @@ QTabBar::tab:!selected {
                            <property name="minimumSize">
                             <size>
                              <width>0</width>
-                             <height>22</height>
+                             <height>26</height>
                             </size>
                            </property>
                            <property name="text">
-                            <string>Edit spectral ROIs</string>
+                            <string>Draw spectral ROIs</string>
                            </property>
                            <property name="toolTip">
                             <string>Draw one or two spectral rectangles used for surface-drop detection. If two are drawn, their metrics are averaged.</string>
