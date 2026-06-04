@@ -4489,7 +4489,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 			}
 			if (!m_positionsMarkerOutsideRoi) {
 				m_positionsMarkerOutsideRoi = new QCPCurve(ui->customplot_brightfield->xAxis, ui->customplot_brightfield->yAxis);
-				m_positionsMarkerOutsideRoi->setLineStyle(QCPCurve::lsLine);
+				m_positionsMarkerOutsideRoi->setLineStyle(QCPCurve::lsNone);
 				QPen pen;
 				pen.setColor(Qt::red);
 				pen.setWidth(2);

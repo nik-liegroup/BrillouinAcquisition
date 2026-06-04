@@ -698,9 +698,6 @@ bool Brillouin::runSurfacePreScan() {
 		auto smoothed = zSurface;
 		for (gsl::index yi{ 0 }; yi < (gsl::index)zSurface.size(); yi++) {
 			for (gsl::index xi{ 0 }; xi < (gsl::index)zSurface[yi].size(); xi++) {
-				if (!zSurfaceValid[yi][xi]) {
-					continue;
-				}
 				double sum = 0.0;
 				int count = 0;
 				for (int dy = -1; dy <= 1; dy++) {
@@ -708,8 +705,7 @@ bool Brillouin::runSurfacePreScan() {
 						const auto ny = yi + dy;
 						const auto nx = xi + dx;
 						if (ny >= 0 && ny < (gsl::index)zSurface.size()
-							&& nx >= 0 && nx < (gsl::index)zSurface[yi].size()
-							&& zSurfaceValid[ny][nx]) {
+							&& nx >= 0 && nx < (gsl::index)zSurface[yi].size()) {
 							sum += zSurface[ny][nx];
 							count++;
 						}
@@ -899,12 +895,9 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		m_abort = true;
 		return;
 	}
-	const auto fullGridPointCount = (size_t)std::max(1, m_settings.xSteps)
-		* (size_t)std::max(1, m_settings.ySteps)
-		* (size_t)std::max(1, m_settings.zSteps);
-	auto positionsX = std::vector<double>(fullGridPointCount);
-	auto positionsY = std::vector<double>(fullGridPointCount);
-	auto positionsZ = std::vector<double>(fullGridPointCount);
+	auto positionsX = std::vector<double>(nrPositions);
+	auto positionsY = std::vector<double>(nrPositions);
+	auto positionsZ = std::vector<double>(nrPositions);
 	auto posIndex{ 0 };
 	for (gsl::index ii{ 0 }; ii < m_settings.zSteps; ii++) {
 		for (gsl::index jj{ 0 }; jj < m_settings.xSteps; jj++) {
@@ -928,11 +921,11 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	storage->setPositions("z", positionsZ, rank, dims);
 
 	// Explicitly store which grid points were sampled to keep metadata consistent for sparse ROI scans.
-	auto sampledMask = std::vector<double>(fullGridPointCount, 0.0);
+	auto sampledMask = std::vector<double>(nrPositions, 0.0);
 	for (gsl::index ll{ 0 }; ll < (gsl::index)m_orderedIndices.size(); ll++) {
 		const auto idx = m_orderedIndices[ll];
 		const auto flat = idx.z * (m_settings.xSteps * m_settings.ySteps) + idx.y * m_settings.xSteps + idx.x;
-		if (flat >= 0 && (size_t)flat < sampledMask.size()) {
+		if (flat >= 0 && flat < nrPositions) {
 			sampledMask[flat] = 1.0;
 		}
 	}
