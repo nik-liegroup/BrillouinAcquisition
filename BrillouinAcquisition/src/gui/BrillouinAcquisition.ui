@@ -2668,7 +2668,7 @@ QTabBar::tab:!selected {
                      <property name="geometry">
                       <rect>
                        <x>8</x>
-                       <y>930</y>
+                       <y>784</y>
                        <width>209</width>
                        <height>137</height>
                       </rect>

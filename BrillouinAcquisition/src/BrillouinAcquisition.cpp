@@ -4382,6 +4382,47 @@ void BrillouinAcquisition::update_AOI_preview() {
 		const bool colorByRoi = m_scanControl
 			&& m_Brillouin->settings.useRoiMask
 			&& m_Brillouin->settings.roiPolygonUm.size() >= 3;
+		auto positionsPixelForRoi = m_positionsPixel;
+		if (colorByRoi && m_Brillouin->settings.gridCoordinatesAbsolute) {
+			const auto& settings = m_Brillouin->settings;
+			auto scanOrderX = ui->buttonGroup->checkedId();
+			auto scanOrderY = ui->buttonGroup_2->checkedId();
+			auto scanOrderZ = ui->buttonGroup_3->checkedId();
+			if (scanOrderX < 0) scanOrderX = 0;
+			if (scanOrderY < 0) scanOrderY = 1;
+			if (scanOrderZ < 0) scanOrderZ = 2;
+
+			std::vector<std::vector<double>> directions(3);
+			directions[(size_t)scanOrderX] = simplemath::linspace(settings.xMin, settings.xMax, settings.xSteps);
+			directions[(size_t)scanOrderY] = simplemath::linspace(settings.yMin, settings.yMax, settings.ySteps);
+			directions[(size_t)scanOrderZ] = simplemath::linspace(settings.zMin, settings.zMax, settings.zSteps);
+
+			const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+			positionsPixelForRoi.clear();
+			positionsPixelForRoi.reserve((size_t)settings.xSteps * (size_t)settings.ySteps * (size_t)settings.zSteps);
+			std::vector<double> position(3);
+			for (size_t ii = 0; ii < directions[2].size(); ii++) {
+				for (size_t jj = 0; jj < directions[1].size(); jj++) {
+					for (size_t kk = 0; kk < directions[0].size(); kk++) {
+						position[0] = directions[0][kk];
+						position[1] = directions[1][jj];
+						position[2] = directions[2][ii];
+						const POINT3 absolutePosition{
+							position[(size_t)scanOrderX] + settings.absoluteGridOriginUm.x,
+							position[(size_t)scanOrderY] + settings.absoluteGridOriginUm.y,
+							position[(size_t)scanOrderZ] + settings.absoluteGridOriginUm.z
+						};
+						const POINT2 displayUm{
+							absolutePosition.x - stagePosition.x,
+							absolutePosition.y - stagePosition.y
+						};
+						positionsPixelForRoi.push_back(
+							brightfieldRawToDisplay(m_scanControl->microMeterToPix(displayUm))
+						);
+					}
+				}
+			}
+		}
 		std::vector<POINT2> roiPolygonPix;
 		if (colorByRoi && m_scanControl) {
 			roiPolygonPix.reserve(m_Brillouin->settings.roiPolygonUm.size());
@@ -4402,17 +4443,18 @@ void BrillouinAcquisition::update_AOI_preview() {
 		}
 		QVector<double> squareX;
 		QVector<double> squareY;
-		if (showSurfaceSquares && !m_positionsPixel.empty()) {
+		const auto& squarePositionsPixel = colorByRoi ? positionsPixelForRoi : m_positionsPixel;
+		if (showSurfaceSquares && !squarePositionsPixel.empty()) {
 			const auto xyBin = std::max(1, m_Brillouin->settings.preScanXYBin);
-			double minX = m_positionsPixel.front().x;
-			double maxX = m_positionsPixel.front().x;
-			double minY = m_positionsPixel.front().y;
-			double maxY = m_positionsPixel.front().y;
+			double minX = squarePositionsPixel.front().x;
+			double maxX = squarePositionsPixel.front().x;
+			double minY = squarePositionsPixel.front().y;
+			double maxY = squarePositionsPixel.front().y;
 			std::vector<double> xs;
 			std::vector<double> ys;
-			xs.reserve(m_positionsPixel.size());
-			ys.reserve(m_positionsPixel.size());
-			for (const auto& p : m_positionsPixel) {
+			xs.reserve(squarePositionsPixel.size());
+			ys.reserve(squarePositionsPixel.size());
+			for (const auto& p : squarePositionsPixel) {
 				minX = std::min(minX, p.x);
 				maxX = std::max(maxX, p.x);
 				minY = std::min(minY, p.y);
@@ -4455,13 +4497,13 @@ void BrillouinAcquisition::update_AOI_preview() {
 			QVector<double> yInside;
 			QVector<double> xOutside;
 			QVector<double> yOutside;
-			xInside.reserve((int)m_positionsPixel.size());
-			yInside.reserve((int)m_positionsPixel.size());
-			xOutside.reserve((int)m_positionsPixel.size());
-			yOutside.reserve((int)m_positionsPixel.size());
+			xInside.reserve((int)positionsPixelForRoi.size());
+			yInside.reserve((int)positionsPixelForRoi.size());
+			xOutside.reserve((int)positionsPixelForRoi.size());
+			yOutside.reserve((int)positionsPixelForRoi.size());
 
-			for (gsl::index i{ 0 }; i < (gsl::index)m_positionsPixel.size(); i++) {
-				const auto& posPix = m_positionsPixel[(size_t)i];
+			for (gsl::index i{ 0 }; i < (gsl::index)positionsPixelForRoi.size(); i++) {
+				const auto& posPix = positionsPixelForRoi[(size_t)i];
 				const bool inside = pointInPolygon(POINT2{ posPix.x, posPix.y }, roiPolygonPix);
 				if (inside) {
 					xInside.push_back(posPix.x);
