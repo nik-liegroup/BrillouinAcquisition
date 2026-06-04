@@ -215,6 +215,10 @@ void ScanControl::setHome() {
 	calculateHomePositionBounds();
 }
 
+POINT3 ScanControl::getHomePosition() const {
+	return m_homePosition;
+}
+
 void ScanControl::moveHome() {
 	setPosition(m_homePosition);
 }

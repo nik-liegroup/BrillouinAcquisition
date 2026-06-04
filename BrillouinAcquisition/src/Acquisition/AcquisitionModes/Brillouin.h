@@ -76,7 +76,6 @@ struct BRILLOUIN_SETTINGS {
 			surfaceMetricThreshold = settings.surfaceMetricThreshold;
 			surfaceSmoothSigmaUm = settings.surfaceSmoothSigmaUm;
 			maxSafeZUm = settings.maxSafeZUm;
-			safetyMarginUm = settings.safetyMarginUm;
 			useMaxSafeZSafety = settings.useMaxSafeZSafety;
 			surfaceDropFraction = settings.surfaceDropFraction;
 			surfaceScanDirection = settings.surfaceScanDirection;
@@ -84,10 +83,15 @@ struct BRILLOUIN_SETTINGS {
 			surfaceProxyRoiTop = settings.surfaceProxyRoiTop;
 			surfaceProxyRoiWidth = settings.surfaceProxyRoiWidth;
 			surfaceProxyRoiHeight = settings.surfaceProxyRoiHeight;
+			surfaceProxyRoi2Left = settings.surfaceProxyRoi2Left;
+			surfaceProxyRoi2Top = settings.surfaceProxyRoi2Top;
+			surfaceProxyRoi2Width = settings.surfaceProxyRoi2Width;
+			surfaceProxyRoi2Height = settings.surfaceProxyRoi2Height;
 			useMediumReference = settings.useMediumReference;
 			mediumReferenceValue = settings.mediumReferenceValue;
 			mediumReferenceFrameCount = settings.mediumReferenceFrameCount;
 			gridCoordinatesAbsolute = settings.gridCoordinatesAbsolute;
+			absoluteGridOriginUm = settings.absoluteGridOriginUm;
 			camera = settings.camera;
 			return *this;
 		}
@@ -120,7 +124,6 @@ struct BRILLOUIN_SETTINGS {
 		double surfaceMetricThreshold{ 0.1 };
 		double surfaceSmoothSigmaUm{ 5.0 };
 		double maxSafeZUm{ 0.0 };
-		double safetyMarginUm{ 5.0 };
 		bool useMaxSafeZSafety{ true };
 		double surfaceDropFraction{ 0.6 };
 		int surfaceScanDirection{ 1 }; // +1 increasing z, -1 decreasing z
@@ -128,10 +131,15 @@ struct BRILLOUIN_SETTINGS {
 		int surfaceProxyRoiTop{ 0 };
 		int surfaceProxyRoiWidth{ 0 };
 		int surfaceProxyRoiHeight{ 0 };
+		int surfaceProxyRoi2Left{ 0 };
+		int surfaceProxyRoi2Top{ 0 };
+		int surfaceProxyRoi2Width{ 0 };
+		int surfaceProxyRoi2Height{ 0 };
 		bool useMediumReference{ true };
 		double mediumReferenceValue{ 0.0 };
 		int mediumReferenceFrameCount{ 5 };
 		bool gridCoordinatesAbsolute{ false };
+		POINT3 absoluteGridOriginUm{ 0.0, 0.0, 0.0 };
 
 		// ROI parameters
 		const double& xMin{ m_xMin };
@@ -285,6 +293,7 @@ signals:
 	void s_calibrationRunning(bool);	// is calibration running
 	void s_scanOrderChanged(SCAN_ORDER);
 	void s_orderedPositionsChanged(std::vector<POINT3>);
+	void s_surfaceZSafetyWarning(double plannedZ, double maxSafeZ);
 };
 
 #endif //BRILLOUIN_H
