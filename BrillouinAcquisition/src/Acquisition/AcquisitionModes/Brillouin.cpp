@@ -530,18 +530,16 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 			return;
 		}
 
-		double signalSum{ 0.0 };
-		size_t signalCount{ 0 };
+		auto maxSignal = -std::numeric_limits<double>::infinity();
 		for (int displayY = roiDisplayBottom; displayY < roiDisplayBottom + roiHeight; displayY++) {
 			for (int x = roiLeft; x < roiLeft + roiWidth; x++) {
-				signalSum += getDisplayValue(x, displayY);
-				signalCount++;
+				maxSignal = std::max(maxSignal, getDisplayValue(x, displayY));
 			}
 		}
-		if (signalCount == 0) {
+		if (!std::isfinite(maxSignal)) {
 			return;
 		}
-		metrics.push_back(signalSum / (double)signalCount);
+		metrics.push_back(maxSignal);
 	};
 
 	appendMetric(
