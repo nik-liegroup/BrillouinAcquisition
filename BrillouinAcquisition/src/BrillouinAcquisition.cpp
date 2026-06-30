@@ -725,11 +725,28 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			});
 
 			connect(m_absoluteGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				if (enabled && m_scanControl) {
+					const auto homePosition = m_scanControl->getHomePosition();
+					if (!m_Brillouin->settings.gridCoordinatesAbsolute) {
+						const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+						for (auto& point : m_Brillouin->settings.roiPolygonUm) {
+							point.x += stagePosition.x - homePosition.x;
+							point.y += stagePosition.y - homePosition.y;
+						}
+					}
+					m_Brillouin->settings.absoluteGridOriginUm = homePosition;
+				} else if (!enabled && m_scanControl && m_Brillouin->settings.gridCoordinatesAbsolute) {
+					const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+					const auto origin = m_Brillouin->settings.absoluteGridOriginUm;
+					for (auto& point : m_Brillouin->settings.roiPolygonUm) {
+						point.x += origin.x - stagePosition.x;
+						point.y += origin.y - stagePosition.y;
+					}
+				}
 				m_Brillouin->settings.gridCoordinatesAbsolute = enabled;
 				ui->setHome->setDisabled(enabled);
 				ui->moveHome->setDisabled(enabled);
 				QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
-				updateBrillouinSettings();
 				update_AOI_preview();
 			});
 
@@ -4409,58 +4426,6 @@ void BrillouinAcquisition::on_showOverlay_stateChanged(int show) {
 
 /*
  * React when the ordered positions have changed
- */
-/*
- * Coordinate-system contract for Brillouin AOI/grid handling.
- *
- * Coordinate systems and reference points:
- * - Raw brightfield image pixels:
- *   Camera pixel coordinates before display rotation/mirroring. ScanControl::microMeterToPix()
- *   and pixToMicroMeter() convert between these raw pixels and micrometers in the current
- *   brightfield image plane using the scale calibration origin and basis vectors.
- * - Display brightfield image pixels:
- *   What the user sees after brightfieldRawToDisplay()/brightfieldDisplayToRaw().
- *   Rotation and mirror controls are display-only. They must affect overlays and mouse clicks,
- *   but they must not change stored stage/scanner coordinates or saved camera data.
- * - Stage position:
- *   Absolute translation-stage coordinate. In a brightfield image, the visible sample is tied
- *   to the current stage position.
- * - Scanner position:
- *   Laser/scanner offset relative to the stage. During preview, relative AOI points are drawn
- *   around the scanner focus, so moving the scanner moves the overlay in the image.
- * - Focus/current position:
- *   The physical laser focus coordinate used for Brillouin targets. ScanControl::getPosition()
- *   with the default PositionType::BOTH is stage + scanner in x/y, plus focus z.
- * - Home position:
- *   User-defined software reference for relative stage controls. It constrains allowed relative
- *   movement ranges, but it is not the origin of the Brillouin AOI grid unless the user made the
- *   current focus/home position the scan start before acquisition.
- * - Relative Brillouin grid coordinates:
- *   settings.xMin/xMax/yMin/yMax/zMin/zMax are offsets from m_startPosition, captured at the
- *   beginning of acquisition. ROI polygon points are in the same relative micrometer space.
- * - Absolute Brillouin grid coordinates:
- *   settings.xMin/xMax/yMin/yMax/zMin/zMax are offsets from settings.absoluteGridOriginUm.
- *   Actual focus target = absoluteGridOriginUm + grid offset. ROI polygon points are also
- *   offsets from absoluteGridOriginUm. Do not rewrite these offsets when the stage moves.
- *
- * Required transformations:
- * - Planning:
- *   relative mode: targetFocus = m_startPosition + gridOffset
- *   absolute mode: targetFocus = absoluteGridOriginUm + gridOffset
- * - Displaying AOI points in the BF image:
- *   relative preview: rawPix = microMeterToPix(relativeOffset + scannerPosition)
- *   relative measurement mode: rawPix = microMeterToPix(targetFocus.xy - currentStage.xy)
- *   absolute mode: rawPix = microMeterToPix(targetFocus.xy - currentStage.xy)
- *   displayPix = brightfieldRawToDisplay(rawPix)
- * - Drawing/clicking ROI points:
- *   mouse display pixel -> brightfieldDisplayToRaw() -> pixToMicroMeter().
- *   Store as relative micrometers in the active grid space:
- *   relative mode stores the image-plane micrometer coordinate directly;
- *   absolute mode stores (currentStage.xy + imagePlaneUm - absoluteGridOriginUm.xy).
- * - Saving coordinates:
- *   Brillouin target positions are focus coordinates. If absolute grid mode is enabled, saved
- *   relative datasets should be interpretable together with absoluteGridOriginUm, while sampled
- *   absolute targets remain recoverable as absoluteGridOriginUm + saved grid offsets.
  */
 void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositions) {
 	if (m_scanControl) {

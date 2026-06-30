@@ -888,8 +888,8 @@ POINT3 Brillouin::overviewBrightfieldPositionForZ(int zIndex, const std::vector<
 	const auto clampedZIndex = std::clamp(zIndex, 0, (int)directionsZ.size() - 1);
 
 	auto position = POINT3{
-		origin.x + 0.5 * (m_settings.xMin + m_settings.xMax),
-		origin.y + 0.5 * (m_settings.yMin + m_settings.yMax),
+		m_startPosition.x,
+		m_startPosition.y,
 		origin.z + directionsZ[clampedZIndex]
 	};
 
@@ -1091,10 +1091,9 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		m_abort = true;
 		return;
 	}
-	const auto gridPositionCount = m_settings.xSteps * m_settings.ySteps * m_settings.zSteps;
-	auto positionsX = std::vector<double>(gridPositionCount);
-	auto positionsY = std::vector<double>(gridPositionCount);
-	auto positionsZ = std::vector<double>(gridPositionCount);
+	auto positionsX = std::vector<double>(nrPositions);
+	auto positionsY = std::vector<double>(nrPositions);
+	auto positionsZ = std::vector<double>(nrPositions);
 	auto posIndex{ 0 };
 	for (gsl::index ii{ 0 }; ii < m_settings.zSteps; ii++) {
 		for (gsl::index jj{ 0 }; jj < m_settings.xSteps; jj++) {
@@ -1116,18 +1115,13 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	storage->setPositions("x", positionsX, rank, dims);
 	storage->setPositions("y", positionsY, rank, dims);
 	storage->setPositions("z", positionsZ, rank, dims);
-	const hsize_t originDims[1] = { 1 };
-	storage->setPositions("absolute-origin-x", std::vector<double>{ m_settings.absoluteGridOriginUm.x }, 1, originDims);
-	storage->setPositions("absolute-origin-y", std::vector<double>{ m_settings.absoluteGridOriginUm.y }, 1, originDims);
-	storage->setPositions("absolute-origin-z", std::vector<double>{ m_settings.absoluteGridOriginUm.z }, 1, originDims);
-	storage->setPositions("grid-coordinates-absolute", std::vector<double>{ m_settings.gridCoordinatesAbsolute ? 1.0 : 0.0 }, 1, originDims);
 
 	// Explicitly store which grid points were sampled to keep metadata consistent for sparse ROI scans.
-	auto sampledMask = std::vector<double>(gridPositionCount, 0.0);
+	auto sampledMask = std::vector<double>(nrPositions, 0.0);
 	for (gsl::index ll{ 0 }; ll < (gsl::index)m_orderedIndices.size(); ll++) {
 		const auto idx = m_orderedIndices[ll];
 		const auto flat = idx.z * (m_settings.xSteps * m_settings.ySteps) + idx.y * m_settings.xSteps + idx.x;
-		if (flat >= 0 && flat < gridPositionCount) {
+		if (flat >= 0 && flat < nrPositions) {
 			sampledMask[flat] = 1.0;
 		}
 	}
@@ -1161,9 +1155,9 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		auto overviewZ = std::vector<double>(m_settings.zSteps);
 		for (gsl::index ii{ 0 }; ii < m_settings.zSteps; ii++) {
 			const auto position = overviewBrightfieldPositionForZ((int)ii, directionsZ);
-			overviewX[ii] = m_settings.gridCoordinatesAbsolute ? position.x - m_settings.absoluteGridOriginUm.x : position.x;
-			overviewY[ii] = m_settings.gridCoordinatesAbsolute ? position.y - m_settings.absoluteGridOriginUm.y : position.y;
-			overviewZ[ii] = m_settings.gridCoordinatesAbsolute ? position.z - m_settings.absoluteGridOriginUm.z : position.z;
+			overviewX[ii] = position.x;
+			overviewY[ii] = position.y;
+			overviewZ[ii] = position.z;
 		}
 		storage->setPositions("overview-brightfield-x", overviewX, sampledRank, overviewDims);
 		storage->setPositions("overview-brightfield-y", overviewY, sampledRank, overviewDims);
