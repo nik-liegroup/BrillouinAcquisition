@@ -529,16 +529,18 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 			return;
 		}
 
-		auto maxSignal = -std::numeric_limits<double>::infinity();
+		double signalSum{ 0.0 };
+		size_t signalCount{ 0 };
 		for (int displayY = roiDisplayBottom; displayY < roiDisplayBottom + roiHeight; displayY++) {
 			for (int x = roiLeft; x < roiLeft + roiWidth; x++) {
-				maxSignal = std::max(maxSignal, getDisplayValue(x, displayY));
+				signalSum += getDisplayValue(x, displayY);
+				signalCount++;
 			}
 		}
-		if (!std::isfinite(maxSignal)) {
+		if (signalCount == 0) {
 			return;
 		}
-		metrics.push_back(maxSignal);
+		metrics.push_back(signalSum / (double)signalCount);
 	};
 
 	appendMetric(
@@ -696,8 +698,36 @@ bool Brillouin::runSurfacePreScan() {
 				));
 
 				// Stop as soon as the ROI metric has dropped enough from the measured
-				// medium reference. This assumes a monotonic signal drop during the z scan.
-				const auto referenceDrop = std::isfinite(referenceThreshold) && metric <= referenceThreshold;
+				// medium reference, but require three consecutive below-threshold frames
+				// at the same z position to avoid accepting a single noisy drop.
+				auto referenceDrop = std::isfinite(referenceThreshold) && metric <= referenceThreshold;
+				if (referenceDrop) {
+					for (int confirmationFrame = 0; confirmationFrame < 2; confirmationFrame++) {
+						if (m_abort) {
+							return false;
+						}
+						m_andor->getImageForAcquisition(frame.data());
+						const auto confirmationMetric = estimateFrameMetric(frame);
+						const auto confirmationDrop = confirmationMetric <= referenceThreshold;
+						emit(s_surfaceScanProgress(
+							progress,
+							QString("Surface confirmation %1/2 at x %2/%3, y %4/%5, z step %6/%7: metric %8, threshold %9")
+								.arg(confirmationFrame + 1)
+								.arg((int)xi + 1)
+								.arg((int)xSamples.size())
+								.arg((int)yi + 1)
+								.arg((int)ySamples.size())
+								.arg((int)zi + 1)
+								.arg((int)zSamples.size())
+								.arg(confirmationMetric, 0, 'f', 3)
+								.arg(referenceThreshold, 0, 'f', 3)
+						));
+						if (!confirmationDrop) {
+							referenceDrop = false;
+							break;
+						}
+					}
+				}
 				if (referenceDrop) {
 					foundSurface = true;
 					foundIndex = (size_t)zi;

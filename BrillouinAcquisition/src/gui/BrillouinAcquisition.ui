@@ -2103,7 +2103,7 @@ QTabBar::tab:!selected {
                        <x>8</x>
                        <y>224</y>
                        <width>193</width>
-                       <height>410</height>
+                       <height>450</height>
                       </rect>
                      </property>
                      <layout class="QGridLayout" name="advancedPlanningGrid">
@@ -2133,7 +2133,7 @@ QTabBar::tab:!selected {
                         <property name="maximumSize">
                          <size>
                           <width>16777215</width>
-                          <height>74</height>
+                          <height>112</height>
                          </size>
                         </property>
                         <property name="title">
@@ -2150,23 +2150,29 @@ QTabBar::tab:!selected {
                           <number>4</number>
                          </property>
                          <property name="topMargin">
-                          <number>4</number>
+                          <number>6</number>
                          </property>
                          <property name="rightMargin">
                           <number>4</number>
                          </property>
                          <property name="bottomMargin">
-                          <number>4</number>
+                          <number>6</number>
                          </property>
-                         <item row="0" column="0">
+                         <item row="0" column="0" colspan="2">
                           <widget class="QCheckBox" name="useRoiMaskCheckbox">
                            <property name="text">
                             <string>Use ROI</string>
                            </property>
                           </widget>
                          </item>
-                         <item row="0" column="1">
+                         <item row="1" column="0">
                           <widget class="QPushButton" name="drawRoiButton">
+                           <property name="minimumSize">
+                            <size>
+                             <width>76</width>
+                             <height>24</height>
+                            </size>
+                           </property>
                            <property name="text">
                             <string>Draw ROI</string>
                            </property>
@@ -2177,12 +2183,18 @@ QTabBar::tab:!selected {
                          </item>
                          <item row="1" column="1">
                           <widget class="QPushButton" name="clearRoiButton">
+                           <property name="minimumSize">
+                            <size>
+                             <width>76</width>
+                             <height>24</height>
+                            </size>
+                           </property>
                            <property name="text">
                             <string>Clear ROI</string>
                            </property>
                           </widget>
                          </item>
-                         <item row="1" column="0">
+                         <item row="2" column="0" colspan="2">
                           <widget class="QCheckBox" name="absoluteGridCheckbox">
                            <property name="toolTip">
                             <string>Use the current software home as the shifted absolute x/y/z origin when enabled.</string>
@@ -2192,7 +2204,7 @@ QTabBar::tab:!selected {
                            </property>
                           </widget>
                          </item>
-                         <item row="2" column="0" colspan="2">
+                         <item row="3" column="0" colspan="2">
                           <widget class="QCheckBox" name="saveOverviewBrightfieldPerZCheckbox">
                            <property name="toolTip">
                             <string>Save one brightfield overview image for each z slice, centered on the scan-grid center.</string>
