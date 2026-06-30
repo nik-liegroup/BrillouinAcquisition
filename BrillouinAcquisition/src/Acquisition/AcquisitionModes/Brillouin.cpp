@@ -11,6 +11,7 @@
 #include <map>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 using namespace std::filesystem;
 
@@ -909,18 +910,23 @@ void enqueueOverviewBrightfieldImage(
 	CAMERA_SETTINGS& cameraSettings,
 	const std::vector<std::byte>& image
 ) {
-	auto image_ = (std::vector<T>*) &image;
 	auto date = QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc())
 		.toString(Qt::ISODateWithMs).toStdString();
 	int rankData{ 3 };
 	auto dimsData = new hsize_t[3]{ 1, (hsize_t)cameraSettings.roi.height_binned, (hsize_t)cameraSettings.roi.width_binned };
+	const auto pixelCount = (size_t)cameraSettings.roi.height_binned * (size_t)cameraSettings.roi.width_binned;
+	auto typedImage = std::vector<T>(pixelCount);
+	const auto bytesToCopy = std::min(image.size(), typedImage.size() * sizeof(T));
+	if (bytesToCopy > 0) {
+		std::memcpy(typedImage.data(), image.data(), bytesToCopy);
+	}
 	auto img = new FLUOIMAGE<T>(
 		imageNumber,
 		rankData,
 		dimsData,
 		date,
 		"Brightfield overview",
-		*image_,
+		typedImage,
 		cameraSettings.exposureTime,
 		cameraSettings.gain,
 		cameraSettings.roi
@@ -958,8 +964,20 @@ void Brillouin::captureOverviewBrightfield(
 	m_brightfieldCamera->startAcquisition(brightfieldSettings);
 	brightfieldSettings = m_brightfieldCamera->getSettings();
 
+	if (brightfieldSettings.roi.bytesPerFrame <= 0) {
+		m_brightfieldCamera->stopAcquisition();
+		m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
+		emit(s_surfaceScanProgress(
+			100.0 * (double)(zIndex + 1) / std::max(1, m_settings.zSteps),
+			QString("Skipped brightfield overview for z slice %1/%2: invalid frame size")
+				.arg(zIndex + 1)
+				.arg(m_settings.zSteps)
+		));
+		return;
+	}
+
 	std::vector<std::byte> image(brightfieldSettings.roi.bytesPerFrame);
-	m_brightfieldCamera->getImageForAcquisition(&image[0], true);
+	m_brightfieldCamera->getImageForAcquisition(image.data(), false);
 	m_brightfieldCamera->stopAcquisition();
 
 	auto queuedImage = false;
@@ -1148,17 +1166,6 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	}
 	delete[] dims;
 
-	bool zSafetyWarned{ false };
-	auto warnIfZUnsafe = [this, &zSafetyWarned](const POINT3& position) {
-		if (!m_settings.useSurfaceFollow || !m_settings.useMaxSafeZSafety || zSafetyWarned) {
-			return;
-		}
-		if (position.z > m_settings.maxSafeZUm) {
-			zSafetyWarned = true;
-			emit(s_surfaceZSafetyWarning(position.z, m_settings.maxSafeZUm));
-		}
-	};
-
 	// do actual measurement
 	QMetaObject::invokeMethod(
 		storage.get(),
@@ -1189,7 +1196,6 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 
 	// move stage to first position, wait 50 ms for it to finish
 	if (m_scanControl) {
-		warnIfZUnsafe(m_orderedPositions[0]);
 		m_scanControl->setPosition(m_orderedPositions[0]);
 	} else {
 		m_abort = true;
@@ -1206,7 +1212,6 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 				calibrationTimer.start();
 				// After we calibrated, we move back to the current position
 				if (m_scanControl) {
-					warnIfZUnsafe(m_orderedPositions[ll]);
 					m_scanControl->setPosition(m_orderedPositions[ll]);
 				} else {
 					m_abort = true;
@@ -1227,7 +1232,6 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 				return;
 			}
 			if (m_scanControl) {
-				warnIfZUnsafe(m_orderedPositions[ll]);
 				m_scanControl->setPosition(m_orderedPositions[ll]);
 				std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			} else {
@@ -1332,7 +1336,6 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		// move stage to next position
 		if (ll < ((gsl::index)nrPositions - 1)) {
 			if (m_scanControl) {
-				warnIfZUnsafe(m_orderedPositions[ll + 1]);
 				m_scanControl->setPosition(m_orderedPositions[ll + 1]);
 			} else {
 				m_abort = true;

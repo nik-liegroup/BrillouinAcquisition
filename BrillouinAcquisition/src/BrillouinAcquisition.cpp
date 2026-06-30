@@ -233,21 +233,6 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		this,
 		[this](int repNumber, int timeToNext) { showRepProgress(repNumber, timeToNext); }
 	);
-	connection = QWidget::connect(
-		m_Brillouin,
-		&Brillouin::s_surfaceZSafetyWarning,
-		this,
-		[this](double plannedZ, double maxSafeZ) {
-			QMessageBox::warning(
-				this,
-				"Surface Z Safety Warning",
-				QString("Objective z exceeded max safe z during acquisition.\nPlanned z: %1 um\nMax safe z: %2 um\nAcquisition will continue.")
-					.arg(plannedZ, 0, 'f', 2)
-					.arg(maxSafeZ, 0, 'f', 2)
-			);
-		}
-	);
-
 	// slot to update the scan order
 	connection = QWidget::connect(
 		m_Brillouin,
@@ -645,8 +630,6 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_preScanXYBinSpinBox = ui->preScanXYBinSpinBox;
 			m_preScanZStepSpinBox = ui->preScanZStepSpinBox;
 			m_preScanZTravelSpinBox = ui->preScanZTravelSpinBox;
-			m_useMaxSafeZCheckbox = ui->useMaxSafeZCheckbox;
-			m_maxSafeZSpinBox = ui->maxSafeZSpinBox;
 			m_surfaceDropSpinBox = ui->surfaceDropSpinBox;
 			m_useMediumReferenceCheckbox = ui->useMediumReferenceCheckbox;
 			m_mediumReferenceFrameCountSpinBox = ui->mediumReferenceFrameCountSpinBox;
@@ -704,24 +687,15 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 
 			connect(m_useSurfaceFollowCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
 				m_Brillouin->settings.useSurfaceFollow = enabled;
-				if (m_useMaxSafeZCheckbox) m_useMaxSafeZCheckbox->setEnabled(enabled);
 				if (m_preScanXYBinSpinBox) m_preScanXYBinSpinBox->setEnabled(enabled);
 				if (m_preScanZStepSpinBox) m_preScanZStepSpinBox->setEnabled(enabled);
 				if (m_preScanZTravelSpinBox) m_preScanZTravelSpinBox->setEnabled(enabled);
-				const auto safetyInputsEnabled = enabled && (m_useMaxSafeZCheckbox == nullptr || m_useMaxSafeZCheckbox->isChecked());
-				if (m_maxSafeZSpinBox) m_maxSafeZSpinBox->setEnabled(safetyInputsEnabled);
 				if (m_surfaceDropSpinBox) m_surfaceDropSpinBox->setEnabled(enabled);
 				if (m_useMediumReferenceCheckbox) m_useMediumReferenceCheckbox->setEnabled(enabled);
 				if (m_mediumReferenceFrameCountSpinBox) m_mediumReferenceFrameCountSpinBox->setEnabled(enabled && m_Brillouin->settings.useMediumReference);
 				if (m_editSpectralProxyRoiCheckbox) m_editSpectralProxyRoiCheckbox->setEnabled(enabled);
 				updateBrillouinStartAvailability();
 				update_AOI_preview();
-			});
-			connect(m_useMaxSafeZCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
-				m_Brillouin->settings.useMaxSafeZSafety = enabled;
-				const auto safetyInputsEnabled = m_Brillouin->settings.useSurfaceFollow && enabled;
-				if (m_maxSafeZSpinBox) m_maxSafeZSpinBox->setEnabled(safetyInputsEnabled);
-				updateBrillouinStartAvailability();
 			});
 			connect(m_preScanXYBinSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
 				m_Brillouin->settings.preScanXYBin = std::max(1, value);
@@ -732,11 +706,6 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			});
 			connect(m_preScanZTravelSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
 				m_Brillouin->settings.preScanZTravelRangeUm = std::max(0.01, value);
-				updateBrillouinStartAvailability();
-			});
-
-			connect(m_maxSafeZSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-				m_Brillouin->settings.maxSafeZUm = value;
 				updateBrillouinStartAvailability();
 			});
 
@@ -1211,55 +1180,10 @@ void BrillouinAcquisition::clearSpectralProxyRois() {
 	ui->customplot->replot();
 }
 
-double BrillouinAcquisition::theoreticalMaxSurfaceFollowZ() const {
-	const auto& settings = m_Brillouin->settings;
-	const auto zOrigin = settings.gridCoordinatesAbsolute
-		? settings.absoluteGridOriginUm.z
-		: m_scanControl ? m_scanControl->getPosition().z : 0.0;
-	const auto zTravel = std::max(0.0, settings.preScanZTravelRangeUm);
-	const auto zMid = 0.5 * (settings.zMin + settings.zMax);
-	const auto halfRange = std::max(0.0, settings.surfaceFollowHalfRangeUm);
-	const auto localMaxZ = halfRange > 0.0
-		? halfRange
-		: std::max(settings.zMin, settings.zMax) - zMid;
-	return zOrigin + zTravel + localMaxZ;
-}
-
-bool BrillouinAcquisition::isSurfaceZSafetySatisfied(QString* reason) const {
-	const auto& settings = m_Brillouin->settings;
-	if (!(settings.useSurfaceFollow && settings.useMaxSafeZSafety)) {
-		return true;
-	}
-	if (!std::isfinite(settings.maxSafeZUm)) {
-		if (reason) {
-			*reason = "Surface-follow mode requires a valid max safe z-value.";
-		}
-		return false;
-	}
-	const auto theoreticalMaxZ = theoreticalMaxSurfaceFollowZ();
-	if (theoreticalMaxZ > settings.maxSafeZUm) {
-		if (reason) {
-			*reason = QString("Objective could crash into sample: worst-case z is %1 um, above max safe z %2 um.")
-				.arg(theoreticalMaxZ, 0, 'f', 2)
-				.arg(settings.maxSafeZUm, 0, 'f', 2);
-		}
-		return false;
-	}
-	return true;
-}
-
 void BrillouinAcquisition::updateBrillouinStartAvailability() {
-	const auto running = m_enabledModes != ACQUISITION_MODE::NONE;
 	const auto odtRunning = (bool)(m_enabledModes & ACQUISITION_MODE::ODT);
-	QString reason;
-	const auto surfaceSafe = isSurfaceZSafetySatisfied(&reason);
-	ui->BrillouinStart->setEnabled(!odtRunning && (running || surfaceSafe));
-	ui->BrillouinStart->setToolTip(surfaceSafe ? QString{} : reason);
-	if (!running && !surfaceSafe) {
-		ui->progressBar->setFormat(reason);
-	} else if (!running && surfaceSafe && ui->progressBar->format().startsWith("Objective could crash")) {
-		ui->progressBar->setFormat(QString{});
-	}
+	ui->BrillouinStart->setEnabled(!odtRunning);
+	ui->BrillouinStart->setToolTip(QString{});
 }
 
 void BrillouinAcquisition::showPosition(POINT3 position) {
@@ -1922,18 +1846,18 @@ void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
 
 	const int frameW = std::max(1, mapData->keySize());
 	const int frameH = std::max(1, mapData->valueSize());
-	auto measureRoi = [mapData, frameW, frameH](int left, int top, int width, int height, double& maxValue, int& usedLeft, int& usedTop, int& usedRight, int& usedBottom) {
+	auto measureRoi = [mapData, frameW, frameH](int left, int top, int width, int height, double& maxValue) {
 		if (width <= 0 || height <= 0) {
 			return false;
 		}
-		usedLeft = std::clamp(left, 0, frameW - 1);
-		usedTop = std::clamp(top, 0, frameH - 1);
-		usedRight = std::clamp(left + width - 1, usedLeft, frameW - 1);
-		usedBottom = std::clamp(top + height - 1, usedTop, frameH - 1);
+		const int clampedLeft = std::clamp(left, 0, frameW - 1);
+		const int clampedTop = std::clamp(top, 0, frameH - 1);
+		const int clampedRight = std::clamp(left + width - 1, clampedLeft, frameW - 1);
+		const int clampedBottom = std::clamp(top + height - 1, clampedTop, frameH - 1);
 
 		maxValue = -std::numeric_limits<double>::infinity();
-		for (int displayY = usedTop; displayY <= usedBottom; displayY++) {
-			for (int x = usedLeft; x <= usedRight; x++) {
+		for (int displayY = clampedTop; displayY <= clampedBottom; displayY++) {
+			for (int x = clampedLeft; x <= clampedRight; x++) {
 				maxValue = std::max(maxValue, mapData->cell(x, displayY));
 			}
 		}
@@ -1943,35 +1867,19 @@ void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
 	const auto& settings = m_Brillouin->settings;
 	double roi1Mean{ 0.0 };
 	double roi2Mean{ 0.0 };
-	int roi1Left{ 0 };
-	int roi1Top{ 0 };
-	int roi1Right{ 0 };
-	int roi1Bottom{ 0 };
-	int roi2Left{ 0 };
-	int roi2Top{ 0 };
-	int roi2Right{ 0 };
-	int roi2Bottom{ 0 };
 	const bool hasRoi1 = measureRoi(
 		settings.surfaceProxyRoiLeft,
 		settings.surfaceProxyRoiTop,
 		settings.surfaceProxyRoiWidth,
 		settings.surfaceProxyRoiHeight,
-		roi1Mean,
-		roi1Left,
-		roi1Top,
-		roi1Right,
-		roi1Bottom
+		roi1Mean
 	);
 	const bool hasRoi2 = measureRoi(
 		settings.surfaceProxyRoi2Left,
 		settings.surfaceProxyRoi2Top,
 		settings.surfaceProxyRoi2Width,
 		settings.surfaceProxyRoi2Height,
-		roi2Mean,
-		roi2Left,
-		roi2Top,
-		roi2Right,
-		roi2Bottom
+		roi2Mean
 	);
 
 	if (!hasRoi1 && !hasRoi2) {
@@ -1983,20 +1891,10 @@ void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
 	QStringList parts;
 	parts << QString("avg %1").arg(average, 0, 'f', 2);
 	if (hasRoi1) {
-		parts << QString("ROI1 %1 [cells x %2-%3 y %4-%5]")
-			.arg(roi1Mean, 0, 'f', 2)
-			.arg(roi1Left)
-			.arg(roi1Right)
-			.arg(roi1Top)
-			.arg(roi1Bottom);
+		parts << QString("ROI1 %1").arg(roi1Mean, 0, 'f', 2);
 	}
 	if (hasRoi2) {
-		parts << QString("ROI2 %1 [cells x %2-%3 y %4-%5]")
-			.arg(roi2Mean, 0, 'f', 2)
-			.arg(roi2Left)
-			.arg(roi2Right)
-			.arg(roi2Top)
-			.arg(roi2Bottom);
+		parts << QString("ROI2 %1").arg(roi2Mean, 0, 'f', 2);
 	}
 	ui->statusBar->showMessage(QString("Spectral ROI max: %1").arg(parts.join(", ")));
 }
@@ -4317,19 +4215,8 @@ void BrillouinAcquisition::on_BrillouinStart_clicked() {
 			return;
 		}
 
-		QString surfaceSafetyReason;
-		if (!isSurfaceZSafetySatisfied(&surfaceSafetyReason)) {
-			QMessageBox::warning(
-				this,
-				"Unsafe Surface-Follow Z Range",
-				surfaceSafetyReason
-			);
-			updateBrillouinStartAvailability();
-			return;
-		}
-
-		// set camera ROI
-		m_Brillouin->settings.camera.roi.top = m_deviceSettings.camera.roi.top;
+	// set camera ROI
+	m_Brillouin->settings.camera.roi.top = m_deviceSettings.camera.roi.top;
 		m_Brillouin->settings.camera.roi.left = m_deviceSettings.camera.roi.left;
 		m_Brillouin->settings.camera.roi.width_physical = m_deviceSettings.camera.roi.width_physical;
 		m_Brillouin->settings.camera.roi.height_physical = m_deviceSettings.camera.roi.height_physical;
@@ -4414,16 +4301,6 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		const QSignalBlocker blocker(*m_preScanZTravelSpinBox);
 		m_preScanZTravelSpinBox->setValue(std::max(0.01, m_Brillouin->settings.preScanZTravelRangeUm));
 		m_preScanZTravelSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
-	}
-	if (m_useMaxSafeZCheckbox) {
-		const QSignalBlocker blocker(*m_useMaxSafeZCheckbox);
-		m_useMaxSafeZCheckbox->setChecked(m_Brillouin->settings.useMaxSafeZSafety);
-		m_useMaxSafeZCheckbox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
-	}
-	if (m_maxSafeZSpinBox) {
-		const QSignalBlocker blocker(*m_maxSafeZSpinBox);
-		m_maxSafeZSpinBox->setValue(m_Brillouin->settings.maxSafeZUm);
-		m_maxSafeZSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow && m_Brillouin->settings.useMaxSafeZSafety);
 	}
 	if (m_surfaceDropSpinBox) {
 		const QSignalBlocker blocker(*m_surfaceDropSpinBox);
@@ -5389,8 +5266,6 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-pre-scan-z-max", m_Brillouin->settings.preScanZMax);
 	settings.setValue("brillouin-surface-metric-threshold", m_Brillouin->settings.surfaceMetricThreshold);
 	settings.setValue("brillouin-surface-smooth-sigma-um", m_Brillouin->settings.surfaceSmoothSigmaUm);
-	settings.setValue("brillouin-max-safe-z-um", m_Brillouin->settings.maxSafeZUm);
-	settings.setValue("brillouin-use-max-safe-z-safety", m_Brillouin->settings.useMaxSafeZSafety);
 	settings.setValue("brillouin-surface-drop-fraction", m_Brillouin->settings.surfaceDropFraction);
 	settings.setValue("brillouin-use-medium-reference", m_Brillouin->settings.useMediumReference);
 	settings.setValue("brillouin-medium-reference-value", m_Brillouin->settings.mediumReferenceValue);
@@ -5522,8 +5397,6 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.preScanZMax = settings.value("brillouin-pre-scan-z-max", m_Brillouin->settings.preScanZMax).toDouble();
 	m_Brillouin->settings.surfaceMetricThreshold = settings.value("brillouin-surface-metric-threshold", m_Brillouin->settings.surfaceMetricThreshold).toDouble();
 	m_Brillouin->settings.surfaceSmoothSigmaUm = settings.value("brillouin-surface-smooth-sigma-um", m_Brillouin->settings.surfaceSmoothSigmaUm).toDouble();
-	m_Brillouin->settings.maxSafeZUm = settings.value("brillouin-max-safe-z-um", m_Brillouin->settings.maxSafeZUm).toDouble();
-	m_Brillouin->settings.useMaxSafeZSafety = settings.value("brillouin-use-max-safe-z-safety", m_Brillouin->settings.useMaxSafeZSafety).toBool();
 	m_Brillouin->settings.surfaceDropFraction = settings.value("brillouin-surface-drop-fraction", m_Brillouin->settings.surfaceDropFraction).toDouble();
 	m_Brillouin->settings.useMediumReference = settings.value("brillouin-use-medium-reference", m_Brillouin->settings.useMediumReference).toBool();
 	m_Brillouin->settings.mediumReferenceValue = settings.value("brillouin-medium-reference-value", m_Brillouin->settings.mediumReferenceValue).toDouble();

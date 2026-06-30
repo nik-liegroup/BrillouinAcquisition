@@ -146,8 +146,6 @@ private:
 	QSpinBox* m_preScanXYBinSpinBox{ nullptr };
 	QDoubleSpinBox* m_preScanZStepSpinBox{ nullptr };
 	QDoubleSpinBox* m_preScanZTravelSpinBox{ nullptr };
-	QCheckBox* m_useMaxSafeZCheckbox{ nullptr };
-	QDoubleSpinBox* m_maxSafeZSpinBox{ nullptr };
 	QDoubleSpinBox* m_surfaceDropSpinBox{ nullptr };
 	QCheckBox* m_useMediumReferenceCheckbox{ nullptr };
 	QSpinBox* m_mediumReferenceFrameCountSpinBox{ nullptr };
@@ -443,8 +441,6 @@ private slots:
 	void showAcqPosition(POINT3, int);
 	void showPosition(POINT3);
 	void updateEstimatedAcquisitionTime();
-	double theoreticalMaxSurfaceFollowZ() const;
-	bool isSurfaceZSafetySatisfied(QString* reason = nullptr) const;
 	void updateBrillouinStartAvailability();
 	void setHomePositionBounds(BOUNDS);
 	void setCurrentPositionBounds(BOUNDS bounds);

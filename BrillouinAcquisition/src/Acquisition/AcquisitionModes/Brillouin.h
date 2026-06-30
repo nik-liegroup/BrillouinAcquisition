@@ -75,8 +75,6 @@ struct BRILLOUIN_SETTINGS {
 			preScanZMax = settings.preScanZMax;
 			surfaceMetricThreshold = settings.surfaceMetricThreshold;
 			surfaceSmoothSigmaUm = settings.surfaceSmoothSigmaUm;
-			maxSafeZUm = settings.maxSafeZUm;
-			useMaxSafeZSafety = settings.useMaxSafeZSafety;
 			surfaceDropFraction = settings.surfaceDropFraction;
 			surfaceScanDirection = settings.surfaceScanDirection;
 			surfaceProxyRoiLeft = settings.surfaceProxyRoiLeft;
@@ -126,8 +124,6 @@ struct BRILLOUIN_SETTINGS {
 		double preScanZMax{ 30.0 };
 		double surfaceMetricThreshold{ 0.1 };
 		double surfaceSmoothSigmaUm{ 5.0 };
-		double maxSafeZUm{ 0.0 };
-		bool useMaxSafeZSafety{ true };
 		double surfaceDropFraction{ 0.6 };
 		int surfaceScanDirection{ 1 }; // +1 increasing z, -1 decreasing z
 		int surfaceProxyRoiLeft{ 0 };
@@ -302,7 +298,6 @@ signals:
 	void s_calibrationRunning(bool);	// is calibration running
 	void s_scanOrderChanged(SCAN_ORDER);
 	void s_orderedPositionsChanged(std::vector<POINT3>);
-	void s_surfaceZSafetyWarning(double plannedZ, double maxSafeZ);
 	void s_surfaceScanProgress(double progress, QString message);
 };
 
