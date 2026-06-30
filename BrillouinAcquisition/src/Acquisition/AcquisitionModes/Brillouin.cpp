@@ -537,27 +537,7 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 			}
 		}
 		const auto signalMean = signalCount > 0 ? signalSum / signalCount : 0.0;
-
-		// Local background: one-pixel ring around signal ROI, clipped to frame.
-		const int bgLeft = std::max(0, roiLeft - 1);
-		const int bgTop = std::max(0, roiTop - 1);
-		const int bgRight = std::min(width - 1, roiLeft + roiWidth);
-		const int bgBottom = std::min(height - 1, roiTop + roiHeight);
-
-		double bgSum{ 0.0 };
-		int bgCount{ 0 };
-		for (int y = bgTop; y <= bgBottom; y++) {
-			for (int x = bgLeft; x <= bgRight; x++) {
-				const bool insideSignal = (x >= roiLeft && x < roiLeft + roiWidth && y >= roiTop && y < roiTop + roiHeight);
-				if (insideSignal) {
-					continue;
-				}
-				bgSum += getValue(x, y);
-				bgCount++;
-			}
-		}
-		const auto bgMean = bgCount > 0 ? bgSum / bgCount : 0.0;
-		metrics.push_back(signalMean - bgMean);
+		metrics.push_back(signalMean);
 	};
 
 	appendMetric(
@@ -671,9 +651,6 @@ bool Brillouin::runSurfacePreScan() {
 			if (m_settings.useRoiMask && !isPointInPolygonUm(coarsePoint, m_settings.roiPolygonUm)) {
 				continue;
 			}
-			std::vector<double> metrics(zSamples.size(), 0.0);
-			auto bestMetric = -std::numeric_limits<double>::infinity();
-			auto bestIndex = size_t{ 0 };
 			bool foundSurface = false;
 			size_t foundIndex = 0;
 
@@ -700,11 +677,6 @@ bool Brillouin::runSurfacePreScan() {
 				std::this_thread::sleep_for(std::chrono::milliseconds(20));
 				m_andor->getImageForAcquisition(frame.data());
 				const auto metric = estimateFrameMetric(frame);
-				metrics[(size_t)zi] = metric;
-				if (metric > bestMetric) {
-					bestMetric = metric;
-					bestIndex = (size_t)zi;
-				}
 
 				completedSurfaceSteps++;
 				const auto progress = 5.0 + 95.0 * (double)completedSurfaceSteps / totalSurfaceSteps;
@@ -744,24 +716,19 @@ bool Brillouin::runSurfacePreScan() {
 				}
 			}
 
-			// Prefer threshold crossing from high signal to low signal if possible,
-			// fallback to maximum metric position.
-			auto surfaceIndex = foundSurface ? foundIndex : bestIndex;
 			if (!foundSurface) {
-				const auto minMetric = *std::min_element(metrics.begin(), metrics.end());
-				const auto maxMetric = *std::max_element(metrics.begin(), metrics.end());
-				const auto denom = std::max(1e-12, maxMetric - minMetric);
-				const auto threshold = std::clamp(m_settings.surfaceMetricThreshold, 0.0, 1.0);
-				for (size_t zi = 0; zi < metrics.size(); zi++) {
-					const auto norm = (metrics[zi] - minMetric) / denom;
-					if (norm <= threshold) {
-						surfaceIndex = zi;
-						break;
-					}
-				}
+				emit(s_surfaceScanProgress(
+					5.0 + 95.0 * (double)completedSurfaceSteps / totalSurfaceSteps,
+					QString("No surface drop found at x %1/%2, y %3/%4")
+						.arg((int)xi + 1)
+						.arg((int)xSamples.size())
+						.arg((int)yi + 1)
+						.arg((int)ySamples.size())
+				));
+				continue;
 			}
 
-			zSurface[yi][xi] = zSamples[surfaceIndex];
+			zSurface[yi][xi] = zSamples[foundIndex];
 			zSurfaceValid[yi][xi] = true;
 		}
 	}
