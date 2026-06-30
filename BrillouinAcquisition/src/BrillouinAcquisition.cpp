@@ -456,14 +456,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			const auto posX = m_ODTPlot.plotHandle->xAxis->pixelToCoord(event->pos().x());
 			const auto posY = m_ODTPlot.plotHandle->yAxis->pixelToCoord(event->pos().y());
 			auto positionInUm = m_scanControl->pixToMicroMeter(brightfieldDisplayToRaw(POINT2{ posX, posY }));
-			if (m_Brillouin->settings.gridCoordinatesAbsolute) {
-				const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
-				positionInUm += POINT2{ stagePosition.x, stagePosition.y };
-				positionInUm -= POINT2{
-					m_Brillouin->settings.absoluteGridOriginUm.x,
-					m_Brillouin->settings.absoluteGridOriginUm.y
-				};
-			}
+			positionInUm = imagePlaneUmToGridOffset(positionInUm);
 			auto& poly = m_Brillouin->settings.roiPolygonUm;
 			if (m_draggedRoiVertexIndex >= 0 && m_draggedRoiVertexIndex < (int)poly.size()) {
 				poly[(size_t)m_draggedRoiVertexIndex] = positionInUm;
@@ -725,28 +718,13 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			});
 
 			connect(m_absoluteGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
-				if (enabled && m_scanControl) {
-					const auto homePosition = m_scanControl->getHomePosition();
-					if (!m_Brillouin->settings.gridCoordinatesAbsolute) {
-						const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
-						for (auto& point : m_Brillouin->settings.roiPolygonUm) {
-							point.x += stagePosition.x - homePosition.x;
-							point.y += stagePosition.y - homePosition.y;
-						}
-					}
-					m_Brillouin->settings.absoluteGridOriginUm = homePosition;
-				} else if (!enabled && m_scanControl && m_Brillouin->settings.gridCoordinatesAbsolute) {
-					const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
-					const auto origin = m_Brillouin->settings.absoluteGridOriginUm;
-					for (auto& point : m_Brillouin->settings.roiPolygonUm) {
-						point.x += origin.x - stagePosition.x;
-						point.y += origin.y - stagePosition.y;
-					}
-				}
+				preservePhysicalGridForAbsoluteMode(enabled);
 				m_Brillouin->settings.gridCoordinatesAbsolute = enabled;
 				ui->setHome->setDisabled(enabled);
 				ui->moveHome->setDisabled(enabled);
 				QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
+				updateBrillouinSettings();
+				updateAbsoluteGridStatus();
 				update_AOI_preview();
 			});
 
@@ -771,6 +749,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 	}
 
 	updateBrillouinSettings();
+	updateAbsoluteGridStatus();
 
 	// disable keyboard tracking on stage position input
 	// so only complete numbers emit signals
@@ -905,15 +884,7 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 			int bestIdx = -1;
 			double bestDist2 = maxDistPix * maxDistPix;
 			for (size_t i = 0; i < poly.size(); ++i) {
-				auto pUm = poly[i];
-				if (m_Brillouin->settings.gridCoordinatesAbsolute) {
-					const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
-					pUm += POINT2{
-						m_Brillouin->settings.absoluteGridOriginUm.x,
-						m_Brillouin->settings.absoluteGridOriginUm.y
-					};
-					pUm -= POINT2{ stagePosition.x, stagePosition.y };
-				}
+				auto pUm = gridOffsetToImagePlaneUm(poly[i]);
 				const auto pPix = brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm));
 				const auto dx = pPix.x - pix.x;
 				const auto dy = pPix.y - pix.y;
@@ -944,15 +915,7 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 				return;
 			}
 
-			auto positionInUm = m_scanControl->pixToMicroMeter(positionInRawPix);
-			if (m_Brillouin->settings.gridCoordinatesAbsolute) {
-				const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
-				positionInUm += POINT2{ stagePosition.x, stagePosition.y };
-				positionInUm -= POINT2{
-					m_Brillouin->settings.absoluteGridOriginUm.x,
-					m_Brillouin->settings.absoluteGridOriginUm.y
-				};
-			}
+			auto positionInUm = imagePlaneUmToGridOffset(m_scanControl->pixToMicroMeter(positionInRawPix));
 			m_Brillouin->settings.roiPolygonUm.push_back(positionInUm);
 			if (m_Brillouin->settings.roiPolygonUm.size() >= 3) {
 				m_Brillouin->settings.useRoiMask = true;
@@ -1228,6 +1191,120 @@ void BrillouinAcquisition::showPosition(POINT3 position) {
 		const QSignalBlocker blocker(ui->setPositionZ);
 		ui->setPositionZ->setValue(position.z);
 	}
+	updateAbsoluteGridStatus();
+}
+
+POINT3 BrillouinAcquisition::gridOffsetToAbsoluteTarget(const POINT3& gridOffset, const POINT3& relativeOrigin) const {
+	const auto origin = m_Brillouin->settings.gridCoordinatesAbsolute
+		? m_Brillouin->settings.absoluteGridOriginUm
+		: relativeOrigin;
+	return POINT3{
+		origin.x + gridOffset.x,
+		origin.y + gridOffset.y,
+		origin.z + gridOffset.z
+	};
+}
+
+POINT3 BrillouinAcquisition::absoluteTargetToGridOffset(const POINT3& absoluteTarget, const POINT3& relativeOrigin) const {
+	const auto origin = m_Brillouin->settings.gridCoordinatesAbsolute
+		? m_Brillouin->settings.absoluteGridOriginUm
+		: relativeOrigin;
+	return POINT3{
+		absoluteTarget.x - origin.x,
+		absoluteTarget.y - origin.y,
+		absoluteTarget.z - origin.z
+	};
+}
+
+POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm) const {
+	if (!m_scanControl || !m_Brillouin->settings.gridCoordinatesAbsolute) {
+		return imagePlaneUm;
+	}
+	const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+	return POINT2{
+		stagePosition.x + imagePlaneUm.x - m_Brillouin->settings.absoluteGridOriginUm.x,
+		stagePosition.y + imagePlaneUm.y - m_Brillouin->settings.absoluteGridOriginUm.y
+	};
+}
+
+POINT2 BrillouinAcquisition::gridOffsetToImagePlaneUm(const POINT2& gridOffset) const {
+	if (!m_scanControl || !m_Brillouin->settings.gridCoordinatesAbsolute) {
+		return gridOffset;
+	}
+	const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+	return POINT2{
+		m_Brillouin->settings.absoluteGridOriginUm.x + gridOffset.x - stagePosition.x,
+		m_Brillouin->settings.absoluteGridOriginUm.y + gridOffset.y - stagePosition.y
+	};
+}
+
+void BrillouinAcquisition::preservePhysicalGridForAbsoluteMode(bool enabled) {
+	if (!m_scanControl || enabled == m_Brillouin->settings.gridCoordinatesAbsolute) {
+		return;
+	}
+
+	const auto oldRelativeOrigin = m_scanControl->getPosition();
+	const auto oldAbsoluteMode = m_Brillouin->settings.gridCoordinatesAbsolute;
+	const auto oldAbsoluteOrigin = m_Brillouin->settings.absoluteGridOriginUm;
+	if (enabled) {
+		m_Brillouin->settings.absoluteGridOriginUm = m_scanControl->getHomePosition();
+	}
+
+	auto oldOffsetToAbsolute = [&](const POINT3& gridOffset) {
+		const auto origin = oldAbsoluteMode ? oldAbsoluteOrigin : oldRelativeOrigin;
+		return POINT3{ origin.x + gridOffset.x, origin.y + gridOffset.y, origin.z + gridOffset.z };
+	};
+	auto absoluteToNewOffset = [&](const POINT3& absoluteTarget) {
+		const auto origin = enabled ? m_Brillouin->settings.absoluteGridOriginUm : oldRelativeOrigin;
+		return POINT3{ absoluteTarget.x - origin.x, absoluteTarget.y - origin.y, absoluteTarget.z - origin.z };
+	};
+
+	const auto newMin = absoluteToNewOffset(oldOffsetToAbsolute(POINT3{
+		m_Brillouin->settings.xMin,
+		m_Brillouin->settings.yMin,
+		m_Brillouin->settings.zMin
+	}));
+	const auto newMax = absoluteToNewOffset(oldOffsetToAbsolute(POINT3{
+		m_Brillouin->settings.xMax,
+		m_Brillouin->settings.yMax,
+		m_Brillouin->settings.zMax
+	}));
+
+	m_Brillouin->settings.setXMin(newMin.x);
+	m_Brillouin->settings.setXMax(newMax.x);
+	m_Brillouin->settings.setYMin(newMin.y);
+	m_Brillouin->settings.setYMax(newMax.y);
+	m_Brillouin->settings.setZMin(newMin.z);
+	m_Brillouin->settings.setZMax(newMax.z);
+
+	for (auto& point : m_Brillouin->settings.roiPolygonUm) {
+		const auto absolutePoint = oldOffsetToAbsolute(POINT3{ point.x, point.y, 0.0 });
+		const auto newPoint = absoluteToNewOffset(absolutePoint);
+		point = POINT2{ newPoint.x, newPoint.y };
+	}
+}
+
+void BrillouinAcquisition::updateAbsoluteGridStatus() {
+	if (!ui->absoluteGridStatusLabel) {
+		return;
+	}
+	const auto origin = m_Brillouin->settings.absoluteGridOriginUm;
+	const auto currentFocus = m_scanControl ? m_scanControl->getPosition() : POINT3{};
+	const auto currentStage = m_scanControl ? m_scanControl->getPosition(PositionType::STAGE) : POINT3{};
+	const auto mode = m_Brillouin->settings.gridCoordinatesAbsolute
+		? QString("absolute, grid relative to origin")
+		: QString("relative, grid relative to acquisition start");
+	ui->absoluteGridStatusLabel->setText(QString("Grid: %1\nOrigin: X %2, Y %3, Z %4\nStage: X %5, Y %6, Z %7 | Focus: X %8, Y %9, Z %10")
+		.arg(mode)
+		.arg(origin.x, 0, 'f', 2)
+		.arg(origin.y, 0, 'f', 2)
+		.arg(origin.z, 0, 'f', 2)
+		.arg(currentStage.x, 0, 'f', 2)
+		.arg(currentStage.y, 0, 'f', 2)
+		.arg(currentStage.z, 0, 'f', 2)
+		.arg(currentFocus.x, 0, 'f', 2)
+		.arg(currentFocus.y, 0, 'f', 2)
+		.arg(currentFocus.z, 0, 'f', 2));
 }
 
 void BrillouinAcquisition::setHomePositionBounds(BOUNDS bounds) {
@@ -4372,6 +4449,7 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 	ui->customplot->replot();
 	updateEstimatedAcquisitionTime();
 	updateBrillouinStartAvailability();
+	updateAbsoluteGridStatus();
 }
 
 void BrillouinAcquisition::on_startX_valueChanged(double value) {
@@ -4474,7 +4552,6 @@ void BrillouinAcquisition::update_AOI_preview() {
 			directions[(size_t)scanOrderY] = simplemath::linspace(settings.yMin, settings.yMax, settings.ySteps);
 			directions[(size_t)scanOrderZ] = simplemath::linspace(settings.zMin, settings.zMax, settings.zSteps);
 
-			const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
 			positionsPixelForRoi.clear();
 			positionsPixelForRoi.reserve((size_t)settings.xSteps * (size_t)settings.ySteps * (size_t)settings.zSteps);
 			std::vector<double> position(3);
@@ -4484,15 +4561,10 @@ void BrillouinAcquisition::update_AOI_preview() {
 						position[0] = directions[0][kk];
 						position[1] = directions[1][jj];
 						position[2] = directions[2][ii];
-						const POINT3 absolutePosition{
-							position[(size_t)scanOrderX] + settings.absoluteGridOriginUm.x,
-							position[(size_t)scanOrderY] + settings.absoluteGridOriginUm.y,
-							position[(size_t)scanOrderZ] + settings.absoluteGridOriginUm.z
-						};
-						const POINT2 displayUm{
-							absolutePosition.x - stagePosition.x,
-							absolutePosition.y - stagePosition.y
-						};
+						const POINT2 displayUm = gridOffsetToImagePlaneUm(POINT2{
+							position[(size_t)scanOrderX],
+							position[(size_t)scanOrderY]
+						});
 						positionsPixelForRoi.push_back(
 							brightfieldRawToDisplay(m_scanControl->microMeterToPix(displayUm))
 						);
@@ -4503,18 +4575,8 @@ void BrillouinAcquisition::update_AOI_preview() {
 		std::vector<POINT2> roiPolygonPix;
 		if (colorByRoi && m_scanControl) {
 			roiPolygonPix.reserve(m_Brillouin->settings.roiPolygonUm.size());
-			const auto stagePosition = m_Brillouin->settings.gridCoordinatesAbsolute
-				? m_scanControl->getPosition(PositionType::STAGE)
-				: POINT3{};
 			for (const auto& p : m_Brillouin->settings.roiPolygonUm) {
-				auto pUm = p;
-				if (m_Brillouin->settings.gridCoordinatesAbsolute) {
-					pUm += POINT2{
-						m_Brillouin->settings.absoluteGridOriginUm.x,
-						m_Brillouin->settings.absoluteGridOriginUm.y
-					};
-					pUm -= POINT2{ stagePosition.x, stagePosition.y };
-				}
+				auto pUm = gridOffsetToImagePlaneUm(p);
 				roiPolygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
 			}
 		}
@@ -4774,29 +4836,12 @@ void BrillouinAcquisition::updateRoiPolygonPreview() {
 
 	std::vector<POINT2> roiPolygonPix;
 	roiPolygonPix.reserve(roiPolygon.size() + 1);
-	const auto stagePosition = m_Brillouin->settings.gridCoordinatesAbsolute
-		? m_scanControl->getPosition(PositionType::STAGE)
-		: POINT3{};
 	for (const auto& p : roiPolygon) {
-		auto pUm = p;
-		if (m_Brillouin->settings.gridCoordinatesAbsolute) {
-			pUm += POINT2{
-				m_Brillouin->settings.absoluteGridOriginUm.x,
-				m_Brillouin->settings.absoluteGridOriginUm.y
-			};
-			pUm -= POINT2{ stagePosition.x, stagePosition.y };
-		}
+		auto pUm = gridOffsetToImagePlaneUm(p);
 		roiPolygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
 	}
 	if (roiPolygon.size() >= 3) {
-		auto pUm = roiPolygon[0];
-		if (m_Brillouin->settings.gridCoordinatesAbsolute) {
-			pUm += POINT2{
-				m_Brillouin->settings.absoluteGridOriginUm.x,
-				m_Brillouin->settings.absoluteGridOriginUm.y
-			};
-			pUm -= POINT2{ stagePosition.x, stagePosition.y };
-		}
+		auto pUm = gridOffsetToImagePlaneUm(roiPolygon[0]);
 		roiPolygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
 	}
 	QVector<double> xPos(roiPolygonPix.size());

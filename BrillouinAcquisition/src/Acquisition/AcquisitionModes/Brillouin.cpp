@@ -894,10 +894,16 @@ POINT3 Brillouin::overviewBrightfieldPositionForZ(int zIndex, const std::vector<
 	};
 
 	if (m_settings.useSurfaceFollow) {
+		auto bestDistance2 = std::numeric_limits<double>::infinity();
 		for (gsl::index ii{ 0 }; ii < (gsl::index)m_orderedIndices.size(); ii++) {
 			if (m_orderedIndices[ii].z == clampedZIndex) {
-				position.z = m_orderedPositions[ii].z;
-				break;
+				const auto dx = m_orderedPositions[ii].x - position.x;
+				const auto dy = m_orderedPositions[ii].y - position.y;
+				const auto distance2 = dx * dx + dy * dy;
+				if (distance2 < bestDistance2) {
+					bestDistance2 = distance2;
+					position.z = m_orderedPositions[ii].z;
+				}
 			}
 		}
 	}
@@ -1091,9 +1097,10 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		m_abort = true;
 		return;
 	}
-	auto positionsX = std::vector<double>(nrPositions);
-	auto positionsY = std::vector<double>(nrPositions);
-	auto positionsZ = std::vector<double>(nrPositions);
+	const auto gridPositionCount = m_settings.xSteps * m_settings.ySteps * m_settings.zSteps;
+	auto positionsX = std::vector<double>(gridPositionCount);
+	auto positionsY = std::vector<double>(gridPositionCount);
+	auto positionsZ = std::vector<double>(gridPositionCount);
 	auto posIndex{ 0 };
 	for (gsl::index ii{ 0 }; ii < m_settings.zSteps; ii++) {
 		for (gsl::index jj{ 0 }; jj < m_settings.xSteps; jj++) {
@@ -1115,13 +1122,18 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	storage->setPositions("x", positionsX, rank, dims);
 	storage->setPositions("y", positionsY, rank, dims);
 	storage->setPositions("z", positionsZ, rank, dims);
+	const hsize_t originDims[1] = { 1 };
+	storage->setPositions("absolute-origin-x", std::vector<double>{ m_settings.absoluteGridOriginUm.x }, 1, originDims);
+	storage->setPositions("absolute-origin-y", std::vector<double>{ m_settings.absoluteGridOriginUm.y }, 1, originDims);
+	storage->setPositions("absolute-origin-z", std::vector<double>{ m_settings.absoluteGridOriginUm.z }, 1, originDims);
+	storage->setPositions("grid-coordinates-absolute", std::vector<double>{ m_settings.gridCoordinatesAbsolute ? 1.0 : 0.0 }, 1, originDims);
 
 	// Explicitly store which grid points were sampled to keep metadata consistent for sparse ROI scans.
-	auto sampledMask = std::vector<double>(nrPositions, 0.0);
+	auto sampledMask = std::vector<double>(gridPositionCount, 0.0);
 	for (gsl::index ll{ 0 }; ll < (gsl::index)m_orderedIndices.size(); ll++) {
 		const auto idx = m_orderedIndices[ll];
 		const auto flat = idx.z * (m_settings.xSteps * m_settings.ySteps) + idx.y * m_settings.xSteps + idx.x;
-		if (flat >= 0 && flat < nrPositions) {
+		if (flat >= 0 && flat < gridPositionCount) {
 			sampledMask[flat] = 1.0;
 		}
 	}
