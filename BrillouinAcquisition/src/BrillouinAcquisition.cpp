@@ -1165,6 +1165,15 @@ void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	}
 }
 
+void BrillouinAcquisition::refreshSpectralProxyRoiRects() {
+	if (m_spectralProxyRoiRectItem || m_Brillouin->settings.surfaceProxyRoiWidth > 0) {
+		updateSpectralProxyRoiRect(0);
+	}
+	if (m_spectralProxyRoi2RectItem || m_Brillouin->settings.surfaceProxyRoi2Width > 0) {
+		updateSpectralProxyRoiRect(1);
+	}
+}
+
 void BrillouinAcquisition::clearSpectralProxyRois() {
 	m_Brillouin->settings.surfaceProxyRoiLeft = 0;
 	m_Brillouin->settings.surfaceProxyRoiTop = 0;
@@ -1835,6 +1844,10 @@ void BrillouinAcquisition::showSurfaceScanProgress(double progress, const QStrin
 	ui->statusBar->showMessage(QString("%1 (%2% complete)")
 		.arg(message)
 		.arg(std::clamp(progress, 0.0, 100.0), 0, 'f', 1));
+	if (progress >= 100.0) {
+		refreshSpectralProxyRoiRects();
+		ui->customplot->replot();
+	}
 }
 
 void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
@@ -2655,6 +2668,9 @@ void BrillouinAcquisition::plotting(PLOT_SETTINGS* plotSettings, long long dim_x
 		plotSettings->colorMap->rescaleDataRange(true);
 		plotSettings->cLim = plotSettings->colorMap->dataRange();
 		(plotSettings->dataRangeCallback)(plotSettings->cLim);
+	}
+	if (plotSettings == &m_BrillouinPlot) {
+		refreshSpectralProxyRoiRects();
 	}
 	plotSettings->plotHandle->replot();
 }
@@ -4335,14 +4351,8 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_editSpectralProxyRoiCheckbox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
 	}
 
-	if (m_spectralProxyRoiRectItem || m_Brillouin->settings.surfaceProxyRoiWidth > 0) {
-		updateSpectralProxyRoiRect(0);
-		ui->customplot->replot();
-	}
-	if (m_spectralProxyRoi2RectItem || m_Brillouin->settings.surfaceProxyRoi2Width > 0) {
-		updateSpectralProxyRoiRect(1);
-		ui->customplot->replot();
-	}
+	refreshSpectralProxyRoiRects();
+	ui->customplot->replot();
 	updateEstimatedAcquisitionTime();
 	updateBrillouinStartAvailability();
 }

@@ -879,6 +879,7 @@ void Brillouin::applySurfaceFollowPlan() {
 		} else {
 			emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
 		}
+		emit(s_surfaceScanProgress(100.0, "Surface scan finished."));
 	}
 }
 
@@ -926,7 +927,7 @@ void enqueueOverviewBrightfieldImage(
 		rankData,
 		dimsData,
 		date,
-		"Brightfield overview",
+		"Brightfield z overview",
 		typedImage,
 		cameraSettings.exposureTime,
 		cameraSettings.gain,

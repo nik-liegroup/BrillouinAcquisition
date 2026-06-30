@@ -442,6 +442,7 @@ private slots:
 	void showPosition(POINT3);
 	void updateEstimatedAcquisitionTime();
 	void updateBrillouinStartAvailability();
+	void refreshSpectralProxyRoiRects();
 	void setHomePositionBounds(BOUNDS);
 	void setCurrentPositionBounds(BOUNDS bounds);
 	void showCalibrationInterval(int);
