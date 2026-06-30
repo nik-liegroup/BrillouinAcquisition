@@ -201,6 +201,8 @@ private:
 	POINT2 m_positionScanner{ -1, -1 };
 	bool m_locatePositionScanner{ false };
 	BrightfieldViewRotation m_brightfieldViewRotation{ BrightfieldViewRotation::Rot0 };
+	bool m_brightfieldMirrorHorizontal{ false };
+	bool m_brightfieldMirrorVertical{ false };
 	int m_brightfieldRawWidth{ 1 };
 	int m_brightfieldRawHeight{ 1 };
 
@@ -385,9 +387,10 @@ private slots:
 	int brightfieldDisplayWidth() const;
 	int brightfieldDisplayHeight() const;
 	bool isBrightfieldRotated90() const;
+	bool hasBrightfieldViewTransform() const;
 	QString brightfieldRotationText() const;
-	void updateBrightfieldRotationButton();
-	void applyBrightfieldRotationChanged();
+	void updateBrightfieldTransformButtons();
+	void applyBrightfieldViewTransformChanged();
 
 	void xAxisRangeChangedODT(const QCPRange& newRange);
 	void yAxisRangeChangedODT(const QCPRange& newRange);
@@ -451,6 +454,7 @@ private slots:
 	void showEnabledModes(ACQUISITION_MODE mode);
 	void showBrillouinStatus(ACQUISITION_STATUS state);
 	void showBrillouinProgress(double progress, int seconds);
+	void showSurfaceScanProgress(double progress, const QString& message);
 	void showODTStatus(ACQUISITION_STATUS state);
 	void showODTProgress(double progress, int seconds);
 	void showFluorescenceStatus(ACQUISITION_STATUS state);
@@ -475,6 +479,8 @@ private slots:
 
 	void on_camera_displayMode_currentIndexChanged(const QString& text);
 	void on_brightfieldRotationButton_clicked();
+	void on_brightfieldMirrorHorizontalButton_clicked();
+	void on_brightfieldMirrorVerticalButton_clicked();
 	void on_setBackground_clicked();
 
 	void applyGradient(const PLOT_SETTINGS& plotSettings);

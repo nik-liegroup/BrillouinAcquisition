@@ -4164,6 +4164,56 @@ border: none;</string>
            </widget>
           </item>
           <item>
+           <widget class="QPushButton" name="brightfieldMirrorHorizontalButton">
+            <property name="toolTip">
+             <string>Mirror the brightfield view and overlays horizontally.</string>
+            </property>
+            <property name="minimumSize">
+             <size>
+              <width>60</width>
+              <height>20</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>70</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>Mirror H</string>
+            </property>
+            <property name="checkable">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="brightfieldMirrorVerticalButton">
+            <property name="toolTip">
+             <string>Mirror the brightfield view and overlays vertically.</string>
+            </property>
+            <property name="minimumSize">
+             <size>
+              <width>60</width>
+              <height>20</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>70</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>Mirror V</string>
+            </property>
+            <property name="checkable">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
            <widget class="QPushButton" name="addFocusMarker_brightfield">
             <property name="minimumSize">
              <size>
@@ -4623,6 +4673,8 @@ border: none;</string>
   <tabstop>acquisitionFilename</tabstop>
   <tabstop>autoscalePlot_brightfield</tabstop>
   <tabstop>brightfieldRotationButton</tabstop>
+  <tabstop>brightfieldMirrorHorizontalButton</tabstop>
+  <tabstop>brightfieldMirrorVerticalButton</tabstop>
   <tabstop>rangeLowerODT</tabstop>
   <tabstop>rangeUpperODT</tabstop>
   <tabstop>camera_singleShot_brightfield</tabstop>

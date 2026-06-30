@@ -607,19 +607,63 @@ bool Brillouin::runSurfacePreScan() {
 	std::vector<std::vector<double>> zSurface(ySamples.size(), std::vector<double>(xSamples.size(), 0.0));
 	std::vector<std::vector<bool>> zSurfaceValid(ySamples.size(), std::vector<bool>(xSamples.size(), false));
 	auto frame = std::vector<std::byte>(m_settings.camera.roi.bytesPerFrame);
+	const auto totalSurfaceSteps = std::max(1, (int)(xSamples.size() * ySamples.size() * zSamples.size()));
+	int completedSurfaceSteps = 0;
 
 	// Measure medium reference before scanning if requested.
 	if (m_settings.useMediumReference) {
+		bool referencePositionFound = false;
+		POINT3 referencePosition{ 0.0, 0.0, 0.0 };
+		for (gsl::index yi{ 0 }; yi < (gsl::index)ySamples.size() && !referencePositionFound; yi++) {
+			for (gsl::index xi{ 0 }; xi < (gsl::index)xSamples.size(); xi++) {
+				const POINT2 coarsePoint{ xSamples[xi], ySamples[yi] };
+				if (m_settings.useRoiMask && !isPointInPolygonUm(coarsePoint, m_settings.roiPolygonUm)) {
+					continue;
+				}
+				const auto zOrigin = m_settings.gridCoordinatesAbsolute
+					? m_settings.absoluteGridOriginUm.z
+					: m_startPosition.z;
+				referencePosition = m_settings.gridCoordinatesAbsolute
+					? POINT3{ xSamples[xi] + m_settings.absoluteGridOriginUm.x, ySamples[yi] + m_settings.absoluteGridOriginUm.y, zOrigin }
+					: POINT3{ m_startPosition.x + xSamples[xi], m_startPosition.y + ySamples[yi], zOrigin };
+				referencePositionFound = true;
+				break;
+			}
+		}
+		if (referencePositionFound) {
+			m_scanControl->setPosition(referencePosition);
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		}
 		const int refFrames = std::max(1, m_settings.mediumReferenceFrameCount);
 		double refSum = 0.0;
 		for (int i = 0; i < refFrames; i++) {
+			if (m_abort) {
+				return false;
+			}
 			m_andor->getImageForAcquisition(frame.data());
-			refSum += estimateFrameMetric(frame);
+			const auto refMetric = estimateFrameMetric(frame);
+			refSum += refMetric;
+			const auto refProgress = 5.0 * (double)(i + 1) / refFrames;
+			emit(s_surfaceScanProgress(
+				refProgress,
+				QString("Surface reference %1/%2: metric %3")
+					.arg(i + 1)
+					.arg(refFrames)
+					.arg(refMetric, 0, 'f', 3)
+			));
 		}
 		m_settings.mediumReferenceValue = refSum / refFrames;
+		emit(s_surfaceScanProgress(
+			5.0,
+			QString("Surface reference measured: %1")
+				.arg(m_settings.mediumReferenceValue, 0, 'f', 3)
+		));
 	}
 
 	const auto dropFraction = std::clamp(m_settings.surfaceDropFraction, 0.0, 0.99);
+	const auto referenceThreshold = (m_settings.useMediumReference && m_settings.mediumReferenceValue > 1e-12)
+		? (1.0 - dropFraction) * m_settings.mediumReferenceValue
+		: std::numeric_limits<double>::quiet_NaN();
 
 	for (gsl::index yi{ 0 }; yi < (gsl::index)ySamples.size(); yi++) {
 		for (gsl::index xi{ 0 }; xi < (gsl::index)xSamples.size(); xi++) {
@@ -634,6 +678,9 @@ bool Brillouin::runSurfacePreScan() {
 			size_t foundIndex = 0;
 
 			for (gsl::index zi{ 0 }; zi < (gsl::index)zSamples.size(); zi++) {
+				if (m_abort) {
+					return false;
+				}
 				const auto zRel = zSamples[zi];
 				const auto xyPosition = [&]() {
 					if (m_settings.gridCoordinatesAbsolute) {
@@ -659,14 +706,41 @@ bool Brillouin::runSurfacePreScan() {
 					bestIndex = (size_t)zi;
 				}
 
-				// One-direction stop criterion: find first drop relative to medium reference.
-				if (m_settings.useMediumReference && m_settings.mediumReferenceValue > 1e-12) {
-					const auto thresholdAbs = (1.0 - dropFraction) * m_settings.mediumReferenceValue;
-					if (metric <= thresholdAbs) {
-						foundSurface = true;
-						foundIndex = (size_t)zi;
-						break;
-					}
+				completedSurfaceSteps++;
+				const auto progress = 5.0 + 95.0 * (double)completedSurfaceSteps / totalSurfaceSteps;
+				emit(s_surfaceScanProgress(
+					progress,
+					QString("Surface scan %1%: x %2/%3, y %4/%5, z %6/%7, metric %8, threshold %9")
+						.arg(progress, 0, 'f', 1)
+						.arg((int)xi + 1)
+						.arg((int)xSamples.size())
+						.arg((int)yi + 1)
+						.arg((int)ySamples.size())
+						.arg((int)zi + 1)
+						.arg((int)zSamples.size())
+						.arg(metric, 0, 'f', 3)
+						.arg(referenceThreshold, 0, 'f', 3)
+				));
+
+				// Stop as soon as the ROI metric has dropped enough from the measured
+				// medium reference. This assumes a monotonic signal drop during the z scan.
+				const auto referenceDrop = std::isfinite(referenceThreshold) && metric <= referenceThreshold;
+				if (referenceDrop) {
+					foundSurface = true;
+					foundIndex = (size_t)zi;
+					emit(s_surfaceScanProgress(
+						progress,
+						QString("Surface found at x %1/%2, y %3/%4, z step %5/%6: metric %7 <= threshold %8")
+							.arg((int)xi + 1)
+							.arg((int)xSamples.size())
+							.arg((int)yi + 1)
+							.arg((int)ySamples.size())
+							.arg((int)zi + 1)
+							.arg((int)zSamples.size())
+							.arg(metric, 0, 'f', 3)
+							.arg(referenceThreshold, 0, 'f', 3)
+					));
+					break;
 				}
 			}
 
@@ -895,9 +969,10 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		m_abort = true;
 		return;
 	}
-	auto positionsX = std::vector<double>(nrPositions);
-	auto positionsY = std::vector<double>(nrPositions);
-	auto positionsZ = std::vector<double>(nrPositions);
+	const auto gridPositionCount = m_settings.xSteps * m_settings.ySteps * m_settings.zSteps;
+	auto positionsX = std::vector<double>(gridPositionCount);
+	auto positionsY = std::vector<double>(gridPositionCount);
+	auto positionsZ = std::vector<double>(gridPositionCount);
 	auto posIndex{ 0 };
 	for (gsl::index ii{ 0 }; ii < m_settings.zSteps; ii++) {
 		for (gsl::index jj{ 0 }; jj < m_settings.xSteps; jj++) {
@@ -919,13 +994,18 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	storage->setPositions("x", positionsX, rank, dims);
 	storage->setPositions("y", positionsY, rank, dims);
 	storage->setPositions("z", positionsZ, rank, dims);
+	const hsize_t originDims[1] = { 1 };
+	storage->setPositions("absolute-origin-x", std::vector<double>{ m_settings.absoluteGridOriginUm.x }, 1, originDims);
+	storage->setPositions("absolute-origin-y", std::vector<double>{ m_settings.absoluteGridOriginUm.y }, 1, originDims);
+	storage->setPositions("absolute-origin-z", std::vector<double>{ m_settings.absoluteGridOriginUm.z }, 1, originDims);
+	storage->setPositions("grid-coordinates-absolute", std::vector<double>{ m_settings.gridCoordinatesAbsolute ? 1.0 : 0.0 }, 1, originDims);
 
 	// Explicitly store which grid points were sampled to keep metadata consistent for sparse ROI scans.
-	auto sampledMask = std::vector<double>(nrPositions, 0.0);
+	auto sampledMask = std::vector<double>(gridPositionCount, 0.0);
 	for (gsl::index ll{ 0 }; ll < (gsl::index)m_orderedIndices.size(); ll++) {
 		const auto idx = m_orderedIndices[ll];
 		const auto flat = idx.z * (m_settings.xSteps * m_settings.ySteps) + idx.y * m_settings.xSteps + idx.x;
-		if (flat >= 0 && flat < nrPositions) {
+		if (flat >= 0 && flat < gridPositionCount) {
 			sampledMask[flat] = 1.0;
 		}
 	}

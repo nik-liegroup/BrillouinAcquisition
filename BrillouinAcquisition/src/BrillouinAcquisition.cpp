@@ -202,6 +202,12 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		this,
 		[this](double progress, int seconds) { showBrillouinProgress(progress, seconds); }
 	);
+	connection = QWidget::connect(
+		m_Brillouin,
+		&Brillouin::s_surfaceScanProgress,
+		this,
+		[this](double progress, const QString& message) { showSurfaceScanProgress(progress, message); }
+	);
 
 	// slot to show calibration running
 	connection = QWidget::connect(
@@ -736,27 +742,31 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 
 			connect(m_absoluteGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
 				if (enabled && m_scanControl) {
-					const auto homePosition = m_scanControl->getHomePosition();
-					if (!m_Brillouin->settings.gridCoordinatesAbsolute) {
-						const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
-						for (auto& point : m_Brillouin->settings.roiPolygonUm) {
-							point.x += stagePosition.x - homePosition.x;
-							point.y += stagePosition.y - homePosition.y;
-						}
-					}
-					m_Brillouin->settings.absoluteGridOriginUm = homePosition;
+					// Anchor absolute grid coordinates to the current focus position so
+					// enabling the mode preserves the visible grid and ROI exactly.
+					m_Brillouin->settings.absoluteGridOriginUm = m_scanControl->getPosition();
 				} else if (!enabled && m_scanControl && m_Brillouin->settings.gridCoordinatesAbsolute) {
-					const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+					const auto focusPosition = m_scanControl->getPosition();
 					const auto origin = m_Brillouin->settings.absoluteGridOriginUm;
+					const auto deltaX = origin.x - focusPosition.x;
+					const auto deltaY = origin.y - focusPosition.y;
+					const auto deltaZ = origin.z - focusPosition.z;
+					m_Brillouin->settings.setXMin(m_Brillouin->settings.xMin + deltaX);
+					m_Brillouin->settings.setXMax(m_Brillouin->settings.xMax + deltaX);
+					m_Brillouin->settings.setYMin(m_Brillouin->settings.yMin + deltaY);
+					m_Brillouin->settings.setYMax(m_Brillouin->settings.yMax + deltaY);
+					m_Brillouin->settings.setZMin(m_Brillouin->settings.zMin + deltaZ);
+					m_Brillouin->settings.setZMax(m_Brillouin->settings.zMax + deltaZ);
 					for (auto& point : m_Brillouin->settings.roiPolygonUm) {
-						point.x += origin.x - stagePosition.x;
-						point.y += origin.y - stagePosition.y;
+						point.x += deltaX;
+						point.y += deltaY;
 					}
 				}
 				m_Brillouin->settings.gridCoordinatesAbsolute = enabled;
 				ui->setHome->setDisabled(enabled);
 				ui->moveHome->setDisabled(enabled);
 				QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
+				updateBrillouinSettings();
 				update_AOI_preview();
 			});
 
@@ -1536,11 +1546,21 @@ void BrillouinAcquisition::on_brightfieldRotationButton_clicked() {
 	rotation += 1;
 	rotation = (rotation + 4) % 4;
 	m_brightfieldViewRotation = (BrightfieldViewRotation)rotation;
-	applyBrightfieldRotationChanged();
+	applyBrightfieldViewTransformChanged();
 }
 
-void BrillouinAcquisition::applyBrightfieldRotationChanged() {
-	updateBrightfieldRotationButton();
+void BrillouinAcquisition::on_brightfieldMirrorHorizontalButton_clicked() {
+	m_brightfieldMirrorHorizontal = ui->brightfieldMirrorHorizontalButton->isChecked();
+	applyBrightfieldViewTransformChanged();
+}
+
+void BrillouinAcquisition::on_brightfieldMirrorVerticalButton_clicked() {
+	m_brightfieldMirrorVertical = ui->brightfieldMirrorVerticalButton->isChecked();
+	applyBrightfieldViewTransformChanged();
+}
+
+void BrillouinAcquisition::applyBrightfieldViewTransformChanged() {
+	updateBrightfieldTransformButtons();
 	m_ODTPlot.colorMap->data()->setSize(brightfieldDisplayWidth(), brightfieldDisplayHeight());
 	m_ODTPlot.colorMap->data()->setRange(QCPRange(1, brightfieldDisplayWidth()), QCPRange(1, brightfieldDisplayHeight()));
 	m_ODTPlot.plotHandle->xAxis->setRange(QCPRange(1, brightfieldDisplayWidth()));
@@ -1556,9 +1576,15 @@ QString BrillouinAcquisition::brightfieldRotationText() const {
 	return QString("Rot %1 deg").arg((int)m_brightfieldViewRotation * 90);
 }
 
-void BrillouinAcquisition::updateBrightfieldRotationButton() {
+void BrillouinAcquisition::updateBrightfieldTransformButtons() {
 	if (ui->brightfieldRotationButton) {
 		ui->brightfieldRotationButton->setText(brightfieldRotationText());
+	}
+	if (ui->brightfieldMirrorHorizontalButton) {
+		ui->brightfieldMirrorHorizontalButton->setChecked(m_brightfieldMirrorHorizontal);
+	}
+	if (ui->brightfieldMirrorVerticalButton) {
+		ui->brightfieldMirrorVerticalButton->setChecked(m_brightfieldMirrorVertical);
 	}
 }
 
@@ -1859,6 +1885,11 @@ void BrillouinAcquisition::showBrillouinProgress(double progress, int seconds) {
 	string += timeString;
 	string += " remaining.";
 	ui->progressBar->setFormat(string);
+}
+
+void BrillouinAcquisition::showSurfaceScanProgress(double progress, const QString& message) {
+	ui->progressBar->setValue((int)std::clamp(progress, 0.0, 100.0));
+	ui->progressBar->setFormat(message);
 }
 
 void BrillouinAcquisition::showODTStatus(ACQUISITION_STATUS status) {
@@ -2182,6 +2213,12 @@ bool BrillouinAcquisition::isBrightfieldRotated90() const {
 		|| m_brightfieldViewRotation == BrightfieldViewRotation::Rot270;
 }
 
+bool BrillouinAcquisition::hasBrightfieldViewTransform() const {
+	return m_brightfieldViewRotation != BrightfieldViewRotation::Rot0
+		|| m_brightfieldMirrorHorizontal
+		|| m_brightfieldMirrorVertical;
+}
+
 int BrillouinAcquisition::brightfieldDisplayWidth() const {
 	return isBrightfieldRotated90()
 		? std::max(1, m_brightfieldRawHeight)
@@ -2197,32 +2234,51 @@ int BrillouinAcquisition::brightfieldDisplayHeight() const {
 POINT2 BrillouinAcquisition::brightfieldRawToDisplay(POINT2 point) const {
 	const auto rawWidth = std::max(1, m_brightfieldRawWidth);
 	const auto rawHeight = std::max(1, m_brightfieldRawHeight);
+	POINT2 displayPoint;
 	switch (m_brightfieldViewRotation) {
 	case BrightfieldViewRotation::Rot90:
-		return POINT2{ rawHeight - point.y + 1.0, point.x };
+		displayPoint = POINT2{ rawHeight - point.y + 1.0, point.x };
+		break;
 	case BrightfieldViewRotation::Rot180:
-		return POINT2{ rawWidth - point.x + 1.0, rawHeight - point.y + 1.0 };
+		displayPoint = POINT2{ rawWidth - point.x + 1.0, rawHeight - point.y + 1.0 };
+		break;
 	case BrightfieldViewRotation::Rot270:
-		return POINT2{ point.y, rawWidth - point.x + 1.0 };
+		displayPoint = POINT2{ point.y, rawWidth - point.x + 1.0 };
+		break;
 	case BrightfieldViewRotation::Rot0:
 	default:
-		return point;
+		displayPoint = point;
+		break;
 	}
+	if (m_brightfieldMirrorHorizontal) {
+		displayPoint.x = brightfieldDisplayWidth() - displayPoint.x + 1.0;
+	}
+	if (m_brightfieldMirrorVertical) {
+		displayPoint.y = brightfieldDisplayHeight() - displayPoint.y + 1.0;
+	}
+	return displayPoint;
 }
 
 POINT2 BrillouinAcquisition::brightfieldDisplayToRaw(POINT2 point) const {
 	const auto rawWidth = std::max(1, m_brightfieldRawWidth);
 	const auto rawHeight = std::max(1, m_brightfieldRawHeight);
+	auto unmirroredPoint = point;
+	if (m_brightfieldMirrorHorizontal) {
+		unmirroredPoint.x = brightfieldDisplayWidth() - unmirroredPoint.x + 1.0;
+	}
+	if (m_brightfieldMirrorVertical) {
+		unmirroredPoint.y = brightfieldDisplayHeight() - unmirroredPoint.y + 1.0;
+	}
 	switch (m_brightfieldViewRotation) {
 	case BrightfieldViewRotation::Rot90:
-		return POINT2{ point.y, rawHeight - point.x + 1.0 };
+		return POINT2{ unmirroredPoint.y, rawHeight - unmirroredPoint.x + 1.0 };
 	case BrightfieldViewRotation::Rot180:
-		return POINT2{ rawWidth - point.x + 1.0, rawHeight - point.y + 1.0 };
+		return POINT2{ rawWidth - unmirroredPoint.x + 1.0, rawHeight - unmirroredPoint.y + 1.0 };
 	case BrightfieldViewRotation::Rot270:
-		return POINT2{ rawWidth - point.y + 1.0, point.x };
+		return POINT2{ rawWidth - unmirroredPoint.y + 1.0, unmirroredPoint.x };
 	case BrightfieldViewRotation::Rot0:
 	default:
-		return point;
+		return unmirroredPoint;
 	}
 }
 
@@ -2566,11 +2622,11 @@ void BrillouinAcquisition::plot(PLOT_SETTINGS* plotSettings, long long dim_x, lo
 template <typename T>
 void BrillouinAcquisition::plotting(PLOT_SETTINGS* plotSettings, long long dim_x, long long dim_y, const std::vector<T>& unpackedBuffer) {
 	// images are given row by row, starting at the top left
-	const bool rotateBrightfield = plotSettings == &m_ODTPlot && m_brightfieldViewRotation != BrightfieldViewRotation::Rot0;
+	const bool transformBrightfield = plotSettings == &m_ODTPlot && hasBrightfieldViewTransform();
 	if (plotSettings == &m_ODTPlot) {
 		m_brightfieldRawWidth = std::max(1, (int)dim_x);
 		m_brightfieldRawHeight = std::max(1, (int)dim_y);
-		if (rotateBrightfield) {
+		if (transformBrightfield) {
 			plotSettings->colorMap->data()->setSize(brightfieldDisplayWidth(), brightfieldDisplayHeight());
 			plotSettings->colorMap->data()->setRange(QCPRange(1, brightfieldDisplayWidth()), QCPRange(1, brightfieldDisplayHeight()));
 		}
@@ -2579,7 +2635,7 @@ void BrillouinAcquisition::plotting(PLOT_SETTINGS* plotSettings, long long dim_x
 	for (gsl::index yIndex{ 0 }; yIndex < dim_y; ++yIndex) {
 		for (gsl::index xIndex{ 0 }; xIndex < dim_x; ++xIndex) {
 			tIndex = yIndex * dim_x + xIndex;
-			if (rotateBrightfield) {
+			if (transformBrightfield) {
 				const auto rawPoint = POINT2{ (double)xIndex + 1.0, (double)(dim_y - yIndex) };
 				const auto displayPoint = brightfieldRawToDisplay(rawPoint);
 				plotSettings->colorMap->data()->setCell((int)displayPoint.x - 1, (int)displayPoint.y - 1, unpackedBuffer[tIndex]);
@@ -5132,6 +5188,8 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("stage-laser-position-x", m_positionScanner.x);
 	settings.setValue("stage-laser-position-y", m_positionScanner.y);
 	settings.setValue("brightfield-view-rotation-degrees", (int)m_brightfieldViewRotation * 90);
+	settings.setValue("brightfield-view-mirror-horizontal", m_brightfieldMirrorHorizontal);
+	settings.setValue("brightfield-view-mirror-vertical", m_brightfieldMirrorVertical);
 	settings.setValue("stage-x-min", m_Brillouin->settings.xMin);
 	settings.setValue("stage-x-max", m_Brillouin->settings.xMax);
 	settings.setValue("stage-x-steps", m_Brillouin->settings.xSteps);
@@ -5259,15 +5317,17 @@ void BrillouinAcquisition::readSettings() {
 	m_positionScanner = POINT2{ posX.toDouble(), posY.toDouble() };
 	const auto brightfieldRotationDegrees = settings.value("brightfield-view-rotation-degrees", (int)m_brightfieldViewRotation * 90).toInt();
 	m_brightfieldViewRotation = (BrightfieldViewRotation)std::clamp(brightfieldRotationDegrees / 90, 0, 3);
-	updateBrightfieldRotationButton();
-	m_Brillouin->settings.setXMin(settings.value("stage-x-min", m_Brillouin->settings.xMin).toInt());
-	m_Brillouin->settings.setXMax(settings.value("stage-x-max", m_Brillouin->settings.xMax).toInt());
+	m_brightfieldMirrorHorizontal = settings.value("brightfield-view-mirror-horizontal", m_brightfieldMirrorHorizontal).toBool();
+	m_brightfieldMirrorVertical = settings.value("brightfield-view-mirror-vertical", m_brightfieldMirrorVertical).toBool();
+	updateBrightfieldTransformButtons();
+	m_Brillouin->settings.setXMin(settings.value("stage-x-min", m_Brillouin->settings.xMin).toDouble());
+	m_Brillouin->settings.setXMax(settings.value("stage-x-max", m_Brillouin->settings.xMax).toDouble());
 	m_Brillouin->settings.setXSteps(settings.value("stage-x-steps", m_Brillouin->settings.xSteps).toInt());
-	m_Brillouin->settings.setYMin(settings.value("stage-y-min", m_Brillouin->settings.yMin).toInt());
-	m_Brillouin->settings.setYMax(settings.value("stage-y-max", m_Brillouin->settings.yMax).toInt());
+	m_Brillouin->settings.setYMin(settings.value("stage-y-min", m_Brillouin->settings.yMin).toDouble());
+	m_Brillouin->settings.setYMax(settings.value("stage-y-max", m_Brillouin->settings.yMax).toDouble());
 	m_Brillouin->settings.setYSteps(settings.value("stage-y-steps", m_Brillouin->settings.ySteps).toInt());
-	m_Brillouin->settings.setZMin(settings.value("stage-z-min", m_Brillouin->settings.zMin).toInt());
-	m_Brillouin->settings.setZMax(settings.value("stage-z-max", m_Brillouin->settings.zMax).toInt());
+	m_Brillouin->settings.setZMin(settings.value("stage-z-min", m_Brillouin->settings.zMin).toDouble());
+	m_Brillouin->settings.setZMax(settings.value("stage-z-max", m_Brillouin->settings.zMax).toDouble());
 	m_Brillouin->settings.setZSteps(settings.value("stage-z-steps", m_Brillouin->settings.zSteps).toInt());
 	m_Brillouin->settings.preCalibration = settings.value("brillouin-pre-calibrate", m_Brillouin->settings.preCalibration).toBool();
 	m_Brillouin->settings.postCalibration = settings.value("brillouin-post-calibrate", m_Brillouin->settings.postCalibration).toBool();

@@ -294,6 +294,7 @@ signals:
 	void s_scanOrderChanged(SCAN_ORDER);
 	void s_orderedPositionsChanged(std::vector<POINT3>);
 	void s_surfaceZSafetyWarning(double plannedZ, double maxSafeZ);
+	void s_surfaceScanProgress(double progress, QString message);
 };
 
 #endif //BRILLOUIN_H
