@@ -577,18 +577,18 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			const int clampedRight = std::clamp(right, clampedLeft, frameW - 1);
 			const int clampedDisplayBottom = std::clamp(bottom, 0, frameH - 1);
 			const int clampedDisplayTop = std::clamp(top, clampedDisplayBottom, frameH - 1);
-			const int clampedTop = frameH - 1 - clampedDisplayTop;
-			const int clampedBottom = frameH - 1 - clampedDisplayBottom;
+			const int displayRoiTop = clampedDisplayBottom;
+			const int displayRoiHeight = clampedDisplayTop - clampedDisplayBottom + 1;
 			if (m_spectralProxyActiveRoiIndex == 1) {
 				m_Brillouin->settings.surfaceProxyRoi2Left = clampedLeft;
-				m_Brillouin->settings.surfaceProxyRoi2Top = clampedTop;
+				m_Brillouin->settings.surfaceProxyRoi2Top = displayRoiTop;
 				m_Brillouin->settings.surfaceProxyRoi2Width = clampedRight - clampedLeft + 1;
-				m_Brillouin->settings.surfaceProxyRoi2Height = clampedBottom - clampedTop + 1;
+				m_Brillouin->settings.surfaceProxyRoi2Height = displayRoiHeight;
 			} else {
 				m_Brillouin->settings.surfaceProxyRoiLeft = clampedLeft;
-				m_Brillouin->settings.surfaceProxyRoiTop = clampedTop;
+				m_Brillouin->settings.surfaceProxyRoiTop = displayRoiTop;
 				m_Brillouin->settings.surfaceProxyRoiWidth = clampedRight - clampedLeft + 1;
-				m_Brillouin->settings.surfaceProxyRoiHeight = clampedBottom - clampedTop + 1;
+				m_Brillouin->settings.surfaceProxyRoiHeight = displayRoiHeight;
 			}
 
 			updateSpectralProxyRoiRect(m_spectralProxyActiveRoiIndex);
@@ -1163,9 +1163,8 @@ void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	}
 
 	auto* rect = ensureSpectralProxyRoiRect(index);
-	const int frameH = std::max(1, (int)m_Brillouin->settings.camera.roi.height_binned);
-	rect->topLeft->setCoords(left + 1, frameH - top);
-	rect->bottomRight->setCoords(left + width, frameH - top - height + 1);
+	rect->topLeft->setCoords(left + 1, top + height);
+	rect->bottomRight->setCoords(left + width, top + 1);
 }
 
 void BrillouinAcquisition::clearSpectralProxyRois() {
@@ -1904,8 +1903,7 @@ void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
 		const int clampedBottom = std::clamp(top + height - 1, clampedTop, frameH - 1);
 
 		maxValue = -std::numeric_limits<double>::infinity();
-		for (int rawY = clampedTop; rawY <= clampedBottom; rawY++) {
-			const int displayY = frameH - 1 - rawY;
+		for (int displayY = clampedTop; displayY <= clampedBottom; displayY++) {
 			for (int x = clampedLeft; x <= clampedRight; x++) {
 				maxValue = std::max(maxValue, mapData->cell(x, displayY));
 			}

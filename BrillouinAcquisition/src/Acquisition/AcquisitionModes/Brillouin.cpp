@@ -500,8 +500,9 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 		return 0.0;
 	}
 
-	auto getValue = [&](int x, int y) -> double {
-		const auto idx = (size_t)y * width + x;
+	auto getDisplayValue = [&](int x, int displayY) -> double {
+		const auto rawY = height - 1 - displayY;
+		const auto idx = (size_t)rawY * width + x;
 		if (m_settings.camera.readout.dataType == "unsigned short") {
 			const auto* data = reinterpret_cast<const unsigned short*>(image.data());
 			return data[idx];
@@ -515,23 +516,23 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 	};
 
 	std::vector<double> metrics;
-	auto appendMetric = [&](int roiLeft, int roiTop, int roiWidth, int roiHeight) {
+	auto appendMetric = [&](int roiLeft, int roiDisplayBottom, int roiWidth, int roiHeight) {
 		if (roiWidth <= 0 || roiHeight <= 0) {
 			return;
 		}
 
 		roiLeft = std::max(0, roiLeft);
-		roiTop = std::max(0, roiTop);
+		roiDisplayBottom = std::max(0, roiDisplayBottom);
 		roiWidth = std::min(roiWidth, width - roiLeft);
-		roiHeight = std::min(roiHeight, height - roiTop);
+		roiHeight = std::min(roiHeight, height - roiDisplayBottom);
 		if (roiWidth <= 0 || roiHeight <= 0) {
 			return;
 		}
 
 		auto maxSignal = -std::numeric_limits<double>::infinity();
-		for (int y = roiTop; y < roiTop + roiHeight; y++) {
+		for (int displayY = roiDisplayBottom; displayY < roiDisplayBottom + roiHeight; displayY++) {
 			for (int x = roiLeft; x < roiLeft + roiWidth; x++) {
-				maxSignal = std::max(maxSignal, getValue(x, y));
+				maxSignal = std::max(maxSignal, getDisplayValue(x, displayY));
 			}
 		}
 		if (!std::isfinite(maxSignal)) {
