@@ -392,6 +392,10 @@ void ScanControl::registerCapability(Capabilities capability) {
 std::vector<POINT2> ScanControl::convertPositionsToPix() {
 	auto positionsPix = std::vector<POINT2>(m_AOI_positions.size());
 
+	if (m_AOI_positionsAbsolute || m_measurementMode) {
+		getPosition(PositionType::STAGE);
+	}
+
 	// In normal mode, the positions are shown relative to the scanner position.
 	auto offset = m_positionScanner;
 	if (m_AOI_positionsAbsolute) {
