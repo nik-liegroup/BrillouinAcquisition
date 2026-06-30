@@ -528,19 +528,16 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 			return;
 		}
 
-		std::vector<double> signalValues;
-		signalValues.reserve((size_t)roiWidth * (size_t)roiHeight);
+		auto maxSignal = -std::numeric_limits<double>::infinity();
 		for (int y = roiTop; y < roiTop + roiHeight; y++) {
 			for (int x = roiLeft; x < roiLeft + roiWidth; x++) {
-				signalValues.push_back(getValue(x, y));
+				maxSignal = std::max(maxSignal, getValue(x, y));
 			}
 		}
-		if (signalValues.empty()) {
+		if (!std::isfinite(maxSignal)) {
 			return;
 		}
-		const auto percentileIndex = (size_t)std::floor(0.9 * (double)(signalValues.size() - 1));
-		std::nth_element(signalValues.begin(), signalValues.begin() + percentileIndex, signalValues.end());
-		metrics.push_back(signalValues[percentileIndex]);
+		metrics.push_back(maxSignal);
 	};
 
 	appendMetric(
