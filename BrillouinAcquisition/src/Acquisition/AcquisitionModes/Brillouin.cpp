@@ -528,16 +528,19 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 			return;
 		}
 
-		double signalSum{ 0.0 };
-		int signalCount{ 0 };
+		std::vector<double> signalValues;
+		signalValues.reserve((size_t)roiWidth * (size_t)roiHeight);
 		for (int y = roiTop; y < roiTop + roiHeight; y++) {
 			for (int x = roiLeft; x < roiLeft + roiWidth; x++) {
-				signalSum += getValue(x, y);
-				signalCount++;
+				signalValues.push_back(getValue(x, y));
 			}
 		}
-		const auto signalMean = signalCount > 0 ? signalSum / signalCount : 0.0;
-		metrics.push_back(signalMean);
+		if (signalValues.empty()) {
+			return;
+		}
+		const auto percentileIndex = (size_t)std::floor(0.9 * (double)(signalValues.size() - 1));
+		std::nth_element(signalValues.begin(), signalValues.begin() + percentileIndex, signalValues.end());
+		metrics.push_back(signalValues[percentileIndex]);
 	};
 
 	appendMetric(

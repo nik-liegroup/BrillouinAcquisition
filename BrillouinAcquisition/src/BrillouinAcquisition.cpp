@@ -1893,7 +1893,7 @@ void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
 
 	const int frameW = std::max(1, mapData->keySize());
 	const int frameH = std::max(1, mapData->valueSize());
-	auto measureRoi = [mapData, frameW, frameH](int left, int top, int width, int height, double& mean) {
+	auto measureRoi = [mapData, frameW, frameH](int left, int top, int width, int height, double& percentile90) {
 		if (width <= 0 || height <= 0) {
 			return false;
 		}
@@ -1902,19 +1902,20 @@ void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
 		const int clampedRight = std::clamp(left + width - 1, clampedLeft, frameW - 1);
 		const int clampedBottom = std::clamp(top + height - 1, clampedTop, frameH - 1);
 
-		double sum{ 0.0 };
-		int count{ 0 };
+		std::vector<double> values;
+		values.reserve((size_t)(clampedRight - clampedLeft + 1) * (size_t)(clampedBottom - clampedTop + 1));
 		for (int rawY = clampedTop; rawY <= clampedBottom; rawY++) {
 			const int displayY = frameH - 1 - rawY;
 			for (int x = clampedLeft; x <= clampedRight; x++) {
-				sum += mapData->cell(x, displayY);
-				count++;
+				values.push_back(mapData->cell(x, displayY));
 			}
 		}
-		if (count <= 0) {
+		if (values.empty()) {
 			return false;
 		}
-		mean = sum / count;
+		const auto percentileIndex = (size_t)std::floor(0.9 * (double)(values.size() - 1));
+		std::nth_element(values.begin(), values.begin() + percentileIndex, values.end());
+		percentile90 = values[percentileIndex];
 		return true;
 	};
 
@@ -1950,7 +1951,7 @@ void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
 	if (hasRoi2) {
 		parts << QString("ROI2 %1").arg(roi2Mean, 0, 'f', 2);
 	}
-	ui->statusBar->showMessage(QString("Spectral ROI mean: %1").arg(parts.join(", ")));
+	ui->statusBar->showMessage(QString("Spectral ROI p90: %1").arg(parts.join(", ")));
 }
 
 void BrillouinAcquisition::showODTStatus(ACQUISITION_STATUS status) {
