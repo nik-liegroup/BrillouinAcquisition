@@ -152,6 +152,7 @@ private:
 	QCheckBox* m_useMediumReferenceCheckbox{ nullptr };
 	QSpinBox* m_mediumReferenceFrameCountSpinBox{ nullptr };
 	QCheckBox* m_absoluteGridCheckbox{ nullptr };
+	QCheckBox* m_saveOverviewBrightfieldPerZCheckbox{ nullptr };
 	QAbstractButton* m_editSpectralProxyRoiCheckbox{ nullptr };
 	QCPItemRect* m_spectralProxyRoiRectItem{ nullptr };
 	QCPItemRect* m_spectralProxyRoi2RectItem{ nullptr };
@@ -249,7 +250,7 @@ private:
 	Thread m_acquisitionThread;
 	Thread m_plottingThread;
 
-	Brillouin* m_Brillouin = new Brillouin(nullptr, m_acquisition, m_andor, m_scanControl);
+	Brillouin* m_Brillouin = new Brillouin(nullptr, m_acquisition, m_andor, m_brightfieldCamera, m_scanControl);
 	ODT* m_ODT{ nullptr };
 	Fluorescence* m_Fluorescence{ nullptr };
 	VoltageCalibration* m_voltageCalibration{ nullptr };

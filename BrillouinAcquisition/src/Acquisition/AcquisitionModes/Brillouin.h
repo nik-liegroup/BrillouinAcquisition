@@ -92,6 +92,9 @@ struct BRILLOUIN_SETTINGS {
 			mediumReferenceFrameCount = settings.mediumReferenceFrameCount;
 			gridCoordinatesAbsolute = settings.gridCoordinatesAbsolute;
 			absoluteGridOriginUm = settings.absoluteGridOriginUm;
+			saveOverviewBrightfieldPerZ = settings.saveOverviewBrightfieldPerZ;
+			overviewBrightfieldExposureMs = settings.overviewBrightfieldExposureMs;
+			overviewBrightfieldGain = settings.overviewBrightfieldGain;
 			camera = settings.camera;
 			return *this;
 		}
@@ -140,6 +143,9 @@ struct BRILLOUIN_SETTINGS {
 		int mediumReferenceFrameCount{ 5 };
 		bool gridCoordinatesAbsolute{ false };
 		POINT3 absoluteGridOriginUm{ 0.0, 0.0, 0.0 };
+		bool saveOverviewBrightfieldPerZ{ false };
+		int overviewBrightfieldExposureMs{ 4 };
+		double overviewBrightfieldGain{ 0.0 };
 
 		// ROI parameters
 		const double& xMin{ m_xMin };
@@ -213,7 +219,7 @@ class Brillouin : public AcquisitionMode {
 	Q_OBJECT
 
 public:
-	Brillouin(QObject* parent, Acquisition* acquisition, Camera*& andor, ScanControl*& scanControl);
+	Brillouin(QObject* parent, Acquisition* acquisition, Camera*& andor, Camera*& brightfieldCamera, ScanControl*& scanControl);
 	~Brillouin();
 
 	BRILLOUIN_SETTINGS& settings{ m_settings };
@@ -259,12 +265,15 @@ private:
 	void applySurfaceFollowPlan();
 	double estimateFrameMetric(const std::vector<std::byte>& image) const;
 	bool runSurfacePreScan();
+	POINT3 overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ) const;
+	void captureOverviewBrightfield(std::unique_ptr <StorageWrapper>& storage, int imageNumber, int zIndex, const POINT3& position);
 
 	std::string getRepetitionFilename();
 
 	BRILLOUIN_SETTINGS m_settings;
 	SCAN_ORDER m_scanOrder;
 	Camera*& m_andor;
+	Camera*& m_brightfieldCamera;
 	bool m_running{ false };				// is acquisition currently running
 	POINT3 m_startPosition{ 0, 0, 0 };
 

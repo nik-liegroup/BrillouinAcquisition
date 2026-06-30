@@ -39,8 +39,8 @@ bool isPointInPolygonUm(const POINT2& point, const std::vector<POINT2>& polygon)
  * Public definitions
  */
 
-Brillouin::Brillouin(QObject* parent, Acquisition* acquisition, Camera*& andor, ScanControl*& scanControl)
-	: AcquisitionMode(parent, acquisition, scanControl), m_andor(andor) {
+Brillouin::Brillouin(QObject* parent, Acquisition* acquisition, Camera*& andor, Camera*& brightfieldCamera, ScanControl*& scanControl)
+	: AcquisitionMode(parent, acquisition, scanControl), m_andor(andor), m_brightfieldCamera(brightfieldCamera) {
 	static QMetaObject::Connection connection = QWidget::connect(
 		this,
 		&Brillouin::s_scanOrderChanged,
@@ -882,6 +882,107 @@ void Brillouin::applySurfaceFollowPlan() {
 	}
 }
 
+POINT3 Brillouin::overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ) const {
+	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : m_startPosition;
+	const auto clampedZIndex = std::clamp(zIndex, 0, (int)directionsZ.size() - 1);
+
+	auto position = POINT3{
+		origin.x + 0.5 * (m_settings.xMin + m_settings.xMax),
+		origin.y + 0.5 * (m_settings.yMin + m_settings.yMax),
+		origin.z + directionsZ[clampedZIndex]
+	};
+
+	if (m_settings.useSurfaceFollow) {
+		for (gsl::index ii{ 0 }; ii < (gsl::index)m_orderedIndices.size(); ii++) {
+			if (m_orderedIndices[ii].z == clampedZIndex) {
+				position.z = m_orderedPositions[ii].z;
+				break;
+			}
+		}
+	}
+
+	return position;
+}
+
+template <typename T>
+void enqueueOverviewBrightfieldImage(
+	std::unique_ptr<StorageWrapper>& storage,
+	int imageNumber,
+	CAMERA_SETTINGS& cameraSettings,
+	const std::vector<std::byte>& image
+) {
+	auto image_ = (std::vector<T>*) &image;
+	auto date = QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc())
+		.toString(Qt::ISODateWithMs).toStdString();
+	int rankData{ 3 };
+	auto dimsData = new hsize_t[3]{ 1, (hsize_t)cameraSettings.roi.height_binned, (hsize_t)cameraSettings.roi.width_binned };
+	auto img = new FLUOIMAGE<T>(
+		imageNumber,
+		rankData,
+		dimsData,
+		date,
+		"Brightfield overview",
+		*image_,
+		cameraSettings.exposureTime,
+		cameraSettings.gain,
+		cameraSettings.roi
+	);
+
+	QMetaObject::invokeMethod(
+		storage.get(),
+		[&storage = storage, img]() { storage.get()->s_enqueuePayload(img); },
+		Qt::AutoConnection
+	);
+}
+
+void Brillouin::captureOverviewBrightfield(
+	std::unique_ptr <StorageWrapper>& storage,
+	int imageNumber,
+	int zIndex,
+	const POINT3& position
+) {
+	if (!m_settings.saveOverviewBrightfieldPerZ || !m_brightfieldCamera || !m_brightfieldCamera->getConnectionStatus()
+		|| !m_scanControl || m_abort) {
+		return;
+	}
+
+	m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
+	m_scanControl->setPosition(position);
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+	auto brightfieldSettings = m_brightfieldCamera->getSettings();
+	brightfieldSettings.exposureTime = 1e-3 * std::max(1, m_settings.overviewBrightfieldExposureMs);
+	brightfieldSettings.gain = m_settings.overviewBrightfieldGain;
+	brightfieldSettings.frameCount = 1;
+	brightfieldSettings.readout.triggerMode = L"Software";
+	brightfieldSettings.readout.cycleMode = L"Fixed";
+
+	m_brightfieldCamera->startAcquisition(brightfieldSettings);
+	brightfieldSettings = m_brightfieldCamera->getSettings();
+
+	std::vector<std::byte> image(brightfieldSettings.roi.bytesPerFrame);
+	m_brightfieldCamera->getImageForAcquisition(&image[0], true);
+	m_brightfieldCamera->stopAcquisition();
+
+	auto queuedImage = false;
+	if (brightfieldSettings.readout.dataType == "unsigned short") {
+		enqueueOverviewBrightfieldImage<unsigned short>(storage, imageNumber, brightfieldSettings, image);
+		queuedImage = true;
+	} else if (brightfieldSettings.readout.dataType == "unsigned char") {
+		enqueueOverviewBrightfieldImage<unsigned char>(storage, imageNumber, brightfieldSettings, image);
+		queuedImage = true;
+	}
+
+	if (queuedImage) {
+		emit(s_surfaceScanProgress(
+			100.0 * (double)(zIndex + 1) / std::max(1, m_settings.zSteps),
+			QString("Saved brightfield overview for z slice %1/%2").arg(zIndex + 1).arg(m_settings.zSteps)
+		));
+	}
+
+	m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
+}
+
 std::string Brillouin::getRepetitionFilename() {
 	auto rawFilename = m_baseFilename.substr(0, m_baseFilename.find_last_of("."));
 	auto fileEnding = m_baseFilename.substr(m_baseFilename.find_last_of("."), std::string::npos);
@@ -1031,6 +1132,22 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	storage->setPositions("sampled-x", sampledX, sampledRank, sampledDims);
 	storage->setPositions("sampled-y", sampledY, sampledRank, sampledDims);
 	storage->setPositions("sampled-z", sampledZ, sampledRank, sampledDims);
+
+	if (m_settings.saveOverviewBrightfieldPerZ) {
+		hsize_t overviewDims[1] = { (hsize_t)m_settings.zSteps };
+		auto overviewX = std::vector<double>(m_settings.zSteps);
+		auto overviewY = std::vector<double>(m_settings.zSteps);
+		auto overviewZ = std::vector<double>(m_settings.zSteps);
+		for (gsl::index ii{ 0 }; ii < m_settings.zSteps; ii++) {
+			const auto position = overviewBrightfieldPositionForZ((int)ii, directionsZ);
+			overviewX[ii] = m_settings.gridCoordinatesAbsolute ? position.x - m_settings.absoluteGridOriginUm.x : position.x;
+			overviewY[ii] = m_settings.gridCoordinatesAbsolute ? position.y - m_settings.absoluteGridOriginUm.y : position.y;
+			overviewZ[ii] = m_settings.gridCoordinatesAbsolute ? position.z - m_settings.absoluteGridOriginUm.z : position.z;
+		}
+		storage->setPositions("overview-brightfield-x", overviewX, sampledRank, overviewDims);
+		storage->setPositions("overview-brightfield-y", overviewY, sampledRank, overviewDims);
+		storage->setPositions("overview-brightfield-z", overviewZ, sampledRank, overviewDims);
+	}
 	delete[] dims;
 
 	bool zSafetyWarned{ false };
@@ -1070,6 +1187,7 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 
 	auto calibrationTimer = QElapsedTimer{};
 	calibrationTimer.start();
+	auto overviewCapturedForZ = std::vector<bool>(m_settings.zSteps, false);
 
 	// move stage to first position, wait 50 ms for it to finish
 	if (m_scanControl) {
@@ -1102,6 +1220,23 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 
 		auto nextCalibration = int{ (int)(100 * (1e-3 * calibrationTimer.elapsed()) / (60 * m_settings.conCalibrationInterval)) };
 		emit(s_timeToCalibration(nextCalibration));
+
+		const auto zIndex = std::clamp(m_orderedIndices[ll].z, 0, std::max(0, m_settings.zSteps - 1));
+		if (m_settings.saveOverviewBrightfieldPerZ && !overviewCapturedForZ[zIndex]) {
+			overviewCapturedForZ[zIndex] = true;
+			captureOverviewBrightfield(storage, zIndex, zIndex, overviewBrightfieldPositionForZ(zIndex, directionsZ));
+			if (m_abort) {
+				return;
+			}
+			if (m_scanControl) {
+				warnIfZUnsafe(m_orderedPositions[ll]);
+				m_scanControl->setPosition(m_orderedPositions[ll]);
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			} else {
+				m_abort = true;
+				return;
+			}
+		}
 
 		std::vector<std::byte> images(m_settings.camera.roi.bytesPerFrame * m_settings.camera.frameCount);
 

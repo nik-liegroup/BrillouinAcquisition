@@ -637,6 +637,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_useMediumReferenceCheckbox = ui->useMediumReferenceCheckbox;
 			m_mediumReferenceFrameCountSpinBox = ui->mediumReferenceFrameCountSpinBox;
 			m_absoluteGridCheckbox = ui->absoluteGridCheckbox;
+			m_saveOverviewBrightfieldPerZCheckbox = ui->saveOverviewBrightfieldPerZCheckbox;
 			m_editSpectralProxyRoiCheckbox = ui->editSpectralProxyRoiCheckbox;
 
 			connect(m_useRoiMaskCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
@@ -741,27 +742,6 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			});
 
 			connect(m_absoluteGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
-				if (enabled && m_scanControl) {
-					// Anchor absolute grid coordinates to the current focus position so
-					// enabling the mode preserves the visible grid and ROI exactly.
-					m_Brillouin->settings.absoluteGridOriginUm = m_scanControl->getPosition();
-				} else if (!enabled && m_scanControl && m_Brillouin->settings.gridCoordinatesAbsolute) {
-					const auto focusPosition = m_scanControl->getPosition();
-					const auto origin = m_Brillouin->settings.absoluteGridOriginUm;
-					const auto deltaX = origin.x - focusPosition.x;
-					const auto deltaY = origin.y - focusPosition.y;
-					const auto deltaZ = origin.z - focusPosition.z;
-					m_Brillouin->settings.setXMin(m_Brillouin->settings.xMin + deltaX);
-					m_Brillouin->settings.setXMax(m_Brillouin->settings.xMax + deltaX);
-					m_Brillouin->settings.setYMin(m_Brillouin->settings.yMin + deltaY);
-					m_Brillouin->settings.setYMax(m_Brillouin->settings.yMax + deltaY);
-					m_Brillouin->settings.setZMin(m_Brillouin->settings.zMin + deltaZ);
-					m_Brillouin->settings.setZMax(m_Brillouin->settings.zMax + deltaZ);
-					for (auto& point : m_Brillouin->settings.roiPolygonUm) {
-						point.x += deltaX;
-						point.y += deltaY;
-					}
-				}
 				m_Brillouin->settings.gridCoordinatesAbsolute = enabled;
 				ui->setHome->setDisabled(enabled);
 				ui->moveHome->setDisabled(enabled);
@@ -770,6 +750,10 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				update_AOI_preview();
 			});
 
+			connect(m_saveOverviewBrightfieldPerZCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				m_Brillouin->settings.saveOverviewBrightfieldPerZ = enabled;
+				updateEstimatedAcquisitionTime();
+			});
 
 			connect(m_editSpectralProxyRoiCheckbox, &QAbstractButton::toggled, this, [this](bool enabled) {
 				if (enabled) {
@@ -1742,6 +1726,7 @@ void BrillouinAcquisition::on_fluoRedExposure_valueChanged(int exposure) {
 
 void BrillouinAcquisition::on_fluoBrightfieldExposure_valueChanged(int exposure) {
 	m_Fluorescence->setExposure(FLUORESCENCE_MODE::BRIGHTFIELD, exposure);
+	m_Brillouin->settings.overviewBrightfieldExposureMs = exposure;
 }
 
 void BrillouinAcquisition::on_fluoBlueGain_valueChanged(double gain) {
@@ -1758,6 +1743,7 @@ void BrillouinAcquisition::on_fluoRedGain_valueChanged(double gain) {
 
 void BrillouinAcquisition::on_fluoBrightfieldGain_valueChanged(double gain) {
 	m_Fluorescence->setGain(FLUORESCENCE_MODE::BRIGHTFIELD, gain);
+	m_Brillouin->settings.overviewBrightfieldGain = gain;
 }
 
 void BrillouinAcquisition::updateFluorescenceSettings(const FLUORESCENCE_SETTINGS& settings) {
@@ -1778,6 +1764,8 @@ void BrillouinAcquisition::updateFluorescenceSettings(const FLUORESCENCE_SETTING
 	ui->fluoGreenGain->setValue(settings.green.gain);
 	ui->fluoRedGain->setValue(settings.red.gain);
 	ui->fluoBrightfieldGain->setValue(settings.brightfield.gain);
+	m_Brillouin->settings.overviewBrightfieldExposureMs = settings.brightfield.exposure;
+	m_Brillouin->settings.overviewBrightfieldGain = settings.brightfield.gain;
 }
 
 void BrillouinAcquisition::showEnabledModes(ACQUISITION_MODE modes) {
@@ -1888,8 +1876,9 @@ void BrillouinAcquisition::showBrillouinProgress(double progress, int seconds) {
 }
 
 void BrillouinAcquisition::showSurfaceScanProgress(double progress, const QString& message) {
-	ui->progressBar->setValue((int)std::clamp(progress, 0.0, 100.0));
-	ui->progressBar->setFormat(message);
+	ui->statusBar->showMessage(QString("%1 (%2% complete)")
+		.arg(message)
+		.arg(std::clamp(progress, 0.0, 100.0), 0, 'f', 1));
 }
 
 void BrillouinAcquisition::showODTStatus(ACQUISITION_STATUS status) {
@@ -2819,6 +2808,7 @@ void BrillouinAcquisition::brightfieldCameraConnectionChanged(bool isConnected) 
 		ui->camera_playPause_brightfield->setEnabled(false);
 		ui->settingsWidget->setTabIcon(3, m_icons.disconnected);
 	}
+	updateBrillouinSettings();
 }
 
 void BrillouinAcquisition::on_camera_playPause_brightfield_clicked() {
@@ -4334,6 +4324,13 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		const QSignalBlocker blocker(*m_absoluteGridCheckbox);
 		m_absoluteGridCheckbox->setChecked(m_Brillouin->settings.gridCoordinatesAbsolute);
 	}
+	if (m_saveOverviewBrightfieldPerZCheckbox) {
+		const QSignalBlocker blocker(*m_saveOverviewBrightfieldPerZCheckbox);
+		m_saveOverviewBrightfieldPerZCheckbox->setChecked(m_Brillouin->settings.saveOverviewBrightfieldPerZ);
+		m_saveOverviewBrightfieldPerZCheckbox->setEnabled(
+			m_hasFluorescence && m_brightfieldCamera != nullptr && m_brightfieldCamera->getConnectionStatus()
+		);
+	}
 	const auto homeControlsDisabled = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
 	ui->setHome->setDisabled(homeControlsDisabled);
 	ui->moveHome->setDisabled(homeControlsDisabled);
@@ -5230,6 +5227,9 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-absolute-grid-origin-x-um", m_Brillouin->settings.absoluteGridOriginUm.x);
 	settings.setValue("brillouin-absolute-grid-origin-y-um", m_Brillouin->settings.absoluteGridOriginUm.y);
 	settings.setValue("brillouin-absolute-grid-origin-z-um", m_Brillouin->settings.absoluteGridOriginUm.z);
+	settings.setValue("brillouin-save-overview-brightfield-per-z", m_Brillouin->settings.saveOverviewBrightfieldPerZ);
+	settings.setValue("brillouin-overview-brightfield-exposure-ms", m_Brillouin->settings.overviewBrightfieldExposureMs);
+	settings.setValue("brillouin-overview-brightfield-gain", m_Brillouin->settings.overviewBrightfieldGain);
 	settings.setValue("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft);
 	settings.setValue("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop);
 	settings.setValue("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth);
@@ -5320,14 +5320,14 @@ void BrillouinAcquisition::readSettings() {
 	m_brightfieldMirrorHorizontal = settings.value("brightfield-view-mirror-horizontal", m_brightfieldMirrorHorizontal).toBool();
 	m_brightfieldMirrorVertical = settings.value("brightfield-view-mirror-vertical", m_brightfieldMirrorVertical).toBool();
 	updateBrightfieldTransformButtons();
-	m_Brillouin->settings.setXMin(settings.value("stage-x-min", m_Brillouin->settings.xMin).toDouble());
-	m_Brillouin->settings.setXMax(settings.value("stage-x-max", m_Brillouin->settings.xMax).toDouble());
+	m_Brillouin->settings.setXMin(settings.value("stage-x-min", m_Brillouin->settings.xMin).toInt());
+	m_Brillouin->settings.setXMax(settings.value("stage-x-max", m_Brillouin->settings.xMax).toInt());
 	m_Brillouin->settings.setXSteps(settings.value("stage-x-steps", m_Brillouin->settings.xSteps).toInt());
-	m_Brillouin->settings.setYMin(settings.value("stage-y-min", m_Brillouin->settings.yMin).toDouble());
-	m_Brillouin->settings.setYMax(settings.value("stage-y-max", m_Brillouin->settings.yMax).toDouble());
+	m_Brillouin->settings.setYMin(settings.value("stage-y-min", m_Brillouin->settings.yMin).toInt());
+	m_Brillouin->settings.setYMax(settings.value("stage-y-max", m_Brillouin->settings.yMax).toInt());
 	m_Brillouin->settings.setYSteps(settings.value("stage-y-steps", m_Brillouin->settings.ySteps).toInt());
-	m_Brillouin->settings.setZMin(settings.value("stage-z-min", m_Brillouin->settings.zMin).toDouble());
-	m_Brillouin->settings.setZMax(settings.value("stage-z-max", m_Brillouin->settings.zMax).toDouble());
+	m_Brillouin->settings.setZMin(settings.value("stage-z-min", m_Brillouin->settings.zMin).toInt());
+	m_Brillouin->settings.setZMax(settings.value("stage-z-max", m_Brillouin->settings.zMax).toInt());
 	m_Brillouin->settings.setZSteps(settings.value("stage-z-steps", m_Brillouin->settings.zSteps).toInt());
 	m_Brillouin->settings.preCalibration = settings.value("brillouin-pre-calibrate", m_Brillouin->settings.preCalibration).toBool();
 	m_Brillouin->settings.postCalibration = settings.value("brillouin-post-calibrate", m_Brillouin->settings.postCalibration).toBool();
@@ -5360,6 +5360,9 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.absoluteGridOriginUm.x = settings.value("brillouin-absolute-grid-origin-x-um", m_Brillouin->settings.absoluteGridOriginUm.x).toDouble();
 	m_Brillouin->settings.absoluteGridOriginUm.y = settings.value("brillouin-absolute-grid-origin-y-um", m_Brillouin->settings.absoluteGridOriginUm.y).toDouble();
 	m_Brillouin->settings.absoluteGridOriginUm.z = settings.value("brillouin-absolute-grid-origin-z-um", m_Brillouin->settings.absoluteGridOriginUm.z).toDouble();
+	m_Brillouin->settings.saveOverviewBrightfieldPerZ = settings.value("brillouin-save-overview-brightfield-per-z", m_Brillouin->settings.saveOverviewBrightfieldPerZ).toBool();
+	m_Brillouin->settings.overviewBrightfieldExposureMs = settings.value("brillouin-overview-brightfield-exposure-ms", m_Brillouin->settings.overviewBrightfieldExposureMs).toInt();
+	m_Brillouin->settings.overviewBrightfieldGain = settings.value("brillouin-overview-brightfield-gain", m_Brillouin->settings.overviewBrightfieldGain).toDouble();
 	m_Brillouin->settings.surfaceProxyRoiLeft = settings.value("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft).toInt();
 	m_Brillouin->settings.surfaceProxyRoiTop = settings.value("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop).toInt();
 	m_Brillouin->settings.surfaceProxyRoiWidth = settings.value("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth).toInt();

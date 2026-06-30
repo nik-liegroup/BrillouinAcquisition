@@ -2192,6 +2192,16 @@ QTabBar::tab:!selected {
                            </property>
                           </widget>
                          </item>
+                         <item row="2" column="0" colspan="2">
+                          <widget class="QCheckBox" name="saveOverviewBrightfieldPerZCheckbox">
+                           <property name="toolTip">
+                            <string>Save one brightfield overview image for each z slice, centered on the scan-grid center.</string>
+                           </property>
+                           <property name="text">
+                            <string>Save BF overview per z slice</string>
+                           </property>
+                          </widget>
+                         </item>
                         </layout>
                        </widget>
                       </item>
