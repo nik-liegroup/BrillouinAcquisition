@@ -566,21 +566,23 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			const auto x1 = ui->customplot->xAxis->pixelToCoord(event->pos().x());
 			const auto y1 = ui->customplot->yAxis->pixelToCoord(event->pos().y());
 			const auto* mapData = m_BrillouinPlot.colorMap->data();
-			const auto xRange = mapData->keyRange();
-			const auto yRange = mapData->valueRange();
 			const int frameW = std::max(1, mapData->keySize());
 			const int frameH = std::max(1, mapData->valueSize());
-			const int left = (int)std::floor(std::min(x0, x1) - xRange.lower);
-			const int right = (int)std::ceil(std::max(x0, x1) - xRange.lower);
-			const int displayBottom = (int)std::floor(std::min(y0, y1) - yRange.lower);
-			const int displayTop = (int)std::ceil(std::max(y0, y1) - yRange.lower);
+			int cellX0{ 0 };
+			int cellY0{ 0 };
+			int cellX1{ 0 };
+			int cellY1{ 0 };
+			mapData->coordToCell(x0, y0, &cellX0, &cellY0);
+			mapData->coordToCell(x1, y1, &cellX1, &cellY1);
 
-			const int clampedLeft = std::clamp(left, 0, frameW - 1);
-			const int clampedRight = std::clamp(right, clampedLeft, frameW - 1);
-			const int clampedDisplayBottom = std::clamp(displayBottom, 0, frameH - 1);
-			const int clampedDisplayTop = std::clamp(displayTop, clampedDisplayBottom, frameH - 1);
-			const int clampedTop = frameH - 1 - clampedDisplayTop;
-			const int clampedBottom = frameH - 1 - clampedDisplayBottom;
+			const int displayLeft = std::clamp(std::min(cellX0, cellX1), 0, frameW - 1);
+			const int displayRight = std::clamp(std::max(cellX0, cellX1), displayLeft, frameW - 1);
+			const int displayBottom = std::clamp(std::min(cellY0, cellY1), 0, frameH - 1);
+			const int displayTop = std::clamp(std::max(cellY0, cellY1), displayBottom, frameH - 1);
+			const int clampedLeft = displayLeft;
+			const int clampedRight = displayRight;
+			const int clampedTop = frameH - 1 - displayTop;
+			const int clampedBottom = frameH - 1 - displayBottom;
 			if (m_spectralProxyActiveRoiIndex == 1) {
 				m_Brillouin->settings.surfaceProxyRoi2Left = clampedLeft;
 				m_Brillouin->settings.surfaceProxyRoi2Top = clampedTop;
@@ -1166,11 +1168,21 @@ void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 
 	const auto* mapData = m_BrillouinPlot.colorMap->data();
 	const int frameH = std::max(1, mapData->valueSize());
-	const auto xLower = mapData->keyRange().lower;
-	const auto yLower = mapData->valueRange().lower;
+	const int frameW = std::max(1, mapData->keySize());
+	const int displayLeft = std::clamp(left, 0, frameW - 1);
+	const int displayRight = std::clamp(left + width - 1, displayLeft, frameW - 1);
+	const int displayTop = std::clamp(frameH - 1 - top, 0, frameH - 1);
+	const int displayBottom = std::clamp(frameH - top - height, 0, displayTop);
+	double xLeft{ 0.0 };
+	double yTop{ 0.0 };
+	double xRight{ 0.0 };
+	double yBottom{ 0.0 };
+	mapData->cellToCoord(displayLeft, displayTop, &xLeft, &yTop);
+	mapData->cellToCoord(displayRight, displayBottom, &xRight, &yBottom);
+
 	auto* rect = ensureSpectralProxyRoiRect(index);
-	rect->topLeft->setCoords(xLower + left, yLower + frameH - top - 1);
-	rect->bottomRight->setCoords(xLower + left + width - 1, yLower + frameH - top - height);
+	rect->topLeft->setCoords(xLeft, yTop);
+	rect->bottomRight->setCoords(xRight, yBottom);
 }
 
 void BrillouinAcquisition::clearSpectralProxyRois() {
