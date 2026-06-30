@@ -566,17 +566,28 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			const auto y0 = ui->customplot->yAxis->pixelToCoord(m_spectralProxyDragStart.y());
 			const auto x1 = ui->customplot->xAxis->pixelToCoord(event->pos().x());
 			const auto y1 = ui->customplot->yAxis->pixelToCoord(event->pos().y());
-			const int left = (int)std::floor(std::max(0.0, std::min(x0, x1) - 1.0));
-			const int right = (int)std::ceil(std::max(x0, x1) - 1.0);
-			const int bottom = (int)std::floor(std::max(0.0, std::min(y0, y1) - 1.0));
-			const int top = (int)std::ceil(std::max(y0, y1) - 1.0);
 
-			const int frameW = std::max(1, (int)m_Brillouin->settings.camera.roi.width_binned);
-			const int frameH = std::max(1, (int)m_Brillouin->settings.camera.roi.height_binned);
-			const int clampedLeft = std::clamp(left, 0, frameW - 1);
-			const int clampedRight = std::clamp(right, clampedLeft, frameW - 1);
-			const int clampedDisplayBottom = std::clamp(bottom, 0, frameH - 1);
-			const int clampedDisplayTop = std::clamp(top, clampedDisplayBottom, frameH - 1);
+			auto* mapData = m_BrillouinPlot.colorMap ? m_BrillouinPlot.colorMap->data() : nullptr;
+			const int frameW = mapData ? std::max(1, mapData->keySize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.width_binned);
+			const int frameH = mapData ? std::max(1, mapData->valueSize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.height_binned);
+			int cellX0{ 0 };
+			int cellY0{ 0 };
+			int cellX1{ 0 };
+			int cellY1{ 0 };
+			if (mapData) {
+				mapData->coordToCell(x0, y0, &cellX0, &cellY0);
+				mapData->coordToCell(x1, y1, &cellX1, &cellY1);
+			} else {
+				cellX0 = (int)std::floor(std::max(0.0, x0 - 1.0));
+				cellY0 = (int)std::floor(std::max(0.0, y0 - 1.0));
+				cellX1 = (int)std::floor(std::max(0.0, x1 - 1.0));
+				cellY1 = (int)std::floor(std::max(0.0, y1 - 1.0));
+			}
+
+			const int clampedLeft = std::clamp(std::min(cellX0, cellX1), 0, frameW - 1);
+			const int clampedRight = std::clamp(std::max(cellX0, cellX1), clampedLeft, frameW - 1);
+			const int clampedDisplayBottom = std::clamp(std::min(cellY0, cellY1), 0, frameH - 1);
+			const int clampedDisplayTop = std::clamp(std::max(cellY0, cellY1), clampedDisplayBottom, frameH - 1);
 			const int displayRoiTop = clampedDisplayBottom;
 			const int displayRoiHeight = clampedDisplayTop - clampedDisplayBottom + 1;
 			if (m_spectralProxyActiveRoiIndex == 1) {
@@ -1163,8 +1174,26 @@ void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	}
 
 	auto* rect = ensureSpectralProxyRoiRect(index);
-	rect->topLeft->setCoords(left + 1, top + height);
-	rect->bottomRight->setCoords(left + width, top + 1);
+	auto* mapData = m_BrillouinPlot.colorMap ? m_BrillouinPlot.colorMap->data() : nullptr;
+	const int frameW = mapData ? std::max(1, mapData->keySize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.width_binned);
+	const int frameH = mapData ? std::max(1, mapData->valueSize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.height_binned);
+	const int displayLeft = std::clamp(left, 0, frameW - 1);
+	const int displayRight = std::clamp(left + width - 1, displayLeft, frameW - 1);
+	const int displayBottom = std::clamp(top, 0, frameH - 1);
+	const int displayTop = std::clamp(top + height - 1, displayBottom, frameH - 1);
+	if (mapData) {
+		double xLeft{ 0.0 };
+		double yTop{ 0.0 };
+		double xRight{ 0.0 };
+		double yBottom{ 0.0 };
+		mapData->cellToCoord(displayLeft, displayTop, &xLeft, &yTop);
+		mapData->cellToCoord(displayRight, displayBottom, &xRight, &yBottom);
+		rect->topLeft->setCoords(xLeft, yTop);
+		rect->bottomRight->setCoords(xRight, yBottom);
+	} else {
+		rect->topLeft->setCoords(displayLeft + 1, displayTop + 1);
+		rect->bottomRight->setCoords(displayRight + 1, displayBottom + 1);
+	}
 }
 
 void BrillouinAcquisition::clearSpectralProxyRois() {
@@ -1893,18 +1922,18 @@ void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
 
 	const int frameW = std::max(1, mapData->keySize());
 	const int frameH = std::max(1, mapData->valueSize());
-	auto measureRoi = [mapData, frameW, frameH](int left, int top, int width, int height, double& maxValue) {
+	auto measureRoi = [mapData, frameW, frameH](int left, int top, int width, int height, double& maxValue, int& usedLeft, int& usedTop, int& usedRight, int& usedBottom) {
 		if (width <= 0 || height <= 0) {
 			return false;
 		}
-		const int clampedLeft = std::clamp(left, 0, frameW - 1);
-		const int clampedTop = std::clamp(top, 0, frameH - 1);
-		const int clampedRight = std::clamp(left + width - 1, clampedLeft, frameW - 1);
-		const int clampedBottom = std::clamp(top + height - 1, clampedTop, frameH - 1);
+		usedLeft = std::clamp(left, 0, frameW - 1);
+		usedTop = std::clamp(top, 0, frameH - 1);
+		usedRight = std::clamp(left + width - 1, usedLeft, frameW - 1);
+		usedBottom = std::clamp(top + height - 1, usedTop, frameH - 1);
 
 		maxValue = -std::numeric_limits<double>::infinity();
-		for (int displayY = clampedTop; displayY <= clampedBottom; displayY++) {
-			for (int x = clampedLeft; x <= clampedRight; x++) {
+		for (int displayY = usedTop; displayY <= usedBottom; displayY++) {
+			for (int x = usedLeft; x <= usedRight; x++) {
 				maxValue = std::max(maxValue, mapData->cell(x, displayY));
 			}
 		}
@@ -1914,19 +1943,35 @@ void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
 	const auto& settings = m_Brillouin->settings;
 	double roi1Mean{ 0.0 };
 	double roi2Mean{ 0.0 };
+	int roi1Left{ 0 };
+	int roi1Top{ 0 };
+	int roi1Right{ 0 };
+	int roi1Bottom{ 0 };
+	int roi2Left{ 0 };
+	int roi2Top{ 0 };
+	int roi2Right{ 0 };
+	int roi2Bottom{ 0 };
 	const bool hasRoi1 = measureRoi(
 		settings.surfaceProxyRoiLeft,
 		settings.surfaceProxyRoiTop,
 		settings.surfaceProxyRoiWidth,
 		settings.surfaceProxyRoiHeight,
-		roi1Mean
+		roi1Mean,
+		roi1Left,
+		roi1Top,
+		roi1Right,
+		roi1Bottom
 	);
 	const bool hasRoi2 = measureRoi(
 		settings.surfaceProxyRoi2Left,
 		settings.surfaceProxyRoi2Top,
 		settings.surfaceProxyRoi2Width,
 		settings.surfaceProxyRoi2Height,
-		roi2Mean
+		roi2Mean,
+		roi2Left,
+		roi2Top,
+		roi2Right,
+		roi2Bottom
 	);
 
 	if (!hasRoi1 && !hasRoi2) {
@@ -1938,10 +1983,20 @@ void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
 	QStringList parts;
 	parts << QString("avg %1").arg(average, 0, 'f', 2);
 	if (hasRoi1) {
-		parts << QString("ROI1 %1").arg(roi1Mean, 0, 'f', 2);
+		parts << QString("ROI1 %1 [cells x %2-%3 y %4-%5]")
+			.arg(roi1Mean, 0, 'f', 2)
+			.arg(roi1Left)
+			.arg(roi1Right)
+			.arg(roi1Top)
+			.arg(roi1Bottom);
 	}
 	if (hasRoi2) {
-		parts << QString("ROI2 %1").arg(roi2Mean, 0, 'f', 2);
+		parts << QString("ROI2 %1 [cells x %2-%3 y %4-%5]")
+			.arg(roi2Mean, 0, 'f', 2)
+			.arg(roi2Left)
+			.arg(roi2Right)
+			.arg(roi2Top)
+			.arg(roi2Bottom);
 	}
 	ui->statusBar->showMessage(QString("Spectral ROI max: %1").arg(parts.join(", ")));
 }
