@@ -2103,7 +2103,7 @@ QTabBar::tab:!selected {
                        <x>8</x>
                        <y>224</y>
                        <width>193</width>
-                       <height>315</height>
+                       <height>375</height>
                       </rect>
                      </property>
                      <layout class="QGridLayout" name="advancedPlanningGrid">
@@ -2216,13 +2216,13 @@ QTabBar::tab:!selected {
                         <property name="minimumSize">
                          <size>
                           <width>0</width>
-                          <height>230</height>
+                          <height>285</height>
                          </size>
                         </property>
                         <property name="maximumSize">
                          <size>
                           <width>16777215</width>
-                          <height>230</height>
+                          <height>285</height>
                          </size>
                         </property>
                         <property name="title">
@@ -2409,6 +2409,22 @@ QTabBar::tab:!selected {
                            </property>
                            <property name="checkable">
                             <bool>true</bool>
+                           </property>
+                          </widget>
+                         </item>
+                         <item row="9" column="0" colspan="2">
+                          <widget class="QPushButton" name="measureSpectralProxyRoiButton">
+                           <property name="minimumSize">
+                            <size>
+                             <width>0</width>
+                             <height>26</height>
+                            </size>
+                           </property>
+                           <property name="text">
+                            <string>Measure spectral ROIs</string>
+                           </property>
+                           <property name="toolTip">
+                            <string>Measure mean intensity in the currently drawn spectral ROI rectangles and show the result in the status bar.</string>
                            </property>
                           </widget>
                          </item>

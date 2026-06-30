@@ -456,6 +456,7 @@ private slots:
 	void showBrillouinStatus(ACQUISITION_STATUS state);
 	void showBrillouinProgress(double progress, int seconds);
 	void showSurfaceScanProgress(double progress, const QString& message);
+	void on_measureSpectralProxyRoiButton_clicked();
 	void showODTStatus(ACQUISITION_STATUS state);
 	void showODTProgress(double progress, int seconds);
 	void showFluorescenceStatus(ACQUISITION_STATUS state);
