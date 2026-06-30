@@ -121,6 +121,9 @@ void Brillouin::waitForNextRepetition() {
 		}
 
 		m_acquisition->newRepetition(ACQUISITION_MODE::BRILLOUIN);
+		if (m_settings.saveOverviewBrightfieldPerZ) {
+			m_acquisition->newRepetition(ACQUISITION_MODE::FLUORESCENCE);
+		}
 
 		setAcquisitionStatus(ACQUISITION_STATUS::STARTED);
 		acquire(m_acquisition->m_storage);
@@ -1063,6 +1066,9 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	auto resolutionXout = storage->getResolution("x");
 
 	writeScaleCalibration(storage, ACQUISITION_MODE::BRILLOUIN);
+	if (m_settings.saveOverviewBrightfieldPerZ) {
+		writeScaleCalibration(storage, ACQUISITION_MODE::FLUORESCENCE);
+	}
 
 	/*
 	 * Update the positions vector
