@@ -335,6 +335,24 @@ std::vector<POINT2> ScanControl::getPositionsPix(const std::vector<POINT3>& posi
 	return convertPositionsToPix();
 };
 
+POINT2 ScanControl::getPositionPix(POINT3 positionMicrometer, bool positionIsAbsolute) {
+	if (positionIsAbsolute || m_measurementMode) {
+		getPosition(PositionType::STAGE);
+	}
+
+	// In normal mode, the positions are shown relative to the scanner position.
+	auto offset = m_positionScanner;
+	if (positionIsAbsolute) {
+		offset = POINT2{} - m_positionStage;
+	}
+	// In measurement mode, the positions are shown relative to the start position.
+	else if (m_measurementMode) {
+		offset = m_startPosition - m_positionStage;
+	}
+
+	return microMeterToPix(POINT2{ positionMicrometer.x, positionMicrometer.y } + offset);
+}
+
 /*
  * Function converts a position in pixel to a position in um.
  * This is relative to the origin (pixOrigin) and not on an absolute scale e.g. of the translation stage.

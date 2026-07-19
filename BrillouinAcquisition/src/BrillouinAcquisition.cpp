@@ -738,6 +738,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			connect(m_overviewFullGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
 				m_Brillouin->settings.overviewBrightfieldFullGrid = enabled;
 				updateEstimatedAcquisitionTime();
+				updateOverviewTileOutlines();
 			});
 
 			connect(m_editSpectralProxyRoiCheckbox, &QAbstractButton::toggled, this, [this](bool enabled) {
@@ -4472,6 +4473,7 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		const QSignalBlocker blocker(*m_overviewFullGridCheckbox);
 		m_overviewFullGridCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldFullGrid);
 		m_overviewFullGridCheckbox->setEnabled(fullGridPossible);
+		updateOverviewTileOutlines();
 	}
 	const auto homeControlsDisabled = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
 	ui->setHome->setDisabled(homeControlsDisabled);
@@ -4796,6 +4798,54 @@ void BrillouinAcquisition::update_AOI_preview() {
 		ui->customplot_brightfield->replot();
 	}
 	updateRoiPolygonPreview();
+	updateOverviewTileOutlines();
+}
+
+/*
+ * Show the outline (dashed yellow) of the area the brightfield overview mosaic will
+ * cover, in the live view, while "Full grid (mosaic)" is active - one outline per
+ * disjoint group of active points, not one rectangle per individual tile.
+ */
+void BrillouinAcquisition::updateOverviewTileOutlines() {
+	const bool showTiles = m_showPositions && m_scanControl && m_Brillouin->settings.overviewBrightfieldFullGrid;
+	if (!showTiles) {
+		if (!m_overviewTileRects.empty()) {
+			for (auto* rect : m_overviewTileRects) {
+				ui->customplot_brightfield->removeItem(rect);
+			}
+			m_overviewTileRects.clear();
+			ui->customplot_brightfield->replot();
+		}
+		return;
+	}
+
+	const auto outlines = m_Brillouin->overviewTileOutlinesUm();
+	const bool gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
+
+	while (m_overviewTileRects.size() > outlines.size()) {
+		ui->customplot_brightfield->removeItem(m_overviewTileRects.back());
+		m_overviewTileRects.pop_back();
+	}
+	while (m_overviewTileRects.size() < outlines.size()) {
+		auto* rect = new QCPItemRect(ui->customplot_brightfield);
+		QPen pen(Qt::yellow);
+		pen.setStyle(Qt::DashLine);
+		pen.setWidth(2);
+		rect->setPen(pen);
+		rect->setBrush(Qt::NoBrush);
+		m_overviewTileRects.push_back(rect);
+	}
+
+	for (size_t i = 0; i < outlines.size(); i++) {
+		const auto& corner = outlines[i];
+		const auto topLeft = brightfieldRawToDisplay(m_scanControl->getPositionPix(
+			POINT3{ corner.first.x, corner.first.y, 0 }, gridAbsolute));
+		const auto bottomRight = brightfieldRawToDisplay(m_scanControl->getPositionPix(
+			POINT3{ corner.second.x, corner.second.y, 0 }, gridAbsolute));
+		m_overviewTileRects[i]->topLeft->setCoords(topLeft.x, topLeft.y);
+		m_overviewTileRects[i]->bottomRight->setCoords(bottomRight.x, bottomRight.y);
+	}
+	ui->customplot_brightfield->replot();
 }
 
 void BrillouinAcquisition::updateRoiPolygonPreview() {

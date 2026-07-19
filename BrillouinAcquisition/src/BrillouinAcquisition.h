@@ -224,6 +224,12 @@ private:
 	std::vector<POINT2> m_positionsPixel;		// [pix]	Positions to raster
 	bool m_showPositions{ true };
 
+	// Dashed yellow outline(s) of the area covered by the brightfield overview mosaic
+	// (one per disjoint group of active points, not one per tile), shown in the live
+	// view while the "Full grid (mosaic)" overview option is active.
+	std::vector<QCPItemRect*> m_overviewTileRects;
+	void updateOverviewTileOutlines();
+
 	CAMERA_DEVICE m_cameraType{ CAMERA_DEVICE::UEYE };
 	CAMERA_DEVICE m_cameraTypeTemporary = m_cameraType;
 

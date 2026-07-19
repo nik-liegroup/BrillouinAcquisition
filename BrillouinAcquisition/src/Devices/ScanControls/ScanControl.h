@@ -199,6 +199,10 @@ public slots:
 
 	std::vector<POINT2> getPositionsPix(const std::vector<POINT3>& positionsMicrometer);
 	std::vector<POINT2> getPositionsPix(const std::vector<POINT3>& positionsMicrometer, bool positionsAreAbsolute);
+	// Same conversion as getPositionsPix(), but without caching the position for
+	// re-emission on scale calibration change - use for ad-hoc overlay geometry
+	// (e.g. mosaic tile outlines) that must not clobber the cached AOI markers.
+	POINT2 getPositionPix(POINT3 positionMicrometer, bool positionIsAbsolute);
 
 	virtual POINT2 pixToMicroMeter(POINT2 positionPix);
 	virtual POINT2 microMeterToPix(POINT2 positionMicrometer);

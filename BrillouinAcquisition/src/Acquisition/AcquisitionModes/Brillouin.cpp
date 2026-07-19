@@ -950,6 +950,18 @@ std::vector<POINT3> Brillouin::overviewBrightfieldPositionsForZ(int zIndex, cons
  * Falls back to a single tile at the grid center if the brightfield camera or scale
  * calibration isn't available, or if no plan has been built yet.
  */
+POINT2 Brillouin::overviewTileFootprintUm() const {
+	if (!m_scanControl || !m_brightfieldCamera) {
+		return POINT2{ 0.0, 0.0 };
+	}
+	const auto scaleCalibration = m_scanControl->getScaleCalibration();
+	const auto brightfieldSettings = m_brightfieldCamera->getSettings();
+	return POINT2{
+		abs(scaleCalibration.pixToMicrometerX) * (double)brightfieldSettings.roi.width_binned,
+		abs(scaleCalibration.pixToMicrometerY) * (double)brightfieldSettings.roi.height_binned
+	};
+}
+
 std::vector<POINT2> Brillouin::overviewTileCentersXY() const {
 	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : m_startPosition;
 	const auto gridXMin = m_settings.xMin + origin.x;
@@ -962,10 +974,9 @@ std::vector<POINT2> Brillouin::overviewTileCentersXY() const {
 		return { gridCenter };
 	}
 
-	const auto scaleCalibration = m_scanControl->getScaleCalibration();
-	const auto brightfieldSettings = m_brightfieldCamera->getSettings();
-	const auto fovWidthUm = abs(scaleCalibration.pixToMicrometerX) * (double)brightfieldSettings.roi.width_binned;
-	const auto fovHeightUm = abs(scaleCalibration.pixToMicrometerY) * (double)brightfieldSettings.roi.height_binned;
+	const auto fov = overviewTileFootprintUm();
+	const auto fovWidthUm = fov.x;
+	const auto fovHeightUm = fov.y;
 	if (fovWidthUm <= 0.0 || fovHeightUm <= 0.0) {
 		return { gridCenter };
 	}
@@ -1073,6 +1084,104 @@ std::vector<POINT2> Brillouin::overviewTileCentersXY() const {
 		}
 	}
 	return tiles;
+}
+
+std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUm() const {
+	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : m_startPosition;
+	const auto gridXMin = m_settings.xMin + origin.x;
+	const auto gridXMax = m_settings.xMax + origin.x;
+	const auto gridYMin = m_settings.yMin + origin.y;
+	const auto gridYMax = m_settings.yMax + origin.y;
+	const auto gridCenter = POINT2{ 0.5 * (gridXMin + gridXMax), 0.5 * (gridYMin + gridYMax) };
+
+	if (!m_scanControl || !m_brightfieldCamera) {
+		return { { gridCenter, gridCenter } };
+	}
+
+	const auto fov = overviewTileFootprintUm();
+	const auto fovWidthUm = fov.x;
+	const auto fovHeightUm = fov.y;
+	if (fovWidthUm <= 0.0 || fovHeightUm <= 0.0) {
+		return { { gridCenter, gridCenter } };
+	}
+
+	// Unique active (x, y) grid positions - see overviewTileCentersXY() for why this is
+	// enough without also looking at z.
+	std::set<std::pair<int, int>> seenIndexPairs;
+	std::vector<POINT2> activePoints;
+	const auto pointCount = std::min(m_orderedIndices.size(), m_orderedPositions.size());
+	for (size_t i = 0; i < pointCount; i++) {
+		const auto key = std::make_pair(m_orderedIndices[i].x, m_orderedIndices[i].y);
+		if (seenIndexPairs.insert(key).second) {
+			activePoints.push_back(POINT2{ m_orderedPositions[i].x, m_orderedPositions[i].y });
+		}
+	}
+	if (activePoints.empty()) {
+		return { { gridCenter, gridCenter } };
+	}
+
+	// Union-find clustering: same connectivity rule as overviewTileCentersXY(), so the
+	// outlines drawn here match the tile groups actually captured 1:1.
+	std::vector<size_t> parent(activePoints.size());
+	for (size_t i = 0; i < parent.size(); i++) {
+		parent[i] = i;
+	}
+	std::function<size_t(size_t)> find = [&](size_t i) {
+		while (parent[i] != i) {
+			parent[i] = parent[parent[i]];
+			i = parent[i];
+		}
+		return i;
+	};
+	auto unite = [&](size_t a, size_t b) {
+		a = find(a);
+		b = find(b);
+		if (a != b) {
+			parent[a] = b;
+		}
+	};
+	for (size_t i = 0; i < activePoints.size(); i++) {
+		for (size_t j = i + 1; j < activePoints.size(); j++) {
+			const auto dx = std::abs(activePoints[i].x - activePoints[j].x);
+			const auto dy = std::abs(activePoints[i].y - activePoints[j].y);
+			if (dx <= fovWidthUm && dy <= fovHeightUm) {
+				unite(i, j);
+			}
+		}
+	}
+
+	std::map<size_t, std::vector<POINT2>> clusters;
+	for (size_t i = 0; i < activePoints.size(); i++) {
+		clusters[find(i)].push_back(activePoints[i]);
+	}
+
+	std::vector<std::pair<POINT2, POINT2>> outlines;
+	outlines.reserve(clusters.size());
+	for (const auto& entry : clusters) {
+		const auto& clusterPoints = entry.second;
+		auto clusterXMin = clusterPoints.front().x;
+		auto clusterXMax = clusterPoints.front().x;
+		auto clusterYMin = clusterPoints.front().y;
+		auto clusterYMax = clusterPoints.front().y;
+		for (const auto& p : clusterPoints) {
+			clusterXMin = std::min(clusterXMin, p.x);
+			clusterXMax = std::max(clusterXMax, p.x);
+			clusterYMin = std::min(clusterYMin, p.y);
+			clusterYMax = std::max(clusterYMax, p.y);
+		}
+		// The union of the FOV-sized, (1 - overlap)-spaced tiles overviewTileCentersXY()
+		// lays out along an axis exactly spans [clusterMin, clusterMax] once more than one
+		// tile is needed, and the single centered FOV tile otherwise - so the tiled area's
+		// outline reduces to this, without needing the individual tile positions at all.
+		const auto clusterCenterX = 0.5 * (clusterXMin + clusterXMax);
+		const auto clusterCenterY = 0.5 * (clusterYMin + clusterYMax);
+		const auto outlineXMin = std::min(clusterXMin, clusterCenterX - 0.5 * fovWidthUm);
+		const auto outlineXMax = std::max(clusterXMax, clusterCenterX + 0.5 * fovWidthUm);
+		const auto outlineYMin = std::min(clusterYMin, clusterCenterY - 0.5 * fovHeightUm);
+		const auto outlineYMax = std::max(clusterYMax, clusterCenterY + 0.5 * fovHeightUm);
+		outlines.push_back({ POINT2{ outlineXMin, outlineYMin }, POINT2{ outlineXMax, outlineYMax } });
+	}
+	return outlines;
 }
 
 template <typename T>
