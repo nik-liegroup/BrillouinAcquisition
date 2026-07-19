@@ -259,6 +259,16 @@ public slots:
 
 	std::vector<POINT3> getOrderedPositions();
 
+	// Used by the GUI to draw the overview-mosaic outline in the live view, so these
+	// need to be callable from outside the class.
+	std::vector<POINT2> overviewTileCentersXY() const;
+	// Camera field of view in µm (x, y), as used to size each overview tile.
+	POINT2 overviewTileFootprintUm() const;
+	// One (topLeft, bottomRight) bounding box per group of active points close enough to be
+	// tiled together - i.e. the outline of the area actually covered by that group's tiles,
+	// not each individual tile.
+	std::vector<std::pair<POINT2, POINT2>> overviewTileOutlinesUm() const;
+
 private:
 	void abortMode(std::unique_ptr <StorageWrapper>& storage) override;
 
@@ -268,13 +278,6 @@ private:
 	bool runSurfacePreScan();
 	POINT3 overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ, const POINT2& xy) const;
 	std::vector<POINT3> overviewBrightfieldPositionsForZ(int zIndex, const std::vector<double>& directionsZ) const;
-	std::vector<POINT2> overviewTileCentersXY() const;
-	// Camera field of view in µm (x, y), as used to size each overview tile.
-	POINT2 overviewTileFootprintUm() const;
-	// One (topLeft, bottomRight) bounding box per group of active points close enough to be
-	// tiled together - i.e. the outline of the area actually covered by that group's tiles,
-	// not each individual tile.
-	std::vector<std::pair<POINT2, POINT2>> overviewTileOutlinesUm() const;
 	void captureOverviewBrightfield(std::unique_ptr <StorageWrapper>& storage, int imageNumber, int zIndex, const POINT3& position);
 
 	std::string getRepetitionFilename();
