@@ -4541,23 +4541,35 @@ void BrillouinAcquisition::update_AOI_preview() {
 		const bool colorByRoi = m_scanControl
 			&& m_Brillouin->settings.useRoiMask
 			&& m_Brillouin->settings.roiPolygonUm.size() >= 3;
+		// When ROI coloring is active we need the full (unfiltered) candidate grid, since
+		// m_positionsPixel only contains points ScanPlanner already kept (i.e. only "inside"
+		// ones), which would leave nothing to ever show as "outside" (red). This is computed
+		// the same way for both relative and absolute mode (previously this only ran in
+		// absolute mode, leaving relative mode dependent on the already-filtered list, and
+		// absolute mode without it could end up with an empty or misaligned candidate grid).
 		auto positionsPixelForRoi = m_positionsPixel;
-		if (colorByRoi && m_Brillouin->settings.gridCoordinatesAbsolute) {
+		std::vector<bool> insideRoiForPosition;
+		if (colorByRoi) {
 			const auto& settings = m_Brillouin->settings;
-			auto scanOrderX = ui->buttonGroup->checkedId();
-			auto scanOrderY = ui->buttonGroup_2->checkedId();
-			auto scanOrderZ = ui->buttonGroup_3->checkedId();
-			if (scanOrderX < 0) scanOrderX = 0;
-			if (scanOrderY < 0) scanOrderY = 1;
-			if (scanOrderZ < 0) scanOrderZ = 2;
+			// Use the scan order cached from Brillouin's own s_scanOrderChanged signal rather
+			// than re-deriving it from the three independent UI radio button groups: those
+			// groups are not mutually exclusive with each other, so reading them back could
+			// yield an invalid permutation (e.g. two axes both claiming rank 0), leaving one
+			// direction empty and the whole grid preview blank.
+			const auto scanOrderX = (size_t)m_currentScanOrder.x;
+			const auto scanOrderY = (size_t)m_currentScanOrder.y;
+			const auto scanOrderZ = (size_t)m_currentScanOrder.z;
 
 			std::vector<std::vector<double>> directions(3);
-			directions[(size_t)scanOrderX] = simplemath::linspace(settings.xMin, settings.xMax, settings.xSteps);
-			directions[(size_t)scanOrderY] = simplemath::linspace(settings.yMin, settings.yMax, settings.ySteps);
-			directions[(size_t)scanOrderZ] = simplemath::linspace(settings.zMin, settings.zMax, settings.zSteps);
+			directions[scanOrderX] = simplemath::linspace(settings.xMin, settings.xMax, settings.xSteps);
+			directions[scanOrderY] = simplemath::linspace(settings.yMin, settings.yMax, settings.ySteps);
+			directions[scanOrderZ] = simplemath::linspace(settings.zMin, settings.zMax, settings.zSteps);
 
 			positionsPixelForRoi.clear();
-			positionsPixelForRoi.reserve((size_t)settings.xSteps * (size_t)settings.ySteps * (size_t)settings.zSteps);
+			insideRoiForPosition.clear();
+			const auto candidateCount = (size_t)settings.xSteps * (size_t)settings.ySteps * (size_t)settings.zSteps;
+			positionsPixelForRoi.reserve(candidateCount);
+			insideRoiForPosition.reserve(candidateCount);
 			std::vector<double> position(3);
 			for (size_t ii = 0; ii < directions[2].size(); ii++) {
 				for (size_t jj = 0; jj < directions[1].size(); jj++) {
@@ -4565,10 +4577,12 @@ void BrillouinAcquisition::update_AOI_preview() {
 						position[0] = directions[0][kk];
 						position[1] = directions[1][jj];
 						position[2] = directions[2][ii];
-						const POINT2 displayUm = gridOffsetToImagePlaneUm(POINT2{
-							position[(size_t)scanOrderX],
-							position[(size_t)scanOrderY]
-						});
+						const POINT2 gridOffsetXY{ position[scanOrderX], position[scanOrderY] };
+						// Classify in grid-offset (µm) space, matching ScanPlanner's own ROI
+						// filter exactly, rather than re-testing after projecting to pixels
+						// (where floating-point/projection differences could disagree).
+						insideRoiForPosition.push_back(pointInPolygon(gridOffsetXY, settings.roiPolygonUm));
+						const POINT2 displayUm = gridOffsetToImagePlaneUm(gridOffsetXY);
 						positionsPixelForRoi.push_back(
 							brightfieldRawToDisplay(m_scanControl->microMeterToPix(displayUm))
 						);
@@ -4647,7 +4661,11 @@ void BrillouinAcquisition::update_AOI_preview() {
 
 			for (gsl::index i{ 0 }; i < (gsl::index)positionsPixelForRoi.size(); i++) {
 				const auto& posPix = positionsPixelForRoi[(size_t)i];
-				const bool inside = pointInPolygon(POINT2{ posPix.x, posPix.y }, roiPolygonPix);
+				// Use the grid-offset-space classification computed above when available
+				// (it matches ScanPlanner exactly); fall back to a pixel-space test otherwise.
+				const bool inside = (i < (gsl::index)insideRoiForPosition.size())
+					? insideRoiForPosition[(size_t)i]
+					: pointInPolygon(POINT2{ posPix.x, posPix.y }, roiPolygonPix);
 				if (inside) {
 					xInside.push_back(posPix.x);
 					yInside.push_back(posPix.y);
@@ -5019,6 +5037,7 @@ void BrillouinAcquisition::on_buttonGroup_3_buttonClicked(int button) {
 }
 
 void BrillouinAcquisition::scanOrderChanged(SCAN_ORDER scanOrder) {
+	m_currentScanOrder = scanOrder;
 	if (scanOrder.x == 0) {
 		ui->scanDirX0->setChecked(true);
 	}

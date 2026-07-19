@@ -217,6 +217,10 @@ private:
 	std::vector<POINT3> m_positionsMicrometer;	// [µm]		Positions to raster, relative to current start point
 	std::vector<POINT2> m_positionsPixel;		// [pix]	Positions to raster
 	bool m_showPositions{ true };
+	// Cached copy of Brillouin's authoritative scan order, kept in sync via scanOrderChanged().
+	// Used instead of re-deriving it from the (independent, not mutually exclusive across
+	// axes) UI radio button groups, which can transiently disagree or double up a rank.
+	SCAN_ORDER m_currentScanOrder;
 
 	CAMERA_DEVICE m_cameraType{ CAMERA_DEVICE::UEYE };
 	CAMERA_DEVICE m_cameraTypeTemporary = m_cameraType;
