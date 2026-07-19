@@ -214,11 +214,6 @@ private:
 	QCPCurve* m_roiPolygonMarker{ nullptr };
 	int m_draggedRoiVertexIndex{ -1 };
 	bool m_draggingRoiVertex{ false };
-	// True only while useRoiMask is off because updateBrillouinSettings() auto-disabled it
-	// due to an invalid (self-intersecting / <3 point) polygon, as opposed to the user
-	// having deliberately unchecked it. Lets that same auto-disable be auto-undone once the
-	// polygon becomes valid again, without fighting a genuine user choice.
-	bool m_roiMaskAutoDisabled{ false };
 	std::vector<POINT3> m_positionsMicrometer;	// [µm]		Positions to raster, relative to current start point
 	std::vector<POINT2> m_positionsPixel;		// [pix]	Positions to raster
 	bool m_showPositions{ true };

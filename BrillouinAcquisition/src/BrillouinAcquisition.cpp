@@ -4386,18 +4386,6 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_useRoiMaskCheckbox->setEnabled(roiMaskPossible);
 		if (!roiMaskPossible && m_Brillouin->settings.useRoiMask) {
 			m_Brillouin->settings.useRoiMask = false;
-			m_roiMaskAutoDisabled = true;
-		} else if (roiMaskPossible && m_roiMaskAutoDisabled && !m_Brillouin->settings.useRoiMask) {
-			// The polygon (e.g. after dragging a point) is valid again after having been
-			// auto-disabled above for being invalid - restore it automatically, since it
-			// was never the user's choice to turn it off. Previously nothing did this, so
-			// the grid stayed shown as fully "outside" (red) until an unrelated action
-			// (like adding a new point, which unconditionally re-enables the mask) masked
-			// the problem.
-			m_Brillouin->settings.useRoiMask = true;
-		}
-		if (roiMaskPossible) {
-			m_roiMaskAutoDisabled = false;
 		}
 		const QSignalBlocker blocker(*m_useRoiMaskCheckbox);
 		m_useRoiMaskCheckbox->setChecked(m_Brillouin->settings.useRoiMask);
@@ -4553,58 +4541,15 @@ void BrillouinAcquisition::update_AOI_preview() {
 		const bool colorByRoi = m_scanControl
 			&& m_Brillouin->settings.useRoiMask
 			&& m_Brillouin->settings.roiPolygonUm.size() >= 3;
-		// When ROI coloring is active we need the full (unfiltered) candidate grid, since
-		// m_positionsPixel only contains points ScanPlanner already kept (i.e. only "inside"
-		// ones), which would leave nothing to ever show as "outside" (red). This is computed
-		// the same way for both relative and absolute mode (previously this only ran in
-		// absolute mode, leaving relative mode dependent on the already-filtered list, and
-		// absolute mode without it could end up with an empty or misaligned candidate grid).
+		// m_positionsPixel is already the correct, mode-aware projection of the current
+		// grid (ScanControl::convertPositionsToPix() branches on absolute vs. relative
+		// mode internally and both are mathematically consistent with the polygon
+		// projection below). Absolute mode used to instead rebuild the grid from scratch
+		// here, reading scan order back from three independent UI radio-button groups
+		// (which are not mutually exclusive with each other, so could yield an invalid
+		// permutation) - that duplicate, absolute-mode-only path was the actual bug, not
+		// something that needed a more elaborate replacement.
 		auto positionsPixelForRoi = m_positionsPixel;
-		std::vector<bool> insideRoiForPosition;
-		if (colorByRoi) {
-			const auto& settings = m_Brillouin->settings;
-			// Read the scan order directly from Brillouin (same pattern as `settings` above)
-			// rather than the three independent UI radio button groups: those are not
-			// mutually exclusive with each other, so reading them back could yield an
-			// invalid permutation (e.g. two axes both claiming rank 0), leaving one
-			// direction empty and the whole grid preview blank. A cached copy synced only
-			// via the (asynchronous, cross-thread) s_scanOrderChanged signal had the same
-			// problem: it could be stale relative to what Brillouin is actually using right
-			// now, causing this preview to project a different order than the real scan.
-			const auto scanOrderX = (size_t)m_Brillouin->scanOrder.x;
-			const auto scanOrderY = (size_t)m_Brillouin->scanOrder.y;
-			const auto scanOrderZ = (size_t)m_Brillouin->scanOrder.z;
-
-			std::vector<std::vector<double>> directions(3);
-			directions[scanOrderX] = simplemath::linspace(settings.xMin, settings.xMax, settings.xSteps);
-			directions[scanOrderY] = simplemath::linspace(settings.yMin, settings.yMax, settings.ySteps);
-			directions[scanOrderZ] = simplemath::linspace(settings.zMin, settings.zMax, settings.zSteps);
-
-			positionsPixelForRoi.clear();
-			insideRoiForPosition.clear();
-			const auto candidateCount = (size_t)settings.xSteps * (size_t)settings.ySteps * (size_t)settings.zSteps;
-			positionsPixelForRoi.reserve(candidateCount);
-			insideRoiForPosition.reserve(candidateCount);
-			std::vector<double> position(3);
-			for (size_t ii = 0; ii < directions[2].size(); ii++) {
-				for (size_t jj = 0; jj < directions[1].size(); jj++) {
-					for (size_t kk = 0; kk < directions[0].size(); kk++) {
-						position[0] = directions[0][kk];
-						position[1] = directions[1][jj];
-						position[2] = directions[2][ii];
-						const POINT2 gridOffsetXY{ position[scanOrderX], position[scanOrderY] };
-						// Classify in grid-offset (µm) space, matching ScanPlanner's own ROI
-						// filter exactly, rather than re-testing after projecting to pixels
-						// (where floating-point/projection differences could disagree).
-						insideRoiForPosition.push_back(pointInPolygon(gridOffsetXY, settings.roiPolygonUm));
-						const POINT2 displayUm = gridOffsetToImagePlaneUm(gridOffsetXY);
-						positionsPixelForRoi.push_back(
-							brightfieldRawToDisplay(m_scanControl->microMeterToPix(displayUm))
-						);
-					}
-				}
-			}
-		}
 		std::vector<POINT2> roiPolygonPix;
 		if (colorByRoi && m_scanControl) {
 			roiPolygonPix.reserve(m_Brillouin->settings.roiPolygonUm.size());
@@ -4676,11 +4621,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 
 			for (gsl::index i{ 0 }; i < (gsl::index)positionsPixelForRoi.size(); i++) {
 				const auto& posPix = positionsPixelForRoi[(size_t)i];
-				// Use the grid-offset-space classification computed above when available
-				// (it matches ScanPlanner exactly); fall back to a pixel-space test otherwise.
-				const bool inside = (i < (gsl::index)insideRoiForPosition.size())
-					? insideRoiForPosition[(size_t)i]
-					: pointInPolygon(POINT2{ posPix.x, posPix.y }, roiPolygonPix);
+				const bool inside = pointInPolygon(POINT2{ posPix.x, posPix.y }, roiPolygonPix);
 				if (inside) {
 					xInside.push_back(posPix.x);
 					yInside.push_back(posPix.y);
