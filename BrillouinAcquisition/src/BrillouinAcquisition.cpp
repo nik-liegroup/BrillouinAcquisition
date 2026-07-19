@@ -1220,10 +1220,13 @@ POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm
 	if (!m_scanControl || !m_Brillouin->settings.gridCoordinatesAbsolute) {
 		return imagePlaneUm;
 	}
-	const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+	// Use the same (stage + scanner) position convention as getHomePosition() /
+	// absoluteGridOriginUm and setPosition(), otherwise a non-zero scanner offset
+	// introduces a constant error between where a point is drawn and where it is moved to.
+	const auto currentPosition = m_scanControl->getPosition();
 	return POINT2{
-		stagePosition.x + imagePlaneUm.x - m_Brillouin->settings.absoluteGridOriginUm.x,
-		stagePosition.y + imagePlaneUm.y - m_Brillouin->settings.absoluteGridOriginUm.y
+		currentPosition.x + imagePlaneUm.x - m_Brillouin->settings.absoluteGridOriginUm.x,
+		currentPosition.y + imagePlaneUm.y - m_Brillouin->settings.absoluteGridOriginUm.y
 	};
 }
 
@@ -1231,10 +1234,11 @@ POINT2 BrillouinAcquisition::gridOffsetToImagePlaneUm(const POINT2& gridOffset) 
 	if (!m_scanControl || !m_Brillouin->settings.gridCoordinatesAbsolute) {
 		return gridOffset;
 	}
-	const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+	// See imagePlaneUmToGridOffset() for why this must match its (stage + scanner) convention.
+	const auto currentPosition = m_scanControl->getPosition();
 	return POINT2{
-		m_Brillouin->settings.absoluteGridOriginUm.x + gridOffset.x - stagePosition.x,
-		m_Brillouin->settings.absoluteGridOriginUm.y + gridOffset.y - stagePosition.y
+		m_Brillouin->settings.absoluteGridOriginUm.x + gridOffset.x - currentPosition.x,
+		m_Brillouin->settings.absoluteGridOriginUm.y + gridOffset.y - currentPosition.y
 	};
 }
 

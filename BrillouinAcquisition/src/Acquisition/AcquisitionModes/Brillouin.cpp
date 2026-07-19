@@ -300,7 +300,7 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 
 	if (m_scanControl) {
 		m_scanControl->setPreset(ScanPreset::SCAN_LASEROFF);
-		m_scanControl->setPosition(m_startPosition);
+		m_scanControl->setPositionCompensated(m_startPosition);
 		m_scanControl->enableMeasurementMode(false);
 		QMetaObject::invokeMethod(
 			m_scanControl,
@@ -616,7 +616,7 @@ bool Brillouin::runSurfacePreScan() {
 			}
 		}
 		if (referencePositionFound) {
-			m_scanControl->setPosition(referencePosition);
+			m_scanControl->setPositionCompensated(referencePosition);
 			std::this_thread::sleep_for(std::chrono::milliseconds(20));
 		}
 		const int refFrames = std::max(1, m_settings.mediumReferenceFrameCount);
@@ -678,7 +678,9 @@ bool Brillouin::runSurfacePreScan() {
 					? m_settings.absoluteGridOriginUm.z
 					: m_startPosition.z;
 				const auto target = POINT3{ xyPosition.x, xyPosition.y, zOrigin + zRel };
-				m_scanControl->setPosition(target);
+				// setPositionCompensated() only pre-approaches x/y when they actually
+				// change, so within a column (z-only steps) this adds no extra motion.
+				m_scanControl->setPositionCompensated(target);
 				std::this_thread::sleep_for(std::chrono::milliseconds(20));
 				m_andor->getImageForAcquisition(frame.data());
 				const auto metric = estimateFrameMetric(frame);
@@ -959,7 +961,7 @@ void Brillouin::captureOverviewBrightfield(
 	}
 
 	m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
-	m_scanControl->setPosition(position);
+	m_scanControl->setPositionCompensated(position);
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
 	auto brightfieldSettings = m_brightfieldCamera->getSettings();
@@ -1167,9 +1169,18 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		auto overviewZ = std::vector<double>(m_settings.zSteps);
 		for (gsl::index ii{ 0 }; ii < m_settings.zSteps; ii++) {
 			const auto position = overviewBrightfieldPositionForZ((int)ii, directionsZ);
-			overviewX[ii] = position.x;
-			overviewY[ii] = position.y;
-			overviewZ[ii] = position.z;
+			// Use the same convention as sampled-x/y/z above, so overview and
+			// Brillouin positions can be compared/overlaid directly without the
+			// caller having to know which fields are absolute vs. origin-relative.
+			overviewX[ii] = m_settings.gridCoordinatesAbsolute
+				? position.x - m_settings.absoluteGridOriginUm.x
+				: position.x;
+			overviewY[ii] = m_settings.gridCoordinatesAbsolute
+				? position.y - m_settings.absoluteGridOriginUm.y
+				: position.y;
+			overviewZ[ii] = m_settings.gridCoordinatesAbsolute
+				? position.z - m_settings.absoluteGridOriginUm.z
+				: position.z;
 		}
 		storage->setPositions("overview-brightfield-x", overviewX, sampledRank, overviewDims);
 		storage->setPositions("overview-brightfield-y", overviewY, sampledRank, overviewDims);
@@ -1207,7 +1218,9 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 
 	// move stage to first position, wait 50 ms for it to finish
 	if (m_scanControl) {
-		m_scanControl->setPosition(m_orderedPositions[0]);
+		// Approach from a consistent direction to compensate for stage hysteresis,
+		// so the grid is reached reproducibly regardless of where the stage was before.
+		m_scanControl->setPositionCompensated(m_orderedPositions[0]);
 	} else {
 		m_abort = true;
 		return;
@@ -1221,9 +1234,11 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 			if (calibrationTimer.elapsed() > (60e3 * m_settings.conCalibrationInterval)) {
 				calibrate(storage);
 				calibrationTimer.start();
-				// After we calibrated, we move back to the current position
+				// After we calibrated, we move back to the current position.
+				// The calibration preset can move the stage away (e.g. to a reference sample),
+				// so approach the grid point from a consistent direction to avoid hysteresis error.
 				if (m_scanControl) {
-					m_scanControl->setPosition(m_orderedPositions[ll]);
+					m_scanControl->setPositionCompensated(m_orderedPositions[ll]);
 				} else {
 					m_abort = true;
 					return;
@@ -1243,7 +1258,9 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 				return;
 			}
 			if (m_scanControl) {
-				m_scanControl->setPosition(m_orderedPositions[ll]);
+				// The overview brightfield capture moves the stage away from the grid point,
+				// so approach it again from a consistent direction to avoid hysteresis error.
+				m_scanControl->setPositionCompensated(m_orderedPositions[ll]);
 				std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			} else {
 				m_abort = true;
@@ -1347,7 +1364,7 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		// move stage to next position
 		if (ll < ((gsl::index)nrPositions - 1)) {
 			if (m_scanControl) {
-				m_scanControl->setPosition(m_orderedPositions[ll + 1]);
+				m_scanControl->setPositionCompensated(m_orderedPositions[ll + 1]);
 			} else {
 				m_abort = true;
 				return;
@@ -1374,7 +1391,7 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	if (m_scanControl) {
 		m_scanControl->setPreset(ScanPreset::SCAN_LASEROFF);
 
-		m_scanControl->setPosition(m_startPosition);
+		m_scanControl->setPositionCompensated(m_startPosition);
 		m_scanControl->enableMeasurementMode(false);
 		emit(s_positionChanged({ 0, 0, 0 }, 0));
 		QMetaObject::invokeMethod(

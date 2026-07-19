@@ -1,6 +1,9 @@
 #include "stdafx.h"
 #include "ScanControl.h"
 
+#include <chrono>
+#include <thread>
+
 /*
  * Public definitions
  */
@@ -17,6 +20,41 @@ void ScanControl::movePosition(POINT2 distance) {
 
 void ScanControl::movePosition(const POINT3& distance) {
 	auto position = getPosition() + distance;
+	setPosition(position);
+}
+
+void ScanControl::movePositionCompensated(POINT2 distance) {
+	auto position = getPosition();
+	auto newPosition = POINT2{ position.x, position.y } + distance;
+	setPositionCompensated(POINT3{ newPosition.x, newPosition.y, position.z });
+}
+
+void ScanControl::setPositionCompensated(POINT3 position) {
+	// Only mechanical translation stages exhibit backlash; galvo/voltage-driven
+	// scanners do not need (and would just lose time to) this compensation.
+	if (supportsCapability(Capabilities::TranslationStage)) {
+		constexpr auto hysteresisCompensation{ 10.0 };	// [µm] distance for compensation of the stage hysteresis
+		constexpr auto epsilon{ 1e-6 };				// [µm] axes closer than this are considered unchanged
+		const auto current = getPosition();
+		// To prevent problems with the hysteresis of the stage, we always approach
+		// the desired point coming from lower x/y values, just like the scale calibration does.
+		// Only axes that are actually moving are pre-approached, so e.g. a pure
+		// z/focus move does not also nudge x/y back and forth for no reason.
+		auto approach = position;
+		auto needsApproach = false;
+		if (std::abs(position.x - current.x) > epsilon) {
+			approach.x = position.x - hysteresisCompensation;
+			needsApproach = true;
+		}
+		if (std::abs(position.y - current.y) > epsilon) {
+			approach.y = position.y - hysteresisCompensation;
+			needsApproach = true;
+		}
+		if (needsApproach) {
+			setPosition(approach);
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		}
+	}
 	setPosition(position);
 }
 
@@ -50,7 +88,9 @@ void ScanControl::setPositionRelativeX(double positionX) {
 	auto position = ScanControl::getPosition();
 	position.x = m_homePosition.x + positionX;
 
-	setPosition(position);
+	// setPositionCompensated() only pre-approaches axes that actually change,
+	// so this does not disturb y/z when only x is being set here.
+	setPositionCompensated(position);
 	announcePosition();
 }
 
@@ -60,7 +100,7 @@ void ScanControl::setPositionRelativeY(double positionY) {
 	auto position = ScanControl::getPosition();
 	position.y = m_homePosition.y + positionY;
 
-	setPosition(position);
+	setPositionCompensated(position);
 	announcePosition();
 }
 
@@ -70,7 +110,9 @@ void ScanControl::setPositionRelativeZ(double positionZ) {
 	auto position = ScanControl::getPosition();
 	position.z = m_homePosition.z + positionZ;
 
-	setPosition(position);
+	// No-op for hysteresis compensation (only x/y are compensated), kept for
+	// consistency so all manual position entry goes through the same path.
+	setPositionCompensated(position);
 	announcePosition();
 }
 
@@ -105,7 +147,9 @@ void ScanControl::setPositionInPix(POINT2 positionPix) {
 	if (abs(positionMicrometer) > 1e4) {
 		return;
 	}
-	movePosition(positionMicrometer);
+	// Click-to-move in the live view: approach from a consistent direction so
+	// repeatedly clicking back on the same spot lands there reproducibly.
+	movePositionCompensated(positionMicrometer);
 }
 
 void ScanControl::enableMeasurementMode(bool enabled) {
@@ -220,7 +264,8 @@ POINT3 ScanControl::getHomePosition() const {
 }
 
 void ScanControl::moveHome() {
-	setPosition(m_homePosition);
+	// Approach from a consistent direction so returning home lands reproducibly.
+	setPositionCompensated(m_homePosition);
 }
 
 void ScanControl::savePosition() {
@@ -231,7 +276,8 @@ void ScanControl::savePosition() {
 
 void ScanControl::moveToSavedPosition(int index) {
 	if (m_savedPositions.size() > index) {
-		setPosition(m_savedPositions[index]);
+		// Approach from a consistent direction so the saved point is reached reproducibly.
+		setPositionCompensated(m_savedPositions[index]);
 	}
 }
 
