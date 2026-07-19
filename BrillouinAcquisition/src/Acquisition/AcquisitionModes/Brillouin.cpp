@@ -1402,10 +1402,13 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	storage->setPositions("grid-coordinates-absolute", std::vector<double>{ m_settings.gridCoordinatesAbsolute ? 1.0 : 0.0 }, 1, originDims);
 
 	// Explicitly store which grid points were sampled to keep metadata consistent for sparse ROI scans.
+	// Must match the [zSteps, xSteps, ySteps] row-major layout the "x"/"y"/"z" datasets above use
+	// (x varies before y) - NOT the (z, y, x) convention h5bm's per-spectrum dataset naming uses,
+	// which is a different, unrelated indexing scheme.
 	auto sampledMask = std::vector<double>(gridPositionCount, 0.0);
 	for (gsl::index ll{ 0 }; ll < (gsl::index)m_orderedIndices.size(); ll++) {
 		const auto idx = m_orderedIndices[ll];
-		const auto flat = idx.z * (m_settings.xSteps * m_settings.ySteps) + idx.y * m_settings.xSteps + idx.x;
+		const auto flat = idx.z * (m_settings.xSteps * m_settings.ySteps) + idx.x * m_settings.ySteps + idx.y;
 		if (flat >= 0 && flat < gridPositionCount) {
 			sampledMask[flat] = 1.0;
 		}
