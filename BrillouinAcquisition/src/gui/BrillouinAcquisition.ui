@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1196</width>
+    <width>1256</width>
     <height>651</height>
    </rect>
   </property>
@@ -43,7 +43,7 @@
       </property>
       <property name="maximumSize">
        <size>
-        <width>240</width>
+        <width>300</width>
         <height>16777215</height>
        </size>
       </property>
@@ -76,13 +76,13 @@
          </property>
          <property name="minimumSize">
           <size>
-           <width>240</width>
+           <width>260</width>
            <height>200</height>
           </size>
          </property>
          <property name="maximumSize">
           <size>
-           <width>224</width>
+           <width>300</width>
            <height>340</height>
           </size>
          </property>
@@ -162,7 +162,7 @@ QTabBar::tab:!selected {
              </property>
              <property name="maximumSize">
               <size>
-               <width>238</width>
+               <width>296</width>
                <height>16777215</height>
               </size>
              </property>
@@ -715,7 +715,7 @@ QTabBar::tab:!selected {
              </property>
              <property name="maximumSize">
               <size>
-               <width>238</width>
+               <width>296</width>
                <height>16777215</height>
               </size>
              </property>
@@ -775,7 +775,7 @@ QTabBar::tab:!selected {
              </property>
              <property name="maximumSize">
               <size>
-               <width>238</width>
+               <width>296</width>
                <height>16777215</height>
               </size>
              </property>
@@ -793,7 +793,7 @@ QTabBar::tab:!selected {
                <rect>
                 <x>0</x>
                 <y>0</y>
-                <width>230</width>
+                <width>280</width>
                 <height>207</height>
                </rect>
               </property>
@@ -811,7 +811,7 @@ QTabBar::tab:!selected {
               </property>
               <property name="maximumSize">
                <size>
-                <width>230</width>
+                <width>280</width>
                 <height>400</height>
                </size>
               </property>
@@ -986,7 +986,7 @@ QTabBar::tab:!selected {
                  <item>
                   <widget class="QTableView" name="tableView">
                    <property name="sizePolicy">
-                    <sizepolicy hsizetype="Fixed" vsizetype="Expanding">
+                    <sizepolicy hsizetype="Preferred" vsizetype="Expanding">
                      <horstretch>0</horstretch>
                      <verstretch>0</verstretch>
                     </sizepolicy>
@@ -1353,13 +1353,13 @@ QTabBar::tab:!selected {
          </property>
          <property name="minimumSize">
           <size>
-           <width>240</width>
+           <width>260</width>
            <height>370</height>
           </size>
          </property>
          <property name="maximumSize">
           <size>
-           <width>224</width>
+           <width>300</width>
            <height>10000</height>
           </size>
          </property>
@@ -1536,7 +1536,7 @@ QTabBar::tab:!selected {
                    </property>
                    <property name="maximumSize">
                     <size>
-                     <width>238</width>
+                     <width>296</width>
                      <height>16777215</height>
                     </size>
                    </property>
@@ -1554,7 +1554,7 @@ QTabBar::tab:!selected {
                      <rect>
                       <x>0</x>
                       <y>0</y>
-                     <width>221</width>
+                     <width>280</width>
                      <height>1100</height>
                      </rect>
                     </property>
@@ -1569,7 +1569,7 @@ QTabBar::tab:!selected {
                      <rect>
                       <x>8</x>
                       <y>28</y>
-                      <width>209</width>
+                      <width>264</width>
                        <height>650</height>
                       </rect>
                      </property>
@@ -1581,7 +1581,7 @@ QTabBar::tab:!selected {
                        <rect>
                         <x>8</x>
                         <y>15</y>
-                        <width>193</width>
+                        <width>248</width>
                         <height>89</height>
                        </rect>
                       </property>
@@ -1800,7 +1800,7 @@ QTabBar::tab:!selected {
                        <rect>
                         <x>8</x>
                         <y>120</y>
-                        <width>193</width>
+                        <width>248</width>
                         <height>73</height>
                        </rect>
                       </property>
@@ -2083,7 +2083,7 @@ QTabBar::tab:!selected {
                        <rect>
                         <x>8</x>
                         <y>104</y>
-                        <width>193</width>
+                        <width>248</width>
                         <height>18</height>
                        </rect>
                       </property>
@@ -2096,7 +2096,7 @@ QTabBar::tab:!selected {
                        <rect>
                         <x>8</x>
                         <y>200</y>
-                        <width>193</width>
+                        <width>248</width>
                         <height>18</height>
                        </rect>
                       </property>
@@ -2112,7 +2112,7 @@ QTabBar::tab:!selected {
                       <rect>
                        <x>8</x>
                        <y>224</y>
-                       <width>193</width>
+                       <width>248</width>
                        <height>450</height>
                       </rect>
                      </property>
@@ -2454,7 +2454,7 @@ QTabBar::tab:!selected {
                        <rect>
                         <x>8</x>
                        <y>792</y>
-                        <width>209</width>
+                        <width>264</width>
                         <height>137</height>
                       </rect>
                      </property>
@@ -2530,7 +2530,7 @@ QTabBar::tab:!selected {
                        <rect>
                         <x>8</x>
                         <y>112</y>
-                        <width>192</width>
+                        <width>248</width>
                         <height>18</height>
                        </rect>
                       </property>
@@ -2697,7 +2697,7 @@ QTabBar::tab:!selected {
                       <rect>
                        <x>8</x>
                        <y>935</y>
-                       <width>209</width>
+                       <width>264</width>
                        <height>137</height>
                       </rect>
                      </property>
@@ -2709,7 +2709,7 @@ QTabBar::tab:!selected {
                        <rect>
                         <x>8</x>
                         <y>112</y>
-                        <width>192</width>
+                        <width>248</width>
                         <height>18</height>
                        </rect>
                       </property>
@@ -2728,7 +2728,7 @@ QTabBar::tab:!selected {
                        <rect>
                         <x>8</x>
                         <y>15</y>
-                        <width>193</width>
+                        <width>248</width>
                         <height>89</height>
                        </rect>
                       </property>
@@ -2891,7 +2891,7 @@ border: none;</string>
                        <rect>
                         <x>8</x>
                        <y>697</y>
-                        <width>209</width>
+                        <width>264</width>
                         <height>89</height>
                       </rect>
                      </property>
@@ -2935,7 +2935,7 @@ border: none;</string>
                        <rect>
                         <x>8</x>
                         <y>40</y>
-                        <width>192</width>
+                        <width>248</width>
                         <height>18</height>
                        </rect>
                       </property>
@@ -3004,7 +3004,7 @@ border: none;</string>
                        <rect>
                         <x>8</x>
                         <y>64</y>
-                        <width>193</width>
+                        <width>248</width>
                         <height>18</height>
                        </rect>
                       </property>
@@ -3064,7 +3064,7 @@ border: none;</string>
                    </property>
                    <property name="maximumSize">
                     <size>
-                     <width>238</width>
+                     <width>296</width>
                      <height>16777215</height>
                     </size>
                    </property>
@@ -3511,7 +3511,7 @@ border: none;</string>
                  </property>
                  <property name="maximumSize">
                   <size>
-                   <width>238</width>
+                   <width>296</width>
                    <height>16777215</height>
                   </size>
                  </property>
