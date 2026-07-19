@@ -956,9 +956,20 @@ POINT2 Brillouin::overviewTileFootprintUm() const {
 	}
 	const auto scaleCalibration = m_scanControl->getScaleCalibration();
 	const auto brightfieldSettings = m_brightfieldCamera->getSettings();
+	const auto width = (double)brightfieldSettings.roi.width_binned;
+	const auto height = (double)brightfieldSettings.roi.height_binned;
+	// Axis-aligned bounding box, in stage um, of the camera frame's footprint. Using
+	// |pixToMicrometerX| * width for the stage-x extent (and the Y equivalent for
+	// stage-y) is only correct if the camera's raw pixel axes line up with the stage's
+	// x/y motion axes. Some hardware calibrations are rotated relative to the stage
+	// (e.g. ZeissMTB_Erlangen's pixToMicrometerX/Y is a 90 degree rotation - a raw
+	// pixel-x step moves the stage-y coordinate, not stage-x), in which case that
+	// shortcut silently swaps which axis gets padded. This sums each pixel axis's
+	// contribution to each stage axis instead, which reduces to the same simple
+	// formula for an axis-aligned calibration and is also correct for a rotated one.
 	return POINT2{
-		abs(scaleCalibration.pixToMicrometerX) * (double)brightfieldSettings.roi.width_binned,
-		abs(scaleCalibration.pixToMicrometerY) * (double)brightfieldSettings.roi.height_binned
+		std::abs(width * scaleCalibration.pixToMicrometerX.x) + std::abs(height * scaleCalibration.pixToMicrometerY.x),
+		std::abs(width * scaleCalibration.pixToMicrometerX.y) + std::abs(height * scaleCalibration.pixToMicrometerY.y)
 	};
 }
 
