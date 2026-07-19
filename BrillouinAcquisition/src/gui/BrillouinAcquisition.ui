@@ -192,7 +192,7 @@ QTabBar::tab:!selected {
               </property>
               <property name="minimumSize">
                <size>
-                <width>0</width>
+                <width>223</width>
                 <height>310</height>
                </size>
               </property>
@@ -739,7 +739,7 @@ QTabBar::tab:!selected {
               </property>
               <property name="minimumSize">
                <size>
-                <width>0</width>
+                <width>165</width>
                 <height>180</height>
                </size>
               </property>
@@ -805,7 +805,7 @@ QTabBar::tab:!selected {
               </property>
               <property name="minimumSize">
                <size>
-                <width>0</width>
+                <width>280</width>
                 <height>180</height>
                </size>
               </property>
@@ -1560,7 +1560,7 @@ QTabBar::tab:!selected {
                     </property>
                     <property name="minimumSize">
                      <size>
-                      <width>0</width>
+                      <width>280</width>
                       <height>1100</height>
                      </size>
                     </property>
@@ -3082,13 +3082,13 @@ border: none;</string>
                      <rect>
                       <x>0</x>
                       <y>0</y>
-                      <width>165</width>
+                      <width>217</width>
                       <height>605</height>
                      </rect>
                     </property>
                     <property name="minimumSize">
                      <size>
-                      <width>0</width>
+                      <width>217</width>
                       <height>605</height>
                      </size>
                     </property>
@@ -3535,7 +3535,7 @@ border: none;</string>
                   </property>
                   <property name="minimumSize">
                    <size>
-                    <width>0</width>
+                    <width>234</width>
                     <height>120</height>
                    </size>
                   </property>
