@@ -4386,6 +4386,18 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_useRoiMaskCheckbox->setEnabled(roiMaskPossible);
 		if (!roiMaskPossible && m_Brillouin->settings.useRoiMask) {
 			m_Brillouin->settings.useRoiMask = false;
+			m_roiMaskAutoDisabled = true;
+		} else if (roiMaskPossible && m_roiMaskAutoDisabled && !m_Brillouin->settings.useRoiMask) {
+			// The polygon (e.g. after dragging a point) is valid again after having been
+			// auto-disabled above for being invalid - restore it automatically, since it
+			// was never the user's choice to turn it off. Previously nothing did this, so
+			// the grid stayed shown as fully "outside" (red) until an unrelated action
+			// (like adding a new point, which unconditionally re-enables the mask) masked
+			// the problem.
+			m_Brillouin->settings.useRoiMask = true;
+		}
+		if (roiMaskPossible) {
+			m_roiMaskAutoDisabled = false;
 		}
 		const QSignalBlocker blocker(*m_useRoiMaskCheckbox);
 		m_useRoiMaskCheckbox->setChecked(m_Brillouin->settings.useRoiMask);
@@ -4551,14 +4563,17 @@ void BrillouinAcquisition::update_AOI_preview() {
 		std::vector<bool> insideRoiForPosition;
 		if (colorByRoi) {
 			const auto& settings = m_Brillouin->settings;
-			// Use the scan order cached from Brillouin's own s_scanOrderChanged signal rather
-			// than re-deriving it from the three independent UI radio button groups: those
-			// groups are not mutually exclusive with each other, so reading them back could
-			// yield an invalid permutation (e.g. two axes both claiming rank 0), leaving one
-			// direction empty and the whole grid preview blank.
-			const auto scanOrderX = (size_t)m_currentScanOrder.x;
-			const auto scanOrderY = (size_t)m_currentScanOrder.y;
-			const auto scanOrderZ = (size_t)m_currentScanOrder.z;
+			// Read the scan order directly from Brillouin (same pattern as `settings` above)
+			// rather than the three independent UI radio button groups: those are not
+			// mutually exclusive with each other, so reading them back could yield an
+			// invalid permutation (e.g. two axes both claiming rank 0), leaving one
+			// direction empty and the whole grid preview blank. A cached copy synced only
+			// via the (asynchronous, cross-thread) s_scanOrderChanged signal had the same
+			// problem: it could be stale relative to what Brillouin is actually using right
+			// now, causing this preview to project a different order than the real scan.
+			const auto scanOrderX = (size_t)m_Brillouin->scanOrder.x;
+			const auto scanOrderY = (size_t)m_Brillouin->scanOrder.y;
+			const auto scanOrderZ = (size_t)m_Brillouin->scanOrder.z;
 
 			std::vector<std::vector<double>> directions(3);
 			directions[scanOrderX] = simplemath::linspace(settings.xMin, settings.xMax, settings.xSteps);
@@ -5037,7 +5052,6 @@ void BrillouinAcquisition::on_buttonGroup_3_buttonClicked(int button) {
 }
 
 void BrillouinAcquisition::scanOrderChanged(SCAN_ORDER scanOrder) {
-	m_currentScanOrder = scanOrder;
 	if (scanOrder.x == 0) {
 		ui->scanDirX0->setChecked(true);
 	}

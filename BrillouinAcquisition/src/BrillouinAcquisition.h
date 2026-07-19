@@ -214,13 +214,14 @@ private:
 	QCPCurve* m_roiPolygonMarker{ nullptr };
 	int m_draggedRoiVertexIndex{ -1 };
 	bool m_draggingRoiVertex{ false };
+	// True only while useRoiMask is off because updateBrillouinSettings() auto-disabled it
+	// due to an invalid (self-intersecting / <3 point) polygon, as opposed to the user
+	// having deliberately unchecked it. Lets that same auto-disable be auto-undone once the
+	// polygon becomes valid again, without fighting a genuine user choice.
+	bool m_roiMaskAutoDisabled{ false };
 	std::vector<POINT3> m_positionsMicrometer;	// [µm]		Positions to raster, relative to current start point
 	std::vector<POINT2> m_positionsPixel;		// [pix]	Positions to raster
 	bool m_showPositions{ true };
-	// Cached copy of Brillouin's authoritative scan order, kept in sync via scanOrderChanged().
-	// Used instead of re-deriving it from the (independent, not mutually exclusive across
-	// axes) UI radio button groups, which can transiently disagree or double up a rank.
-	SCAN_ORDER m_currentScanOrder;
 
 	CAMERA_DEVICE m_cameraType{ CAMERA_DEVICE::UEYE };
 	CAMERA_DEVICE m_cameraTypeTemporary = m_cameraType;

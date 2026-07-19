@@ -219,6 +219,7 @@ public:
 	~Brillouin();
 
 	BRILLOUIN_SETTINGS& settings{ m_settings };
+	const SCAN_ORDER& scanOrder{ m_scanOrder };
 
 public slots:
 	void startRepetitions() override;
