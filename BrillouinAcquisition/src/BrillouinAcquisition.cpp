@@ -628,6 +628,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_mediumReferenceFrameCountSpinBox = ui->mediumReferenceFrameCountSpinBox;
 			m_absoluteGridCheckbox = ui->absoluteGridCheckbox;
 			m_saveOverviewBrightfieldPerZCheckbox = ui->saveOverviewBrightfieldPerZCheckbox;
+			m_overviewFullGridCheckbox = ui->overviewFullGridCheckbox;
 			m_editSpectralProxyRoiCheckbox = ui->editSpectralProxyRoiCheckbox;
 
 			connect(m_useRoiMaskCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
@@ -730,6 +731,12 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 
 			connect(m_saveOverviewBrightfieldPerZCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
 				m_Brillouin->settings.saveOverviewBrightfieldPerZ = enabled;
+				updateEstimatedAcquisitionTime();
+				updateBrillouinSettings();
+			});
+
+			connect(m_overviewFullGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				m_Brillouin->settings.overviewBrightfieldFullGrid = enabled;
 				updateEstimatedAcquisitionTime();
 			});
 
@@ -4386,6 +4393,17 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_useRoiMaskCheckbox->setEnabled(roiMaskPossible);
 		if (!roiMaskPossible && m_Brillouin->settings.useRoiMask) {
 			m_Brillouin->settings.useRoiMask = false;
+			m_roiMaskAutoDisabled = true;
+		} else if (roiMaskPossible && m_roiMaskAutoDisabled && !m_Brillouin->settings.useRoiMask) {
+			// The polygon (e.g. after dragging a point) is valid again after having been
+			// auto-disabled above for being invalid - restore it automatically, since it
+			// was never the user's choice to turn it off. Without this, useRoiMask stayed
+			// false until an unrelated action (adding a new point, which unconditionally
+			// re-enables the mask) happened to paper over the problem.
+			m_Brillouin->settings.useRoiMask = true;
+		}
+		if (roiMaskPossible) {
+			m_roiMaskAutoDisabled = false;
 		}
 		const QSignalBlocker blocker(*m_useRoiMaskCheckbox);
 		m_useRoiMaskCheckbox->setChecked(m_Brillouin->settings.useRoiMask);
@@ -4441,6 +4459,19 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_saveOverviewBrightfieldPerZCheckbox->setEnabled(
 			m_hasFluorescence && m_brightfieldCamera != nullptr && m_brightfieldCamera->getConnectionStatus()
 		);
+	}
+	if (m_overviewFullGridCheckbox) {
+		// Only meaningful once the grid is anchored to an absolute origin - in relative
+		// mode there's no fixed extent to tile against, so force it off rather than
+		// leave a stale setting that silently does nothing.
+		const auto fullGridPossible = m_Brillouin->settings.gridCoordinatesAbsolute
+			&& m_Brillouin->settings.saveOverviewBrightfieldPerZ;
+		if (!fullGridPossible && m_Brillouin->settings.overviewBrightfieldFullGrid) {
+			m_Brillouin->settings.overviewBrightfieldFullGrid = false;
+		}
+		const QSignalBlocker blocker(*m_overviewFullGridCheckbox);
+		m_overviewFullGridCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldFullGrid);
+		m_overviewFullGridCheckbox->setEnabled(fullGridPossible);
 	}
 	const auto homeControlsDisabled = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
 	ui->setHome->setDisabled(homeControlsDisabled);
@@ -5275,6 +5306,7 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-save-overview-brightfield-per-z", m_Brillouin->settings.saveOverviewBrightfieldPerZ);
 	settings.setValue("brillouin-overview-brightfield-exposure-ms", m_Brillouin->settings.overviewBrightfieldExposureMs);
 	settings.setValue("brillouin-overview-brightfield-gain", m_Brillouin->settings.overviewBrightfieldGain);
+	settings.setValue("brillouin-overview-brightfield-full-grid", m_Brillouin->settings.overviewBrightfieldFullGrid);
 	settings.setValue("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft);
 	settings.setValue("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop);
 	settings.setValue("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth);
@@ -5406,6 +5438,7 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.saveOverviewBrightfieldPerZ = settings.value("brillouin-save-overview-brightfield-per-z", m_Brillouin->settings.saveOverviewBrightfieldPerZ).toBool();
 	m_Brillouin->settings.overviewBrightfieldExposureMs = settings.value("brillouin-overview-brightfield-exposure-ms", m_Brillouin->settings.overviewBrightfieldExposureMs).toInt();
 	m_Brillouin->settings.overviewBrightfieldGain = settings.value("brillouin-overview-brightfield-gain", m_Brillouin->settings.overviewBrightfieldGain).toDouble();
+	m_Brillouin->settings.overviewBrightfieldFullGrid = settings.value("brillouin-overview-brightfield-full-grid", m_Brillouin->settings.overviewBrightfieldFullGrid).toBool();
 	m_Brillouin->settings.surfaceProxyRoiLeft = settings.value("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft).toInt();
 	m_Brillouin->settings.surfaceProxyRoiTop = settings.value("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop).toInt();
 	m_Brillouin->settings.surfaceProxyRoiWidth = settings.value("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth).toInt();

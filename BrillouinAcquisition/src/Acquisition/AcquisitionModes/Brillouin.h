@@ -93,6 +93,7 @@ struct BRILLOUIN_SETTINGS {
 			saveOverviewBrightfieldPerZ = settings.saveOverviewBrightfieldPerZ;
 			overviewBrightfieldExposureMs = settings.overviewBrightfieldExposureMs;
 			overviewBrightfieldGain = settings.overviewBrightfieldGain;
+			overviewBrightfieldFullGrid = settings.overviewBrightfieldFullGrid;
 			camera = settings.camera;
 			return *this;
 		}
@@ -142,6 +143,10 @@ struct BRILLOUIN_SETTINGS {
 		bool saveOverviewBrightfieldPerZ{ false };
 		int overviewBrightfieldExposureMs{ 4 };
 		double overviewBrightfieldGain{ 0.0 };
+		// Only meaningful (and only offered in the UI) when gridCoordinatesAbsolute is
+		// true: instead of one overview image per z slice at a fixed position, tile
+		// enough camera-FOV-sized images (20% overlap) to cover the whole grid extent.
+		bool overviewBrightfieldFullGrid{ false };
 
 		// ROI parameters
 		const double& xMin{ m_xMin };
@@ -261,7 +266,9 @@ private:
 	void applySurfaceFollowPlan();
 	double estimateFrameMetric(const std::vector<std::byte>& image) const;
 	bool runSurfacePreScan();
-	POINT3 overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ) const;
+	POINT3 overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ, const POINT2& xy) const;
+	std::vector<POINT3> overviewBrightfieldPositionsForZ(int zIndex, const std::vector<double>& directionsZ) const;
+	std::vector<POINT2> overviewTileCentersXY() const;
 	void captureOverviewBrightfield(std::unique_ptr <StorageWrapper>& storage, int imageNumber, int zIndex, const POINT3& position);
 
 	std::string getRepetitionFilename();

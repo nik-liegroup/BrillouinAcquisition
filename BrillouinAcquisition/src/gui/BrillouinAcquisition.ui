@@ -2143,7 +2143,7 @@ QTabBar::tab:!selected {
                         <property name="maximumSize">
                          <size>
                           <width>16777215</width>
-                          <height>112</height>
+                          <height>136</height>
                          </size>
                         </property>
                         <property name="title">
@@ -2221,6 +2221,16 @@ QTabBar::tab:!selected {
                            </property>
                            <property name="text">
                             <string>Save BF overview per z slice</string>
+                           </property>
+                          </widget>
+                         </item>
+                         <item row="4" column="0" colspan="2">
+                          <widget class="QCheckBox" name="overviewFullGridCheckbox">
+                           <property name="toolTip">
+                            <string>Tile enough brightfield images (20% overlap) to cover the whole grid extent, instead of a single image. Only available in absolute grid mode.</string>
+                           </property>
+                           <property name="text">
+                            <string>Full grid (mosaic)</string>
                            </property>
                           </widget>
                          </item>
