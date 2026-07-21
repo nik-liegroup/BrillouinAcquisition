@@ -5452,7 +5452,8 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-calibration-exposure-time", m_Brillouin->settings.calibrationExposureTime);
 	settings.setValue("brillouin-use-roi-mask", m_Brillouin->settings.useRoiMask);
 	settings.setValue("brillouin-roi-polygon-um", serializeRoiPolygon(m_Brillouin->settings.roiPolygonUm));
-	settings.setValue("brillouin-use-surface-follow", m_Brillouin->settings.useSurfaceFollow);
+	// useSurfaceFollow is deliberately not persisted - it should always start off,
+	// regardless of how the previous session ended.
 	settings.setValue("brillouin-surface-z-offset-um", m_Brillouin->settings.surfaceZOffsetUm);
 	settings.setValue("brillouin-surface-follow-half-range-um", m_Brillouin->settings.surfaceFollowHalfRangeUm);
 	settings.setValue("brillouin-pre-scan-xy-bin", m_Brillouin->settings.preScanXYBin);
@@ -5472,7 +5473,9 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-surface-verification-steps", m_Brillouin->settings.surfaceVerificationSteps);
 	settings.setValue("brillouin-surface-verification-frame-average", m_Brillouin->settings.surfaceVerificationFrameAverage);
 	settings.setValue("brillouin-surface-verification-tolerance-fraction", m_Brillouin->settings.surfaceVerificationToleranceFraction);
-	settings.setValue("brillouin-grid-coordinates-absolute", m_Brillouin->settings.gridCoordinatesAbsolute);
+	// gridCoordinatesAbsolute is deliberately not persisted - it should always start off,
+	// regardless of how the previous session ended. The origin itself is still saved/
+	// restored below, in case the user re-enables absolute mode.
 	settings.setValue("brillouin-absolute-grid-origin-x-um", m_Brillouin->settings.absoluteGridOriginUm.x);
 	settings.setValue("brillouin-absolute-grid-origin-y-um", m_Brillouin->settings.absoluteGridOriginUm.y);
 	settings.setValue("brillouin-absolute-grid-origin-z-um", m_Brillouin->settings.absoluteGridOriginUm.z);
@@ -5587,7 +5590,7 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.calibrationExposureTime = settings.value("brillouin-calibration-exposure-time", m_Brillouin->settings.calibrationExposureTime).toDouble();
 	m_Brillouin->settings.useRoiMask = settings.value("brillouin-use-roi-mask", m_Brillouin->settings.useRoiMask).toBool();
 	m_Brillouin->settings.roiPolygonUm = deserializeRoiPolygon(settings.value("brillouin-roi-polygon-um", "").toString());
-	m_Brillouin->settings.useSurfaceFollow = settings.value("brillouin-use-surface-follow", m_Brillouin->settings.useSurfaceFollow).toBool();
+	// useSurfaceFollow is deliberately not restored - always starts off (see saveSettings()).
 	m_Brillouin->settings.surfaceZOffsetUm = settings.value("brillouin-surface-z-offset-um", m_Brillouin->settings.surfaceZOffsetUm).toDouble();
 	m_Brillouin->settings.surfaceFollowHalfRangeUm = settings.value("brillouin-surface-follow-half-range-um", m_Brillouin->settings.surfaceFollowHalfRangeUm).toDouble();
 	m_Brillouin->settings.preScanXYBin = settings.value("brillouin-pre-scan-xy-bin", m_Brillouin->settings.preScanXYBin).toInt();
@@ -5607,7 +5610,7 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.surfaceVerificationSteps = settings.value("brillouin-surface-verification-steps", m_Brillouin->settings.surfaceVerificationSteps).toInt();
 	m_Brillouin->settings.surfaceVerificationFrameAverage = settings.value("brillouin-surface-verification-frame-average", m_Brillouin->settings.surfaceVerificationFrameAverage).toInt();
 	m_Brillouin->settings.surfaceVerificationToleranceFraction = settings.value("brillouin-surface-verification-tolerance-fraction", m_Brillouin->settings.surfaceVerificationToleranceFraction).toDouble();
-	m_Brillouin->settings.gridCoordinatesAbsolute = settings.value("brillouin-grid-coordinates-absolute", m_Brillouin->settings.gridCoordinatesAbsolute).toBool();
+	// gridCoordinatesAbsolute is deliberately not restored - always starts off (see saveSettings()).
 	m_Brillouin->settings.absoluteGridOriginUm.x = settings.value("brillouin-absolute-grid-origin-x-um", m_Brillouin->settings.absoluteGridOriginUm.x).toDouble();
 	m_Brillouin->settings.absoluteGridOriginUm.y = settings.value("brillouin-absolute-grid-origin-y-um", m_Brillouin->settings.absoluteGridOriginUm.y).toDouble();
 	m_Brillouin->settings.absoluteGridOriginUm.z = settings.value("brillouin-absolute-grid-origin-z-um", m_Brillouin->settings.absoluteGridOriginUm.z).toDouble();
