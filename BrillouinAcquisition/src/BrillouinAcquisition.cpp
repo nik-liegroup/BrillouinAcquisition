@@ -1240,6 +1240,15 @@ POINT3 BrillouinAcquisition::absoluteTargetToGridOffset(const POINT3& absoluteTa
 }
 
 POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm) const {
+	return imagePlaneUmToGridOffset(imagePlaneUm, m_Brillouin->settings.gridCoordinatesAbsolute);
+}
+
+// gridAbsolute is taken explicitly (rather than always read from the current settings) so
+// preservePhysicalGridForAbsoluteMode() can convert through the OLD mode's convention and
+// back through the NEW one when the grid-coordinates-absolute setting itself is what's
+// changing - it must not silently use "current settings" for both directions of that
+// conversion, or it re-derives the exact kind of offset mismatch this was fixed for.
+POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm, bool gridAbsolute) const {
 	if (!m_scanControl) {
 		return imagePlaneUm;
 	}
@@ -1251,7 +1260,6 @@ POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm
 	// conversion, instead of re-deriving it here, is what keeps the ROI overlay glued to the
 	// markers in every grid mode (this used to be a no-op for non-absolute grids, which is
 	// why the polygon stayed put while the markers tracked the live scanner offset).
-	const auto gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
 	const auto origin = gridAbsolute ? m_Brillouin->settings.absoluteGridOriginUm : POINT3{};
 	const auto offset = m_scanControl->getPositionOffset(gridAbsolute);
 	return POINT2{
@@ -1261,11 +1269,14 @@ POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm
 }
 
 POINT2 BrillouinAcquisition::gridOffsetToImagePlaneUm(const POINT2& gridOffset) const {
+	return gridOffsetToImagePlaneUm(gridOffset, m_Brillouin->settings.gridCoordinatesAbsolute);
+}
+
+POINT2 BrillouinAcquisition::gridOffsetToImagePlaneUm(const POINT2& gridOffset, bool gridAbsolute) const {
 	if (!m_scanControl) {
 		return gridOffset;
 	}
 	// See imagePlaneUmToGridOffset() for why this must match ScanControl's own convention.
-	const auto gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
 	const auto origin = gridAbsolute ? m_Brillouin->settings.absoluteGridOriginUm : POINT3{};
 	const auto offset = m_scanControl->getPositionOffset(gridAbsolute);
 	return POINT2{
@@ -1279,44 +1290,45 @@ void BrillouinAcquisition::preservePhysicalGridForAbsoluteMode(bool enabled) {
 		return;
 	}
 
-	const auto oldRelativeOrigin = m_scanControl->getPosition();
 	const auto oldAbsoluteMode = m_Brillouin->settings.gridCoordinatesAbsolute;
 	const auto oldAbsoluteOrigin = m_Brillouin->settings.absoluteGridOriginUm;
+	// Z has no scanner/stage split - getPosition().z is always just the focus position -
+	// so the plain origin-difference used below is not subject to the X/Y mismatch this
+	// function used to have and is kept as its own, simpler path.
+	const auto currentFocus = m_scanControl->getPosition().z;
 	if (enabled) {
 		m_Brillouin->settings.absoluteGridOriginUm = m_scanControl->getHomePosition();
 	}
 
-	auto oldOffsetToAbsolute = [&](const POINT3& gridOffset) {
-		const auto origin = oldAbsoluteMode ? oldAbsoluteOrigin : oldRelativeOrigin;
-		return POINT3{ origin.x + gridOffset.x, origin.y + gridOffset.y, origin.z + gridOffset.z };
+	// X/Y: round-trip each stored point through gridOffsetToImagePlaneUm()/
+	// imagePlaneUmToGridOffset() - the exact functions the grid and the ROI polygon are
+	// actually drawn with - instead of re-deriving the offset a third time. That guarantees
+	// whatever currently renders on screen is preserved exactly, in both directions, because
+	// switching modes can no longer disagree with what put it there in the first place.
+	auto convertXY = [&](const POINT2& gridOffset) {
+		const auto imagePlaneUm = gridOffsetToImagePlaneUm(gridOffset, oldAbsoluteMode);
+		return imagePlaneUmToGridOffset(imagePlaneUm, enabled);
 	};
-	auto absoluteToNewOffset = [&](const POINT3& absoluteTarget) {
-		const auto origin = enabled ? m_Brillouin->settings.absoluteGridOriginUm : oldRelativeOrigin;
-		return POINT3{ absoluteTarget.x - origin.x, absoluteTarget.y - origin.y, absoluteTarget.z - origin.z };
+	auto convertZ = [&](double gridOffsetZ) {
+		const auto oldOriginZ = oldAbsoluteMode ? oldAbsoluteOrigin.z : currentFocus;
+		const auto newOriginZ = enabled ? m_Brillouin->settings.absoluteGridOriginUm.z : currentFocus;
+		return (oldOriginZ + gridOffsetZ) - newOriginZ;
 	};
 
-	const auto newMin = absoluteToNewOffset(oldOffsetToAbsolute(POINT3{
-		m_Brillouin->settings.xMin,
-		m_Brillouin->settings.yMin,
-		m_Brillouin->settings.zMin
-	}));
-	const auto newMax = absoluteToNewOffset(oldOffsetToAbsolute(POINT3{
-		m_Brillouin->settings.xMax,
-		m_Brillouin->settings.yMax,
-		m_Brillouin->settings.zMax
-	}));
+	const auto newMinXY = convertXY(POINT2{ m_Brillouin->settings.xMin, m_Brillouin->settings.yMin });
+	const auto newMaxXY = convertXY(POINT2{ m_Brillouin->settings.xMax, m_Brillouin->settings.yMax });
+	const auto newMinZ = convertZ(m_Brillouin->settings.zMin);
+	const auto newMaxZ = convertZ(m_Brillouin->settings.zMax);
 
-	m_Brillouin->settings.setXMin(newMin.x);
-	m_Brillouin->settings.setXMax(newMax.x);
-	m_Brillouin->settings.setYMin(newMin.y);
-	m_Brillouin->settings.setYMax(newMax.y);
-	m_Brillouin->settings.setZMin(newMin.z);
-	m_Brillouin->settings.setZMax(newMax.z);
+	m_Brillouin->settings.setXMin(newMinXY.x);
+	m_Brillouin->settings.setXMax(newMaxXY.x);
+	m_Brillouin->settings.setYMin(newMinXY.y);
+	m_Brillouin->settings.setYMax(newMaxXY.y);
+	m_Brillouin->settings.setZMin(newMinZ);
+	m_Brillouin->settings.setZMax(newMaxZ);
 
 	for (auto& point : m_Brillouin->settings.roiPolygonUm) {
-		const auto absolutePoint = oldOffsetToAbsolute(POINT3{ point.x, point.y, 0.0 });
-		const auto newPoint = absoluteToNewOffset(absolutePoint);
-		point = POINT2{ newPoint.x, newPoint.y };
+		point = convertXY(point);
 	}
 }
 
@@ -4678,6 +4690,20 @@ void BrillouinAcquisition::update_AOI_preview() {
 		auto positionsPixelForRoi = m_positionsPixel;
 		std::vector<POINT2> roiPolygonPix;
 		if (colorByRoi && m_scanControl) {
+			// Recompute the marker pixels fresh here rather than trusting the cached
+			// m_positionsPixel: that cache is only refreshed when ScanControl announces a
+			// position change, while roiPolygonPix below is always projected using whatever
+			// the scanner/stage offset is *right now*. If those two moments ever differ
+			// (e.g. this call was triggered by something other than a position change), the
+			// two overlays would briefly disagree about inside vs. outside even though both
+			// individually use the correct, shared conversion - recomputing both from the
+			// same instant closes that gap so on-screen coloring can never diverge from what
+			// ScanPlanner will actually include in the scan.
+			positionsPixelForRoi = m_scanControl->getPositionsPix(
+				m_positionsMicrometer, m_Brillouin->settings.gridCoordinatesAbsolute);
+			std::transform(positionsPixelForRoi.begin(), positionsPixelForRoi.end(), positionsPixelForRoi.begin(),
+				[this](POINT2 point) { return brightfieldRawToDisplay(point); }
+			);
 			roiPolygonPix.reserve(m_Brillouin->settings.roiPolygonUm.size());
 			for (const auto& p : m_Brillouin->settings.roiPolygonUm) {
 				auto pUm = gridOffsetToImagePlaneUm(p);

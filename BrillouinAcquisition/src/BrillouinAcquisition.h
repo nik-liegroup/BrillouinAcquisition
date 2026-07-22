@@ -466,7 +466,9 @@ private slots:
 	POINT3 gridOffsetToAbsoluteTarget(const POINT3& gridOffset, const POINT3& relativeOrigin) const;
 	POINT3 absoluteTargetToGridOffset(const POINT3& absoluteTarget, const POINT3& relativeOrigin) const;
 	POINT2 imagePlaneUmToGridOffset(const POINT2& imagePlaneUm) const;
+	POINT2 imagePlaneUmToGridOffset(const POINT2& imagePlaneUm, bool gridAbsolute) const;
 	POINT2 gridOffsetToImagePlaneUm(const POINT2& gridOffset) const;
+	POINT2 gridOffsetToImagePlaneUm(const POINT2& gridOffset, bool gridAbsolute) const;
 	void preservePhysicalGridForAbsoluteMode(bool enabled);
 	void updateAbsoluteGridStatus();
 	void setHomePositionBounds(BOUNDS);
