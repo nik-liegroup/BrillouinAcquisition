@@ -204,6 +204,14 @@ public slots:
 	// (e.g. mosaic tile outlines) that must not clobber the cached AOI markers.
 	POINT2 getPositionPix(POINT3 positionMicrometer, bool positionIsAbsolute);
 
+	// The micrometer offset getPositionPix()/convertPositionsToPix() add to a stored
+	// (grid-offset or absolute) position before projecting it to pixels. Exposed so other
+	// overlays that are stored in the same grid-offset frame (e.g. the ROI mask polygon)
+	// can be projected with the exact same convention - re-deriving it independently is
+	// what let those overlays drift apart from the AOI markers whenever the scanner
+	// position was non-zero.
+	POINT2 getPositionOffset(bool positionIsAbsolute);
+
 	virtual POINT2 pixToMicroMeter(POINT2 positionPix);
 	virtual POINT2 microMeterToPix(POINT2 positionMicrometer);
 	POINT2 microMeterToPix(POINT3 positionMicrometer);

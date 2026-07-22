@@ -336,22 +336,7 @@ std::vector<POINT2> ScanControl::getPositionsPix(const std::vector<POINT3>& posi
 };
 
 POINT2 ScanControl::getPositionPix(POINT3 positionMicrometer, bool positionIsAbsolute) {
-	if (positionIsAbsolute || m_measurementMode) {
-		getPosition(PositionType::STAGE);
-	}
-
-	// In normal mode, the positions are shown relative to the scanner position.
-	auto offset = m_positionScanner;
-	if (positionIsAbsolute) {
-		// See the matching comment in convertPositionsToPix(): the origin this position
-		// is relative to was captured as stage + scanner, so both must be subtracted here.
-		offset = POINT2{} - (m_positionStage + m_positionScanner);
-	}
-	// In measurement mode, the positions are shown relative to the start position.
-	else if (m_measurementMode) {
-		offset = m_startPosition - (m_positionStage + m_positionScanner);
-	}
-
+	const auto offset = getPositionOffset(positionIsAbsolute);
 	return microMeterToPix(POINT2{ positionMicrometer.x, positionMicrometer.y } + offset);
 }
 
@@ -455,16 +440,15 @@ void ScanControl::registerCapability(Capabilities capability) {
  * Private definitions
  */
 
-std::vector<POINT2> ScanControl::convertPositionsToPix() {
-	auto positionsPix = std::vector<POINT2>(m_AOI_positions.size());
-
-	if (m_AOI_positionsAbsolute || m_measurementMode) {
+POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
+	if (positionIsAbsolute || m_measurementMode) {
 		getPosition(PositionType::STAGE);
 	}
 
-	// In normal mode, the positions are shown relative to the scanner position.
+	// In normal (live-preview) mode, the positions are shown relative to the scanner
+	// position, so they track wherever the laser currently points within the FOV.
 	auto offset = m_positionScanner;
-	if (m_AOI_positionsAbsolute) {
+	if (positionIsAbsolute) {
 		// Absolute positions are stored relative to absoluteGridOriginUm, which is
 		// captured as getPosition(BOTH) (stage + scanner, see setHome()/getHomePosition()).
 		// Projecting them into the current view must subtract that same stage+scanner
@@ -472,11 +456,17 @@ std::vector<POINT2> ScanControl::convertPositionsToPix() {
 		offset = POINT2{} - (m_positionStage + m_positionScanner);
 	}
 	// In measurement mode, the positions are shown relative to the start position.
-	else if (this->m_measurementMode) {
+	else if (m_measurementMode) {
 		// m_startPosition is captured as getPosition(BOTH) in enableMeasurementMode(),
 		// so it must be undone with stage + scanner as well, for the same reason as above.
-		offset = this->m_startPosition - (m_positionStage + m_positionScanner);
+		offset = m_startPosition - (m_positionStage + m_positionScanner);
 	}
+	return offset;
+}
+
+std::vector<POINT2> ScanControl::convertPositionsToPix() {
+	auto positionsPix = std::vector<POINT2>(m_AOI_positions.size());
+	const auto offset = getPositionOffset(m_AOI_positionsAbsolute);
 
 	std::transform(m_AOI_positions.begin(), m_AOI_positions.end(), positionsPix.begin(),
 		[this, offset](POINT3 point) {

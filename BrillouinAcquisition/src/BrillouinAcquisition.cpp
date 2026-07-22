@@ -1240,28 +1240,37 @@ POINT3 BrillouinAcquisition::absoluteTargetToGridOffset(const POINT3& absoluteTa
 }
 
 POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm) const {
-	if (!m_scanControl || !m_Brillouin->settings.gridCoordinatesAbsolute) {
+	if (!m_scanControl) {
 		return imagePlaneUm;
 	}
-	// Use the same (stage + scanner) position convention as getHomePosition() /
-	// absoluteGridOriginUm and setPosition(), otherwise a non-zero scanner offset
-	// introduces a constant error between where a point is drawn and where it is moved to.
-	const auto currentPosition = m_scanControl->getPosition();
+	// roiPolygonUm is stored in the exact same grid-offset frame as the measurement grid
+	// itself (ScanPlanner tests it directly against the pre-origin grid position, see
+	// ScanPlanner::isPointInPolygon()). The AOI markers reach that same frame via
+	// ScanControl::getPositionOffset() (absolute mode also adds absoluteGridOriginUm first,
+	// since ScanPlanner's absolute positions have the origin baked in) - reusing that exact
+	// conversion, instead of re-deriving it here, is what keeps the ROI overlay glued to the
+	// markers in every grid mode (this used to be a no-op for non-absolute grids, which is
+	// why the polygon stayed put while the markers tracked the live scanner offset).
+	const auto gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
+	const auto origin = gridAbsolute ? m_Brillouin->settings.absoluteGridOriginUm : POINT3{};
+	const auto offset = m_scanControl->getPositionOffset(gridAbsolute);
 	return POINT2{
-		currentPosition.x + imagePlaneUm.x - m_Brillouin->settings.absoluteGridOriginUm.x,
-		currentPosition.y + imagePlaneUm.y - m_Brillouin->settings.absoluteGridOriginUm.y
+		imagePlaneUm.x - offset.x - origin.x,
+		imagePlaneUm.y - offset.y - origin.y
 	};
 }
 
 POINT2 BrillouinAcquisition::gridOffsetToImagePlaneUm(const POINT2& gridOffset) const {
-	if (!m_scanControl || !m_Brillouin->settings.gridCoordinatesAbsolute) {
+	if (!m_scanControl) {
 		return gridOffset;
 	}
-	// See imagePlaneUmToGridOffset() for why this must match its (stage + scanner) convention.
-	const auto currentPosition = m_scanControl->getPosition();
+	// See imagePlaneUmToGridOffset() for why this must match ScanControl's own convention.
+	const auto gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
+	const auto origin = gridAbsolute ? m_Brillouin->settings.absoluteGridOriginUm : POINT3{};
+	const auto offset = m_scanControl->getPositionOffset(gridAbsolute);
 	return POINT2{
-		m_Brillouin->settings.absoluteGridOriginUm.x + gridOffset.x - currentPosition.x,
-		m_Brillouin->settings.absoluteGridOriginUm.y + gridOffset.y - currentPosition.y
+		origin.x + gridOffset.x + offset.x,
+		origin.y + gridOffset.y + offset.y
 	};
 }
 
