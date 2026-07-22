@@ -103,6 +103,17 @@ void StorageWrapper::s_enqueueCalibration(CALIBRATION<unsigned int>* cal) {
 
 void StorageWrapper::s_finishedQueueing() {
 	m_finishedQueueing = true;
+	// finished() is normally emitted from s_writeQueues(), which only runs while
+	// m_queueTimer is ticking (started by startWritingQueues(), i.e. once the actual
+	// measurement phase begins queueing images). If this is called before that ever
+	// happened - e.g. cancelling during/right after the surface pre-scan, before
+	// runMeasurementPhase() - the timer never started, so that check would never run and
+	// whoever is blocked waiting for finished() (see Brillouin::abortMode()) would hang
+	// forever. There is nothing queued to drain in that case, so it's safe to just signal
+	// completion immediately instead.
+	if (!m_queueTimer || !m_queueTimer->isActive()) {
+		emit(finished());
+	}
 }
 
 void StorageWrapper::startWritingQueues() {

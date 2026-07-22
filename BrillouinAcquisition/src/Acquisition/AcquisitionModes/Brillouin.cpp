@@ -1671,16 +1671,12 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 			// touched anything, not wherever the surface pre-scan's last column left it.
 			m_scanControl->setPositionCompensated(m_startPosition);
 			m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
-			// applySurfaceFollowPlan() already re-emitted the AOI markers once, right after
-			// the pre-scan finished - but at that moment the stage was still wherever the
-			// last scanned column left it, not back here yet. setPositionCompensated() above
-			// doesn't itself trigger a refresh (the periodic announcer was stopped for the
-			// whole acquisition, see stopAnnouncing() above, and setPosition() on a
-			// translation stage doesn't announce as a side effect the way NIDAQ's does), so
-			// without this the markers stay one step stale: drawn as if the stage were still
-			// at the last scanned column, even though it has genuinely already moved back
-			// here. That looked like "the grid moved" when actually only the (stale) grid
-			// overlay was wrong - the real stage position was correct the whole time.
+			// The grid/ROI overlay itself is fixed (see ScanControl::getPositionOffset())
+			// and doesn't need refreshing here. The laser-position marker does, though: the
+			// periodic announcer is stopped for the whole acquisition (see stopAnnouncing()
+			// above), and setPosition() on a translation stage doesn't announce as a side
+			// effect the way NIDAQ's does - so without this it would still show wherever the
+			// pre-scan's last column left it, not back here where the stage genuinely is now.
 			m_scanControl->announcePosition();
 		}
 		setAcquisitionStatus(ACQUISITION_STATUS::WAITFORSURFACEREVIEW);
@@ -1941,6 +1937,11 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		// Approach from a consistent direction to compensate for stage hysteresis,
 		// so the grid is reached reproducibly regardless of where the stage was before.
 		m_scanControl->setPositionCompensated(m_orderedPositions[0]);
+		// The periodic position-announcer is stopped for the whole acquisition (see
+		// stopAnnouncing() in acquire()), and a translation stage's setPosition() doesn't
+		// announce as a side effect the way the galvo's does - so without this, the laser-
+		// position marker would never visibly move through the grid while a scan runs.
+		m_scanControl->announcePosition();
 	} else {
 		m_abort = true;
 		return;
@@ -2092,6 +2093,8 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		if (ll < ((gsl::index)nrPositions - 1)) {
 			if (m_scanControl) {
 				m_scanControl->setPositionCompensated(m_orderedPositions[ll + 1]);
+				// See the matching comment where position 0 is approached above.
+				m_scanControl->announcePosition();
 			} else {
 				m_abort = true;
 				return;

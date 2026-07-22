@@ -346,20 +346,28 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	}
 
 	// In normal (live-preview) mode, the positions are shown relative to the scanner
-	// position, so they track wherever the laser currently points within the FOV.
+	// position, so they track wherever the laser currently points within the FOV - this is
+	// a deliberate live-preview convenience (lets the scanner "drag" the grid design around
+	// before a scan starts) and is unrelated to the two cases below.
 	auto offset = m_positionScanner;
 	if (positionIsAbsolute) {
-		// Absolute positions are stored relative to absoluteGridOriginUm, which is
-		// captured as getPosition(BOTH) (stage + scanner, see setHome()/getHomePosition()).
-		// Projecting them into the current view must subtract that same stage+scanner
-		// position, not stage alone, or the overlay drifts by the scanner offset.
-		offset = POINT2{} - (m_positionStage + m_positionScanner);
+		// The brightfield view is a fixed-FOV overview camera, not one that pans with the
+		// stage - so the grid (and the ROI polygon, which goes through this same function)
+		// must be drawn as a fixed overlay, matching a fixed calibration. Absolute positions
+		// already have absoluteGridOriginUm baked in (see ScanPlanner), so no further
+		// adjustment is needed here at all. This used to subtract the live stage+scanner
+		// position, which made the whole grid visibly pan as the stage moved during a scan -
+		// wrong for a fixed-FOV camera: the laser-position marker (see
+		// announcePositionScanner()) is what should move through the grid, not the other
+		// way round.
+		offset = POINT2{};
 	}
-	// In measurement mode, the positions are shown relative to the start position.
+	// In measurement mode, the positions are shown relative to the start position - for the
+	// same fixed-FOV reason as above, that means the plain, unadjusted start position
+	// (captured once in enableMeasurementMode() and constant for the rest of the
+	// acquisition), not re-centered on the live stage+scanner position on every call.
 	else if (m_measurementMode) {
-		// m_startPosition is captured as getPosition(BOTH) in enableMeasurementMode(),
-		// so it must be undone with stage + scanner as well, for the same reason as above.
-		offset = m_startPosition - (m_positionStage + m_positionScanner);
+		offset = m_startPosition;
 	}
 	return offset;
 }
@@ -427,32 +435,42 @@ void ScanControl::calculateCurrentPositionBounds(POINT3 currentPosition) {
 }
 
 /*
- * This functions announces the updated AOI positions if necessary.
- * We check if the stage or scanner position has changed since the last announcement
- * and announce new positions under these conditions:
- *	- always, if the scanner position changed (every getPositionOffset() branch depends
- *	  on it - see live-preview, absolute and measurement mode there)
- *	- additionally, if the stage position changed while in absolute or measurement mode
- *	  (the only two modes whose offset depends on the stage at all - live preview doesn't,
- *	  see getPositionOffset())
+ * Announces updated marker positions if necessary.
+ *
+ * The AOI markers (crosses/ROI) only need to redraw when their own projection actually
+ * depends on whatever just changed - see getPositionOffset(): live-preview mode (neither
+ * absolute nor measurement) tracks the scanner; absolute and measurement mode are fixed
+ * (independent of the live stage/scanner position entirely, matching a fixed-FOV overview
+ * camera rather than one that pans with the stage), so in those two modes nothing here needs
+ * to trigger a redraw of them at all.
+ *
+ * The laser-position marker (announcePositionScanner()) always reflects the combined
+ * stage+scanner position and must redraw whenever either one changes, in every mode - that is
+ * the one indicator meant to visibly move through the (otherwise fixed) grid as a scan
+ * progresses.
  */
 void ScanControl::announcePositions() {
 	const auto stageChanged = abs(m_positionStageOld - m_positionStage) >= 1e-6;
 	const auto scannerChanged = abs(m_positionScannerOld - m_positionScanner) >= 1e-6;
-	const auto offsetDependsOnStage = m_measurementMode || m_AOI_positionsAbsolute;
-	if (!scannerChanged && !(offsetDependsOnStage && stageChanged)) {
+	if (!stageChanged && !scannerChanged) {
 		return;
 	}
 
-	// Set new positions if they have significantly changed
-	m_positionScannerOld = m_positionScanner;
 	m_positionStageOld = m_positionStage;
+	m_positionScannerOld = m_positionScanner;
 
-	emit(s_scaleCalibrationChanged(convertPositionsToPix()));
+	const auto aoiNeedsRedraw = !m_measurementMode && !m_AOI_positionsAbsolute && scannerChanged;
+	if (aoiNeedsRedraw) {
+		emit(s_scaleCalibrationChanged(convertPositionsToPix()));
+	}
+	announcePositionScanner();
 }
 
 void ScanControl::announcePositionScanner() {
-	auto positionScannerPix = microMeterToPix(m_positionScanner);
+	// Reflects the true current optical position (stage + scanner combined), not just the
+	// scanner, so this marker visibly moves through the grid - a fixed overlay, see
+	// getPositionOffset() - as the stage carries the laser from point to point.
+	const auto positionScannerPix = microMeterToPix(getPosition(PositionType::BOTH));
 	emit(s_positionScannerChanged(positionScannerPix));
 }
 
