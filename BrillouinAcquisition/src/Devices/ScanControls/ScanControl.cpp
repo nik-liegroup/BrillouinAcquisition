@@ -345,44 +345,33 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 		getPosition(PositionType::STAGE);
 	}
 
+	// This is the mechanism from commit 0c70d11: the grid itself pans with the current
+	// stage(+scanner) position, so that whichever point is currently being measured always
+	// lands at the same fixed screen pixel - coinciding with the laser marker, which is a
+	// static calibration reference (see announcePositionScanner()) and does NOT itself track
+	// the stage. What looks like "the marker moving through the grid" is actually the grid
+	// sliding past a fixed marker. A "fixed grid, moving marker" redesign was tried and
+	// reverted - the calibration is set up for the panning convention below, not that one.
+	//
 	// In normal (live-preview) mode, the positions are shown relative to the scanner
-	// position, so they track wherever the laser currently points within the FOV - this is
-	// a deliberate live-preview convenience (lets the scanner "drag" the grid design around
-	// before a scan starts) and is unrelated to the two cases below.
+	// position, so they track wherever the laser currently points within the FOV.
 	auto offset = m_positionScanner;
 	if (positionIsAbsolute) {
-		// The brightfield view is a fixed-FOV overview camera, not one that pans with the
-		// stage, so the grid (and the ROI polygon, which goes through this same function)
-		// must be drawn as a fixed overlay. Absolute positions already have
-		// absoluteGridOriginUm baked in (see ScanPlanner) - m_homePosition is the same value
-		// (preservePhysicalGridForAbsoluteMode() syncs the two whenever absolute mode is
-		// turned on, and "Set Home" stays disabled for as long as it's on, so they can't
-		// drift apart afterward) - so subtracting it here cancels that back out, leaving
-		// just the small, local grid offset. That matters because the scale calibration's
-		// origin is "0 == image center" (see ScaleCalibration), not "0 == world zero": feeding
-		// it a raw, un-cancelled absolute stage coordinate - as a version of this briefly did -
-		// projects wildly outside the image instead of onto the sample.
-		offset = POINT2{} - POINT2{ m_homePosition.x, m_homePosition.y };
+		// Absolute positions are stored relative to absoluteGridOriginUm, which is captured
+		// as getPosition(BOTH) (stage + scanner, see setHome()/getHomePosition()). Projecting
+		// them into the current view must subtract that same stage+scanner position, not
+		// stage alone, or the overlay drifts by the scanner offset.
+		offset = POINT2{} - (m_positionStage + m_positionScanner);
 	}
-	// In measurement mode with a relative grid, m_orderedPositionsRelative is already a pure,
-	// local grid offset (m_startPosition cancels out completely in ScanPlanner), so - for the
-	// same calibration-origin reason as above - it needs no further adjustment at all.
+	// In measurement mode, the positions are shown relative to the start position.
 	else if (m_measurementMode) {
-		offset = POINT2{};
+		// m_startPosition is captured as getPosition(BOTH) in enableMeasurementMode(), so it
+		// must be undone with stage + scanner as well, for the same reason as above (commit
+		// 0c70d11 only subtracted stage here, which is fine as long as the scanner never
+		// moves mid-acquisition, but isn't guaranteed in general).
+		offset = m_startPosition - (m_positionStage + m_positionScanner);
 	}
 	return offset;
-}
-
-POINT2 ScanControl::getCurrentPositionOffset() {
-	// Only meaningful while a measurement is running, where it starts from a true absolute
-	// position (getPosition(BOTH), see announcePositionScanner()) and needs m_startPosition
-	// subtracted - captured fresh at this acquisition's start, so the result stays bounded by
-	// this scan's own grid extent regardless of what the stage's absolute coordinates mean.
-	// Outside a measurement, announcePositionScanner() doesn't use this at all (see there).
-	if (m_measurementMode) {
-		return POINT2{} - m_startPosition;
-	}
-	return POINT2{};
 }
 
 /*
@@ -450,17 +439,11 @@ void ScanControl::calculateCurrentPositionBounds(POINT3 currentPosition) {
 /*
  * Announces updated marker positions if necessary.
  *
- * The AOI markers (crosses/ROI) only need to redraw when their own projection actually
- * depends on whatever just changed - see getPositionOffset(): live-preview mode (neither
- * absolute nor measurement) tracks the scanner; absolute and measurement mode are fixed
- * (independent of the live stage/scanner position entirely, matching a fixed-FOV overview
- * camera rather than one that pans with the stage), so in those two modes nothing here needs
- * to trigger a redraw of them at all.
- *
- * The laser-position marker (announcePositionScanner()) always reflects the combined
- * stage+scanner position and must redraw whenever either one changes, in every mode - that is
- * the one indicator meant to visibly move through the (otherwise fixed) grid as a scan
- * progresses.
+ * The AOI markers (crosses/ROI) redraw whenever stage or scanner changes: live-preview mode
+ * tracks the scanner, absolute and measurement mode track stage+scanner combined (see
+ * getPositionOffset()) - in every mode the grid pans so that whichever point is currently
+ * being measured lands at the same fixed screen pixel (see commit 0c70d11, the original
+ * version of this mechanism, and announcePositionScanner() below for the marker it lands on).
  */
 void ScanControl::announcePositions() {
 	const auto stageChanged = abs(m_positionStageOld - m_positionStage) >= 1e-6;
@@ -472,26 +455,14 @@ void ScanControl::announcePositions() {
 	m_positionStageOld = m_positionStage;
 	m_positionScannerOld = m_positionScanner;
 
-	const auto aoiNeedsRedraw = !m_measurementMode && !m_AOI_positionsAbsolute && scannerChanged;
-	if (aoiNeedsRedraw) {
-		emit(s_scaleCalibrationChanged(convertPositionsToPix()));
-	}
-	announcePositionScanner();
+	emit(s_scaleCalibrationChanged(convertPositionsToPix()));
 }
 
 void ScanControl::announcePositionScanner() {
-	// While a measurement is running, reflects the true current optical position (stage +
-	// scanner combined) offset by m_startPosition - bounded by this acquisition's own grid
-	// extent regardless of what the stage's absolute coordinate system means, so this marker
-	// visibly moves through the grid (a fixed overlay, see getPositionOffset()) as the stage
-	// carries the laser from point to point. Outside of a measurement there is no "current
-	// scan position" to track yet, and the stage+scanner combination has no established
-	// calibration reference (m_homePosition may never have been set) - so this falls back to
-	// the plain scanner position, exactly as before, which is what locatePositionScanner()'s
-	// manual click calibration actually promises to reproduce.
-	const auto offset = getCurrentPositionOffset();
-	const auto current = m_measurementMode ? getPosition(PositionType::BOTH) : POINT3{ m_positionScanner.x, m_positionScanner.y, 0 };
-	const auto positionScannerPix = microMeterToPix(POINT2{ current.x + offset.x, current.y + offset.y });
+	// A static calibration reference (see locatePositionScanner()), not something that
+	// tracks the stage - the grid itself is what pans past this fixed point during a scan
+	// (see getPositionOffset()/announcePositions()).
+	const auto positionScannerPix = microMeterToPix(m_positionScanner);
 	emit(s_positionScannerChanged(positionScannerPix));
 }
 

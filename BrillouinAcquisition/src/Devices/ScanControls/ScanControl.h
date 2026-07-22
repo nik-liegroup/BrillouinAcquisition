@@ -212,11 +212,6 @@ public slots:
 	// position was non-zero.
 	POINT2 getPositionOffset(bool positionIsAbsolute);
 
-	// Same idea as getPositionOffset(), but for projecting a true absolute position
-	// (getPosition(BOTH)) rather than a value already in ScanPlanner's grid-mode-dependent
-	// frame - see announcePositionScanner().
-	POINT2 getCurrentPositionOffset();
-
 	virtual POINT2 pixToMicroMeter(POINT2 positionPix);
 	virtual POINT2 microMeterToPix(POINT2 positionMicrometer);
 	POINT2 microMeterToPix(POINT3 positionMicrometer);
