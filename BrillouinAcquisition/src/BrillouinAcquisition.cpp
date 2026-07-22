@@ -579,11 +579,17 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				m_Brillouin->settings.surfaceProxyRoi2Top = displayRoiTop;
 				m_Brillouin->settings.surfaceProxyRoi2Width = clampedRight - clampedLeft + 1;
 				m_Brillouin->settings.surfaceProxyRoi2Height = displayRoiHeight;
+				// Recorded so this rectangle can be rescaled if the frame size at
+				// measurement time turns out to differ - see estimateFrameMetric().
+				m_Brillouin->settings.surfaceProxyRoi2FrameWidth = frameW;
+				m_Brillouin->settings.surfaceProxyRoi2FrameHeight = frameH;
 			} else {
 				m_Brillouin->settings.surfaceProxyRoiLeft = clampedLeft;
 				m_Brillouin->settings.surfaceProxyRoiTop = displayRoiTop;
 				m_Brillouin->settings.surfaceProxyRoiWidth = clampedRight - clampedLeft + 1;
 				m_Brillouin->settings.surfaceProxyRoiHeight = displayRoiHeight;
+				m_Brillouin->settings.surfaceProxyRoiFrameWidth = frameW;
+				m_Brillouin->settings.surfaceProxyRoiFrameHeight = frameH;
 			}
 
 			updateSpectralProxyRoiRect(m_spectralProxyActiveRoiIndex);
@@ -1137,10 +1143,12 @@ QCPItemRect* BrillouinAcquisition::ensureSpectralProxyRoiRect(int index) {
 
 void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	const auto& settings = m_Brillouin->settings;
-	const auto left = index == 1 ? settings.surfaceProxyRoi2Left : settings.surfaceProxyRoiLeft;
-	const auto top = index == 1 ? settings.surfaceProxyRoi2Top : settings.surfaceProxyRoiTop;
-	const auto width = index == 1 ? settings.surfaceProxyRoi2Width : settings.surfaceProxyRoiWidth;
-	const auto height = index == 1 ? settings.surfaceProxyRoi2Height : settings.surfaceProxyRoiHeight;
+	auto left = index == 1 ? settings.surfaceProxyRoi2Left : settings.surfaceProxyRoiLeft;
+	auto top = index == 1 ? settings.surfaceProxyRoi2Top : settings.surfaceProxyRoiTop;
+	auto width = index == 1 ? settings.surfaceProxyRoi2Width : settings.surfaceProxyRoiWidth;
+	auto height = index == 1 ? settings.surfaceProxyRoi2Height : settings.surfaceProxyRoiHeight;
+	const auto refW = index == 1 ? settings.surfaceProxyRoi2FrameWidth : settings.surfaceProxyRoiFrameWidth;
+	const auto refH = index == 1 ? settings.surfaceProxyRoi2FrameHeight : settings.surfaceProxyRoiFrameHeight;
 	auto** rectItem = index == 1 ? &m_spectralProxyRoi2RectItem : &m_spectralProxyRoiRectItem;
 
 	if (width <= 0 || height <= 0) {
@@ -1155,6 +1163,20 @@ void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	auto* mapData = m_BrillouinPlot.colorMap ? m_BrillouinPlot.colorMap->data() : nullptr;
 	const int frameW = mapData ? std::max(1, mapData->keySize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.width_binned);
 	const int frameH = mapData ? std::max(1, mapData->valueSize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.height_binned);
+	// Rescale onto the currently displayed frame if it differs from whatever frame this ROI
+	// was drawn against, so the visible rectangle never silently drifts off-screen or
+	// shrinks to nothing after a camera ROI/binning change - see estimateFrameMetric() for
+	// why the actual measurement does the same.
+	if (refW > 0 && refW != frameW) {
+		const auto scaleX = (double)frameW / refW;
+		left = (int)std::lround(left * scaleX);
+		width = (int)std::lround(width * scaleX);
+	}
+	if (refH > 0 && refH != frameH) {
+		const auto scaleY = (double)frameH / refH;
+		top = (int)std::lround(top * scaleY);
+		height = (int)std::lround(height * scaleY);
+	}
 	const int displayLeft = std::clamp(left, 0, frameW - 1);
 	const int displayRight = std::clamp(left + width - 1, displayLeft, frameW - 1);
 	const int displayBottom = std::clamp(top, 0, frameH - 1);
@@ -1192,6 +1214,10 @@ void BrillouinAcquisition::clearSpectralProxyRois() {
 	m_Brillouin->settings.surfaceProxyRoi2Top = 0;
 	m_Brillouin->settings.surfaceProxyRoi2Width = 0;
 	m_Brillouin->settings.surfaceProxyRoi2Height = 0;
+	m_Brillouin->settings.surfaceProxyRoiFrameWidth = 0;
+	m_Brillouin->settings.surfaceProxyRoiFrameHeight = 0;
+	m_Brillouin->settings.surfaceProxyRoi2FrameWidth = 0;
+	m_Brillouin->settings.surfaceProxyRoi2FrameHeight = 0;
 	updateSpectralProxyRoiRect(0);
 	updateSpectralProxyRoiRect(1);
 	m_spectralProxyNextRoiIndex = 0;
@@ -2053,20 +2079,29 @@ void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
 	};
 
 	const auto& settings = m_Brillouin->settings;
+	// Rescale onto the currently displayed frame if it differs from whatever frame the ROI
+	// was drawn against - see Brillouin::estimateFrameMetric() for why (keeps this manual
+	// check honest about what the actual surface scan would measure).
+	auto rescaled = [](int value, int refSize, int currentSize) {
+		if (refSize <= 0 || refSize == currentSize) {
+			return value;
+		}
+		return (int)std::lround(value * (double)currentSize / refSize);
+	};
 	double roi1Mean{ 0.0 };
 	double roi2Mean{ 0.0 };
 	const bool hasRoi1 = measureRoi(
-		settings.surfaceProxyRoiLeft,
-		settings.surfaceProxyRoiTop,
-		settings.surfaceProxyRoiWidth,
-		settings.surfaceProxyRoiHeight,
+		rescaled(settings.surfaceProxyRoiLeft, settings.surfaceProxyRoiFrameWidth, frameW),
+		rescaled(settings.surfaceProxyRoiTop, settings.surfaceProxyRoiFrameHeight, frameH),
+		rescaled(settings.surfaceProxyRoiWidth, settings.surfaceProxyRoiFrameWidth, frameW),
+		rescaled(settings.surfaceProxyRoiHeight, settings.surfaceProxyRoiFrameHeight, frameH),
 		roi1Mean
 	);
 	const bool hasRoi2 = measureRoi(
-		settings.surfaceProxyRoi2Left,
-		settings.surfaceProxyRoi2Top,
-		settings.surfaceProxyRoi2Width,
-		settings.surfaceProxyRoi2Height,
+		rescaled(settings.surfaceProxyRoi2Left, settings.surfaceProxyRoi2FrameWidth, frameW),
+		rescaled(settings.surfaceProxyRoi2Top, settings.surfaceProxyRoi2FrameHeight, frameH),
+		rescaled(settings.surfaceProxyRoi2Width, settings.surfaceProxyRoi2FrameWidth, frameW),
+		rescaled(settings.surfaceProxyRoi2Height, settings.surfaceProxyRoi2FrameHeight, frameH),
 		roi2Mean
 	);
 
@@ -5559,6 +5594,10 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-surface-proxy-roi-2-top", m_Brillouin->settings.surfaceProxyRoi2Top);
 	settings.setValue("brillouin-surface-proxy-roi-2-width", m_Brillouin->settings.surfaceProxyRoi2Width);
 	settings.setValue("brillouin-surface-proxy-roi-2-height", m_Brillouin->settings.surfaceProxyRoi2Height);
+	settings.setValue("brillouin-surface-proxy-roi-frame-width", m_Brillouin->settings.surfaceProxyRoiFrameWidth);
+	settings.setValue("brillouin-surface-proxy-roi-frame-height", m_Brillouin->settings.surfaceProxyRoiFrameHeight);
+	settings.setValue("brillouin-surface-proxy-roi-2-frame-width", m_Brillouin->settings.surfaceProxyRoi2FrameWidth);
+	settings.setValue("brillouin-surface-proxy-roi-2-frame-height", m_Brillouin->settings.surfaceProxyRoi2FrameHeight);
 	settings.setValue("brillouin-camera-roi-left", m_deviceSettings.camera.roi.left);
 	settings.setValue("brillouin-camera-roi-top", m_deviceSettings.camera.roi.top);
 	settings.setValue("brillouin-camera-roi-width-physical", m_deviceSettings.camera.roi.width_physical);
@@ -5694,5 +5733,9 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.surfaceProxyRoi2Top = settings.value("brillouin-surface-proxy-roi-2-top", m_Brillouin->settings.surfaceProxyRoi2Top).toInt();
 	m_Brillouin->settings.surfaceProxyRoi2Width = settings.value("brillouin-surface-proxy-roi-2-width", m_Brillouin->settings.surfaceProxyRoi2Width).toInt();
 	m_Brillouin->settings.surfaceProxyRoi2Height = settings.value("brillouin-surface-proxy-roi-2-height", m_Brillouin->settings.surfaceProxyRoi2Height).toInt();
+	m_Brillouin->settings.surfaceProxyRoiFrameWidth = settings.value("brillouin-surface-proxy-roi-frame-width", m_Brillouin->settings.surfaceProxyRoiFrameWidth).toInt();
+	m_Brillouin->settings.surfaceProxyRoiFrameHeight = settings.value("brillouin-surface-proxy-roi-frame-height", m_Brillouin->settings.surfaceProxyRoiFrameHeight).toInt();
+	m_Brillouin->settings.surfaceProxyRoi2FrameWidth = settings.value("brillouin-surface-proxy-roi-2-frame-width", m_Brillouin->settings.surfaceProxyRoi2FrameWidth).toInt();
+	m_Brillouin->settings.surfaceProxyRoi2FrameHeight = settings.value("brillouin-surface-proxy-roi-2-frame-height", m_Brillouin->settings.surfaceProxyRoi2FrameHeight).toInt();
 	settings.endGroup();
 }

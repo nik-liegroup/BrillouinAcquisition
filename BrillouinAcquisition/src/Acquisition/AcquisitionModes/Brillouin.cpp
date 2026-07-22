@@ -611,17 +611,42 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 		metrics.push_back(maxSignal);
 	};
 
-	appendMetric(
+	// A spectral ROI is recorded against whatever frame size was active when it was drawn
+	// (surfaceProxyRoi*FrameWidth/Height). If the camera's ROI/binning at measurement time
+	// gives a different-sized frame, applying the raw stored coordinates directly could
+	// silently clamp the ROI to nothing (falling through to measuring the whole frame,
+	// which is what "surface never found despite a visible drop" looks like) - rescale it
+	// proportionally onto the current frame instead.
+	auto appendMetricRescaled = [&](int roiLeft, int roiTop, int roiWidth, int roiHeight, int refW, int refH) {
+		if (refW <= 0 || refH <= 0 || (refW == width && refH == height)) {
+			appendMetric(roiLeft, roiTop, roiWidth, roiHeight);
+			return;
+		}
+		const auto scaleX = (double)width / refW;
+		const auto scaleY = (double)height / refH;
+		appendMetric(
+			(int)std::lround(roiLeft * scaleX),
+			(int)std::lround(roiTop * scaleY),
+			(int)std::lround(roiWidth * scaleX),
+			(int)std::lround(roiHeight * scaleY)
+		);
+	};
+
+	appendMetricRescaled(
 		m_settings.surfaceProxyRoiLeft,
 		m_settings.surfaceProxyRoiTop,
 		m_settings.surfaceProxyRoiWidth,
-		m_settings.surfaceProxyRoiHeight
+		m_settings.surfaceProxyRoiHeight,
+		m_settings.surfaceProxyRoiFrameWidth,
+		m_settings.surfaceProxyRoiFrameHeight
 	);
-	appendMetric(
+	appendMetricRescaled(
 		m_settings.surfaceProxyRoi2Left,
 		m_settings.surfaceProxyRoi2Top,
 		m_settings.surfaceProxyRoi2Width,
-		m_settings.surfaceProxyRoi2Height
+		m_settings.surfaceProxyRoi2Height,
+		m_settings.surfaceProxyRoi2FrameWidth,
+		m_settings.surfaceProxyRoi2FrameHeight
 	);
 	if (metrics.empty()) {
 		appendMetric(0, 0, width, height);

@@ -374,16 +374,15 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 }
 
 POINT2 ScanControl::getCurrentPositionOffset() {
-	// Unlike getPositionOffset(), this always starts from a true absolute position
-	// (getPosition(BOTH), see announcePositionScanner()) regardless of grid mode, so it needs
-	// its own reference: m_startPosition while a measurement is running (matching the
-	// relative-grid convention above), m_homePosition otherwise (matching the absolute-grid
-	// convention above; also used as the best available reference in live-preview mode before
-	// any grid mode-specific anchor is meaningful).
+	// Only meaningful while a measurement is running, where it starts from a true absolute
+	// position (getPosition(BOTH), see announcePositionScanner()) and needs m_startPosition
+	// subtracted - captured fresh at this acquisition's start, so the result stays bounded by
+	// this scan's own grid extent regardless of what the stage's absolute coordinates mean.
+	// Outside a measurement, announcePositionScanner() doesn't use this at all (see there).
 	if (m_measurementMode) {
 		return POINT2{} - m_startPosition;
 	}
-	return POINT2{} - POINT2{ m_homePosition.x, m_homePosition.y };
+	return POINT2{};
 }
 
 /*
@@ -481,13 +480,18 @@ void ScanControl::announcePositions() {
 }
 
 void ScanControl::announcePositionScanner() {
-	// Reflects the true current optical position (stage + scanner combined), not just the
-	// scanner, so this marker visibly moves through the grid - a fixed overlay, see
-	// getPositionOffset() - as the stage carries the laser from point to point. Needs its
-	// own offset (see getCurrentPositionOffset()) rather than getPositionOffset(), since it
-	// always starts from a true absolute position regardless of grid mode.
+	// While a measurement is running, reflects the true current optical position (stage +
+	// scanner combined) offset by m_startPosition - bounded by this acquisition's own grid
+	// extent regardless of what the stage's absolute coordinate system means, so this marker
+	// visibly moves through the grid (a fixed overlay, see getPositionOffset()) as the stage
+	// carries the laser from point to point. Outside of a measurement there is no "current
+	// scan position" to track yet, and the stage+scanner combination has no established
+	// calibration reference (m_homePosition may never have been set) - so this falls back to
+	// the plain scanner position, exactly as before, which is what locatePositionScanner()'s
+	// manual click calibration actually promises to reproduce.
 	const auto offset = getCurrentPositionOffset();
-	const auto positionScannerPix = microMeterToPix(getPosition(PositionType::BOTH) + offset);
+	const auto current = m_measurementMode ? getPosition(PositionType::BOTH) : POINT3{ m_positionScanner.x, m_positionScanner.y, 0 };
+	const auto positionScannerPix = microMeterToPix(POINT2{ current.x + offset.x, current.y + offset.y });
 	emit(s_positionScannerChanged(positionScannerPix));
 }
 
