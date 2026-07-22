@@ -397,6 +397,14 @@ void Brillouin::calibrate(std::unique_ptr <StorageWrapper>& storage) {
 	// announce calibration start
 	emit(s_calibrationRunning(true));
 
+	// Capture the exposure time to restore afterward *before* touching anything, and use
+	// this local copy for every revert below instead of re-reading m_settings.camera.exposureTime
+	// at the end. That field is shared (by reference) with the GUI's exposure spinbox setting,
+	// so anything that ever pushes a stale/default value into it while this calibration is
+	// mid-flight (e.g. a camera settings reload) would otherwise make the "revert" below
+	// restore the wrong value instead of what was actually active before this calibration.
+	const auto originalExposureTime = m_settings.camera.exposureTime;
+
 	// set exposure time for calibration
 	if (m_andor) {
 		m_andor->setCalibrationExposureTime(m_settings.calibrationExposureTime);
@@ -429,7 +437,7 @@ void Brillouin::calibrate(std::unique_ptr <StorageWrapper>& storage) {
 				m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
 			}
 			if (m_andor) {
-				m_andor->setCalibrationExposureTime(m_settings.camera.exposureTime);
+				m_andor->setCalibrationExposureTime(originalExposureTime);
 			}
 			this->abortMode(storage);
 			return;
@@ -520,7 +528,7 @@ void Brillouin::calibrate(std::unique_ptr <StorageWrapper>& storage) {
 
 	// reset exposure time
 	if (m_andor) {
-		m_andor->setCalibrationExposureTime(m_settings.camera.exposureTime);
+		m_andor->setCalibrationExposureTime(originalExposureTime);
 	}
 	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 }
@@ -1161,9 +1169,20 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	// getSurfaceInterpolatedXYIndices().
 	m_surfaceInterpolatedXYIndices = std::move(interpolatedXYIndices);
 
-	const auto zMid = 0.5 * (m_settings.zMin + m_settings.zMax);
-	const auto halfRange = std::max(0.0, m_settings.surfaceFollowHalfRangeUm);
-	auto localZOffsets = simplemath::linspace(-halfRange, halfRange, m_settings.zSteps);
+	// zOrigin here must match the one used above to compute centerZAbs (zOrigin + zInterp +
+	// surfaceZOffsetUm) - it's also exactly what m_orderedPositions[ll].z was built from
+	// before this loop touches it (zOrigin + the grid's own zMin..zMax offset for this
+	// z-index), so subtracting it back out recovers that same, still user-configured,
+	// zMin..zMax-relative offset. Re-adding it onto the found surface below is what makes
+	// "surface found at 100, zMin/zMax -10/20" actually scan 90..120: the surface takes
+	// over the role zOrigin used to play, with the offset itself left untouched. Note this
+	// intentionally no longer derives the range from the separate, UI-inaccessible
+	// surfaceFollowHalfRangeUm field (always-symmetric around the surface and defaulted to
+	// +/-10 um regardless of the grid's own zMin/zMax) - that silently ignored zMin/zMax
+	// whenever surface follow was on.
+	const auto zOrigin = m_settings.gridCoordinatesAbsolute
+		? m_settings.absoluteGridOriginUm.z
+		: m_startPosition.z;
 
 	for (gsl::index ll{ 0 }; ll < (gsl::index)m_orderedPositions.size(); ll++) {
 		const auto ix = m_orderedIndices[ll].x;
@@ -1172,12 +1191,8 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		if (it == zCenterByXYIndex.end()) {
 			continue;
 		}
-		const auto zIdx = std::clamp(m_orderedIndices[ll].z, 0, (int)localZOffsets.size() - 1);
-		auto localRel = m_orderedPositionsRelative[ll].z - zMid;
-		if (halfRange > 0.0) {
-			localRel = localZOffsets[zIdx];
-		}
-		auto zAbs = it->second + localRel;
+		const auto zLocal = m_orderedPositions[ll].z - zOrigin;
+		const auto zAbs = it->second + zLocal;
 		m_orderedPositions[ll].z = zAbs;
 		m_orderedPositionsRelative[ll].z = zAbs - m_startPosition.z;
 	}
