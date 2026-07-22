@@ -343,11 +343,13 @@ POINT2 ScanControl::getPositionPix(POINT3 positionMicrometer, bool positionIsAbs
 	// In normal mode, the positions are shown relative to the scanner position.
 	auto offset = m_positionScanner;
 	if (positionIsAbsolute) {
-		offset = POINT2{} - m_positionStage;
+		// See the matching comment in convertPositionsToPix(): the origin this position
+		// is relative to was captured as stage + scanner, so both must be subtracted here.
+		offset = POINT2{} - (m_positionStage + m_positionScanner);
 	}
 	// In measurement mode, the positions are shown relative to the start position.
 	else if (m_measurementMode) {
-		offset = m_startPosition - m_positionStage;
+		offset = m_startPosition - (m_positionStage + m_positionScanner);
 	}
 
 	return microMeterToPix(POINT2{ positionMicrometer.x, positionMicrometer.y } + offset);
@@ -463,11 +465,17 @@ std::vector<POINT2> ScanControl::convertPositionsToPix() {
 	// In normal mode, the positions are shown relative to the scanner position.
 	auto offset = m_positionScanner;
 	if (m_AOI_positionsAbsolute) {
-		offset = POINT2{} - m_positionStage;
+		// Absolute positions are stored relative to absoluteGridOriginUm, which is
+		// captured as getPosition(BOTH) (stage + scanner, see setHome()/getHomePosition()).
+		// Projecting them into the current view must subtract that same stage+scanner
+		// position, not stage alone, or the overlay drifts by the scanner offset.
+		offset = POINT2{} - (m_positionStage + m_positionScanner);
 	}
 	// In measurement mode, the positions are shown relative to the start position.
 	else if (this->m_measurementMode) {
-		offset = this->m_startPosition - m_positionStage;
+		// m_startPosition is captured as getPosition(BOTH) in enableMeasurementMode(),
+		// so it must be undone with stage + scanner as well, for the same reason as above.
+		offset = this->m_startPosition - (m_positionStage + m_positionScanner);
 	}
 
 	std::transform(m_AOI_positions.begin(), m_AOI_positions.end(), positionsPix.begin(),
