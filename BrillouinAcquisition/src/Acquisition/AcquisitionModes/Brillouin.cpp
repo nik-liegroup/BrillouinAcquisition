@@ -421,6 +421,16 @@ void Brillouin::calibrate(std::unique_ptr <StorageWrapper>& storage) {
 	auto images = std::vector<std::byte>((int64_t)m_settings.camera.roi.bytesPerFrame * m_settings.nrCalibrationImages);
 	for (gsl::index mm{ 0 }; mm < m_settings.nrCalibrationImages; mm++) {
 		if (m_abort) {
+			// Undo the calibration-only exposure time/optics preset set above before
+			// bailing out - otherwise an abort mid-calibration leaves the camera stuck at
+			// the calibration exposure time (and the calibration optics preset) forever,
+			// silently affecting every measurement after this one.
+			if (m_scanControl) {
+				m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
+			}
+			if (m_andor) {
+				m_andor->setCalibrationExposureTime(m_settings.camera.exposureTime);
+			}
 			this->abortMode(storage);
 			return;
 		}
@@ -690,10 +700,14 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	// in favor of whichever neighbor was measured most recently.
 	std::vector<std::vector<int>> processOrder(ySamples.size(), std::vector<int>(xSamples.size(), -1));
 	auto frame = std::vector<std::byte>(m_settings.camera.roi.bytesPerFrame);
-	// Rough estimate only for the progress percentage - the neighbor-seeded search below
-	// takes a variable number of steps per column, unlike the old fixed full sweep.
-	const auto totalSurfaceSteps = std::max(1, (int)(xSamples.size() * ySamples.size() * zStepsCoarse));
-	int completedSurfaceSteps = 0;
+	// Progress is based on columns (coarse xy points), not z-measurement steps: the
+	// neighbor-seeded search below takes a variable, usually small, number of z-steps per
+	// column once a few neighbors are found, nowhere near the worst-case full zStepsCoarse
+	// sweep a column could take. Estimating progress from steps-so-far against that
+	// worst-case denominator badly underestimates how far along the scan really is (e.g.
+	// showing ~10% when nearly every column is already done). The column count, in
+	// contrast, is known exactly up front and every column is visited exactly once.
+	const auto totalColumnsExpected = std::max(1, (int)(xSamples.size() * ySamples.size()));
 	int totalColumns = 0;
 	int processCounter = 0;
 
@@ -779,12 +793,11 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			m_andor->getImageForAcquisition(frame.data());
 			sum += estimateFrameMetric(frame);
 		}
-		completedSurfaceSteps++;
 		return sum / frames;
 	};
 
 	auto emitSurfaceProgress = [&](const QString& message) {
-		const auto progress = std::clamp(5.0 + 95.0 * (double)completedSurfaceSteps / totalSurfaceSteps, 5.0, 99.9);
+		const auto progress = std::clamp(5.0 + 95.0 * (double)totalColumns / totalColumnsExpected, 5.0, 99.9);
 		emit(s_surfaceScanProgress(progress, message));
 	};
 

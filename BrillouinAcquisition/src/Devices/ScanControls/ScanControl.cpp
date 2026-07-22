@@ -34,7 +34,13 @@ void ScanControl::setPositionCompensated(POINT3 position) {
 	// scanners do not need (and would just lose time to) this compensation.
 	if (supportsCapability(Capabilities::TranslationStage)) {
 		constexpr auto hysteresisCompensation{ 10.0 };	// [µm] distance for compensation of the stage hysteresis
-		constexpr auto epsilon{ 1e-6 };				// [µm] axes closer than this are considered unchanged
+		// getPosition() below re-queries the real hardware controller, not a cached software
+		// value, so its readback carries genuine encoder/COM round-trip noise - a picometer-
+		// scale epsilon never matches and would spuriously re-approach on every call, even
+		// when the xy target is identical to the previous one (e.g. repeated z-only moves
+		// within a surface-scan column). 0.5 µm is comfortably above that noise floor and
+		// comfortably below any real intended xy step.
+		constexpr auto epsilon{ 0.5 };					// [µm] axes closer than this are considered unchanged
 		const auto current = getPosition();
 		// To prevent problems with the hysteresis of the stage, we always approach
 		// the desired point coming from lower x/y values, just like the scale calibration does.
