@@ -1671,6 +1671,17 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 			// touched anything, not wherever the surface pre-scan's last column left it.
 			m_scanControl->setPositionCompensated(m_startPosition);
 			m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
+			// applySurfaceFollowPlan() already re-emitted the AOI markers once, right after
+			// the pre-scan finished - but at that moment the stage was still wherever the
+			// last scanned column left it, not back here yet. setPositionCompensated() above
+			// doesn't itself trigger a refresh (the periodic announcer was stopped for the
+			// whole acquisition, see stopAnnouncing() above, and setPosition() on a
+			// translation stage doesn't announce as a side effect the way NIDAQ's does), so
+			// without this the markers stay one step stale: drawn as if the stage were still
+			// at the last scanned column, even though it has genuinely already moved back
+			// here. That looked like "the grid moved" when actually only the (stale) grid
+			// overlay was wrong - the real stage position was correct the whole time.
+			m_scanControl->announcePosition();
 		}
 		setAcquisitionStatus(ACQUISITION_STATUS::WAITFORSURFACEREVIEW);
 		return;
