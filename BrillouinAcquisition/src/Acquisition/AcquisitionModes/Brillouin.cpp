@@ -1034,7 +1034,23 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	std::map<std::pair<int, int>, double> zCenterByXYIndex;
 	std::set<std::pair<int, int>> interpolatedXYIndices;
 
+	// This is an O(dense grid x coarse grid) pass - for a fine dense grid it can take a
+	// while, and previously ran with no progress feedback and no abort check at all, which
+	// made the UI look hung right after the coarse scan finished (status bar just stopped
+	// updating) with no way to cancel out of it. Reported on the same channel as the coarse
+	// scan above, so it shows up in the same place instead of looking like a stall.
 	for (gsl::index yi{ 0 }; yi < (gsl::index)yDense.size(); yi++) {
+		if (m_abort) {
+			return {};
+		}
+		const auto interpolationProgress = std::clamp(
+			99.9 * (double)(yi + 1) / std::max((gsl::index)1, (gsl::index)yDense.size()),
+			0.0, 99.9
+		);
+		emit(s_surfaceScanProgress(
+			interpolationProgress,
+			QString("Interpolating surface: row %1/%2").arg(yi + 1).arg(yDense.size())
+		));
 		for (gsl::index xi{ 0 }; xi < (gsl::index)xDense.size(); xi++) {
 			auto x = xDense[xi];
 			auto y = yDense[yi];
@@ -1252,7 +1268,16 @@ POINT2 Brillouin::overviewTileFootprintUm() const {
 }
 
 std::vector<POINT2> Brillouin::overviewTileCentersXY() const {
-	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : m_startPosition;
+	// Everything here must live in the same frame the live preview actually draws crosses
+	// in: absolute-mode positions have absoluteGridOriginUm baked in, but relative-mode
+	// positions are pure grid offsets with NO origin added (m_orderedPositionsRelative
+	// cancels the start position out entirely - see ScanPlanner::buildLegacyCartesianPlan).
+	// Using m_startPosition here instead of {0,0,0} - or m_orderedPositions instead of
+	// m_orderedPositionsRelative - used to bake in whatever m_startPosition was last left at
+	// (stale, or {0,0,0} before any acquisition ever ran), which doesn't match how the
+	// crosses are actually positioned in relative/live-preview mode at all.
+	const auto& positions = m_settings.gridCoordinatesAbsolute ? m_orderedPositions : m_orderedPositionsRelative;
+	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : POINT3{};
 	const auto gridXMin = m_settings.xMin + origin.x;
 	const auto gridXMax = m_settings.xMax + origin.x;
 	const auto gridYMin = m_settings.yMin + origin.y;
@@ -1275,11 +1300,11 @@ std::vector<POINT2> Brillouin::overviewTileCentersXY() const {
 	// (x, y) index pairs once rather than per z slice.
 	std::set<std::pair<int, int>> seenIndexPairs;
 	std::vector<POINT2> activePoints;
-	const auto pointCount = std::min(m_orderedIndices.size(), m_orderedPositions.size());
+	const auto pointCount = std::min(m_orderedIndices.size(), positions.size());
 	for (size_t i = 0; i < pointCount; i++) {
 		const auto key = std::make_pair(m_orderedIndices[i].x, m_orderedIndices[i].y);
 		if (seenIndexPairs.insert(key).second) {
-			activePoints.push_back(POINT2{ m_orderedPositions[i].x, m_orderedPositions[i].y });
+			activePoints.push_back(POINT2{ positions[i].x, positions[i].y });
 		}
 	}
 	if (activePoints.empty()) {
@@ -1350,7 +1375,10 @@ std::vector<POINT2> Brillouin::overviewTileCentersXY() const {
 }
 
 std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUm() const {
-	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : m_startPosition;
+	// See overviewTileCentersXY() for why relative mode must use m_orderedPositionsRelative
+	// and a zero origin here, not m_orderedPositions/m_startPosition.
+	const auto& positions = m_settings.gridCoordinatesAbsolute ? m_orderedPositions : m_orderedPositionsRelative;
+	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : POINT3{};
 	const auto gridXMin = m_settings.xMin + origin.x;
 	const auto gridXMax = m_settings.xMax + origin.x;
 	const auto gridYMin = m_settings.yMin + origin.y;
@@ -1372,11 +1400,11 @@ std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUm() const
 	// enough without also looking at z.
 	std::set<std::pair<int, int>> seenIndexPairs;
 	std::vector<POINT2> activePoints;
-	const auto pointCount = std::min(m_orderedIndices.size(), m_orderedPositions.size());
+	const auto pointCount = std::min(m_orderedIndices.size(), positions.size());
 	for (size_t i = 0; i < pointCount; i++) {
 		const auto key = std::make_pair(m_orderedIndices[i].x, m_orderedIndices[i].y);
 		if (seenIndexPairs.insert(key).second) {
-			activePoints.push_back(POINT2{ m_orderedPositions[i].x, m_orderedPositions[i].y });
+			activePoints.push_back(POINT2{ positions[i].x, positions[i].y });
 		}
 	}
 	if (activePoints.empty()) {
@@ -1620,6 +1648,16 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	 */
 	updatePositions();
 	applySurfaceFollowPlan();
+
+	// applySurfaceFollowPlan() can come back early (aborted mid-interpolation, see
+	// runSurfacePreScan()) without that having been checked here before - which used to mean
+	// an abort during that pass was silently ignored: this would still move the stage back,
+	// switch to brightfield and enter WAITFORSURFACEREVIEW with an incomplete surface map,
+	// exactly as if the scan had finished normally.
+	if (m_abort) {
+		abortMode(m_acquisition->m_storage);
+		return;
+	}
 
 	if (m_settings.useSurfaceFollow) {
 		// Pause here for the user to review which grid points actually got a surface z

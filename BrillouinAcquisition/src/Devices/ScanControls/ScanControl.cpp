@@ -340,6 +340,30 @@ POINT2 ScanControl::getPositionPix(POINT3 positionMicrometer, bool positionIsAbs
 	return microMeterToPix(POINT2{ positionMicrometer.x, positionMicrometer.y } + offset);
 }
 
+POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
+	if (positionIsAbsolute || m_measurementMode) {
+		getPosition(PositionType::STAGE);
+	}
+
+	// In normal (live-preview) mode, the positions are shown relative to the scanner
+	// position, so they track wherever the laser currently points within the FOV.
+	auto offset = m_positionScanner;
+	if (positionIsAbsolute) {
+		// Absolute positions are stored relative to absoluteGridOriginUm, which is
+		// captured as getPosition(BOTH) (stage + scanner, see setHome()/getHomePosition()).
+		// Projecting them into the current view must subtract that same stage+scanner
+		// position, not stage alone, or the overlay drifts by the scanner offset.
+		offset = POINT2{} - (m_positionStage + m_positionScanner);
+	}
+	// In measurement mode, the positions are shown relative to the start position.
+	else if (m_measurementMode) {
+		// m_startPosition is captured as getPosition(BOTH) in enableMeasurementMode(),
+		// so it must be undone with stage + scanner as well, for the same reason as above.
+		offset = m_startPosition - (m_positionStage + m_positionScanner);
+	}
+	return offset;
+}
+
 /*
  * Function converts a position in pixel to a position in um.
  * This is relative to the origin (pixOrigin) and not on an absolute scale e.g. of the translation stage.
@@ -406,16 +430,19 @@ void ScanControl::calculateCurrentPositionBounds(POINT3 currentPosition) {
  * This functions announces the updated AOI positions if necessary.
  * We check if the stage or scanner position has changed since the last announcement
  * and announce new positions under these conditions:
- *	- if the stage position has changed and a scan is currently running
- *	- if the scanner position has changed and no scan is running
- * (the AOI positions are static with respect to the laser focus during preview, and
- * static with respect to the sample during scanning).
+ *	- always, if the scanner position changed (every getPositionOffset() branch depends
+ *	  on it - see live-preview, absolute and measurement mode there)
+ *	- additionally, if the stage position changed while in absolute or measurement mode
+ *	  (the only two modes whose offset depends on the stage at all - live preview doesn't,
+ *	  see getPositionOffset())
  */
 void ScanControl::announcePositions() {
-	// Measurement mode and stage position didn't change significantly --> do nothing
-	if ((m_measurementMode || m_AOI_positionsAbsolute) && abs(m_positionStageOld - m_positionStage) < 1e-6) return;
-	// Preview mode and scanner position didn't change significantly --> do nothing
-	if (!m_measurementMode && !m_AOI_positionsAbsolute && abs(m_positionScannerOld - m_positionScanner) < 1e-6) return;
+	const auto stageChanged = abs(m_positionStageOld - m_positionStage) >= 1e-6;
+	const auto scannerChanged = abs(m_positionScannerOld - m_positionScanner) >= 1e-6;
+	const auto offsetDependsOnStage = m_measurementMode || m_AOI_positionsAbsolute;
+	if (!scannerChanged && !(offsetDependsOnStage && stageChanged)) {
+		return;
+	}
 
 	// Set new positions if they have significantly changed
 	m_positionScannerOld = m_positionScanner;
@@ -439,30 +466,6 @@ void ScanControl::registerCapability(Capabilities capability) {
 /*
  * Private definitions
  */
-
-POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
-	if (positionIsAbsolute || m_measurementMode) {
-		getPosition(PositionType::STAGE);
-	}
-
-	// In normal (live-preview) mode, the positions are shown relative to the scanner
-	// position, so they track wherever the laser currently points within the FOV.
-	auto offset = m_positionScanner;
-	if (positionIsAbsolute) {
-		// Absolute positions are stored relative to absoluteGridOriginUm, which is
-		// captured as getPosition(BOTH) (stage + scanner, see setHome()/getHomePosition()).
-		// Projecting them into the current view must subtract that same stage+scanner
-		// position, not stage alone, or the overlay drifts by the scanner offset.
-		offset = POINT2{} - (m_positionStage + m_positionScanner);
-	}
-	// In measurement mode, the positions are shown relative to the start position.
-	else if (m_measurementMode) {
-		// m_startPosition is captured as getPosition(BOTH) in enableMeasurementMode(),
-		// so it must be undone with stage + scanner as well, for the same reason as above.
-		offset = m_startPosition - (m_positionStage + m_positionScanner);
-	}
-	return offset;
-}
 
 std::vector<POINT2> ScanControl::convertPositionsToPix() {
 	auto positionsPix = std::vector<POINT2>(m_AOI_positions.size());
