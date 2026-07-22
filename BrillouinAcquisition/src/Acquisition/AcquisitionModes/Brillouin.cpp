@@ -1930,7 +1930,17 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 
 	auto calibrationTimer = QElapsedTimer{};
 	calibrationTimer.start();
-	auto overviewCapturedForZ = std::vector<bool>(m_settings.zSteps, false);
+	// Last traversal index at which each z-index appears, so its overview can be captured
+	// once it's actually done being measured - not before any of it has, and not affected by
+	// which axis (x/y/z) is scanned outermost (m_scanOrder), unlike triggering on each
+	// z-index's *first* appearance would be: with z scanned innermost, that first-appearance
+	// approach would trigger for most z-indices within the first few points, looking like
+	// every overview gets captured upfront.
+	auto lastIndexForZ = std::vector<gsl::index>(m_settings.zSteps, -1);
+	for (gsl::index ll{ 0 }; ll < (gsl::index)nrPositions; ll++) {
+		const auto zIdx = std::clamp(m_orderedIndices[ll].z, 0, std::max(0, m_settings.zSteps - 1));
+		lastIndexForZ[zIdx] = ll;
+	}
 
 	// move stage to first position, wait 50 ms for it to finish
 	if (m_scanControl) {
@@ -1972,29 +1982,6 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		emit(s_timeToCalibration(nextCalibration));
 
 		const auto zIndex = std::clamp(m_orderedIndices[ll].z, 0, std::max(0, m_settings.zSteps - 1));
-		if (m_settings.saveOverviewBrightfieldPerZ && !overviewCapturedForZ[zIndex]) {
-			overviewCapturedForZ[zIndex] = true;
-			// One position (legacy behaviour) or one per mosaic tile covering the full
-			// grid extent, depending on overviewBrightfieldFullGrid; imageNumber stays
-			// unique per (z, tile) pair since tileCount is constant across z slices.
-			const auto overviewPositions = overviewBrightfieldPositionsForZ(zIndex, directionsZ);
-			for (size_t tt = 0; tt < overviewPositions.size(); tt++) {
-				const auto imageNumber = zIndex * (int)overviewPositions.size() + (int)tt;
-				captureOverviewBrightfield(storage, imageNumber, zIndex, overviewPositions[tt]);
-				if (m_abort) {
-					return;
-				}
-			}
-			if (m_scanControl) {
-				// The overview brightfield capture moves the stage away from the grid point,
-				// so approach it again from a consistent direction to avoid hysteresis error.
-				m_scanControl->setPositionCompensated(m_orderedPositions[ll]);
-				std::this_thread::sleep_for(std::chrono::milliseconds(100));
-			} else {
-				m_abort = true;
-				return;
-			}
-		}
 
 		std::vector<std::byte> images(m_settings.camera.roi.bytesPerFrame * m_settings.camera.frameCount);
 
@@ -2087,6 +2074,32 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				[&storage = storage, img]() { storage.get()->s_enqueuePayload(img); },
 				Qt::AutoConnection
 			);
+		}
+
+		// This z-plane's last point has now actually been measured - only now capture its
+		// overview, not before any of it was (see lastIndexForZ above for why "last
+		// occurrence" rather than "first" is what makes this robust to scan order).
+		if (m_settings.saveOverviewBrightfieldPerZ && ll == lastIndexForZ[zIndex]) {
+			// One position (legacy behaviour) or one per mosaic tile covering the full
+			// grid extent, depending on overviewBrightfieldFullGrid; imageNumber stays
+			// unique per (z, tile) pair since tileCount is constant across z slices.
+			const auto overviewPositions = overviewBrightfieldPositionsForZ(zIndex, directionsZ);
+			for (size_t tt = 0; tt < overviewPositions.size(); tt++) {
+				const auto imageNumber = zIndex * (int)overviewPositions.size() + (int)tt;
+				captureOverviewBrightfield(storage, imageNumber, zIndex, overviewPositions[tt]);
+				if (m_abort) {
+					return;
+				}
+			}
+			if (m_scanControl) {
+				// The overview brightfield capture moves the stage away from the grid point,
+				// so approach it again from a consistent direction to avoid hysteresis error.
+				m_scanControl->setPositionCompensated(m_orderedPositions[ll]);
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			} else {
+				m_abort = true;
+				return;
+			}
 		}
 
 		// move stage to next position

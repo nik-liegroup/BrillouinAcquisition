@@ -99,7 +99,9 @@ void ZeissMTB_Erlangen::setPosition(POINT2 position) {
 		}
 	}
 	calculateCurrentPositionBounds(POINT3{ position.x, position.y, m_positionFocus });
-	announcePositions();
+	// See the matching comment in ZeissECU::setPosition() - the numeric position readout
+	// needs this too, not just the AOI/laser markers.
+	announcePosition();
 }
 
 void ZeissMTB_Erlangen::setPosition(POINT3 position) {

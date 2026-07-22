@@ -352,24 +352,38 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	auto offset = m_positionScanner;
 	if (positionIsAbsolute) {
 		// The brightfield view is a fixed-FOV overview camera, not one that pans with the
-		// stage - so the grid (and the ROI polygon, which goes through this same function)
-		// must be drawn as a fixed overlay, matching a fixed calibration. Absolute positions
-		// already have absoluteGridOriginUm baked in (see ScanPlanner), so no further
-		// adjustment is needed here at all. This used to subtract the live stage+scanner
-		// position, which made the whole grid visibly pan as the stage moved during a scan -
-		// wrong for a fixed-FOV camera: the laser-position marker (see
-		// announcePositionScanner()) is what should move through the grid, not the other
-		// way round.
+		// stage, so the grid (and the ROI polygon, which goes through this same function)
+		// must be drawn as a fixed overlay. Absolute positions already have
+		// absoluteGridOriginUm baked in (see ScanPlanner) - m_homePosition is the same value
+		// (preservePhysicalGridForAbsoluteMode() syncs the two whenever absolute mode is
+		// turned on, and "Set Home" stays disabled for as long as it's on, so they can't
+		// drift apart afterward) - so subtracting it here cancels that back out, leaving
+		// just the small, local grid offset. That matters because the scale calibration's
+		// origin is "0 == image center" (see ScaleCalibration), not "0 == world zero": feeding
+		// it a raw, un-cancelled absolute stage coordinate - as a version of this briefly did -
+		// projects wildly outside the image instead of onto the sample.
+		offset = POINT2{} - POINT2{ m_homePosition.x, m_homePosition.y };
+	}
+	// In measurement mode with a relative grid, m_orderedPositionsRelative is already a pure,
+	// local grid offset (m_startPosition cancels out completely in ScanPlanner), so - for the
+	// same calibration-origin reason as above - it needs no further adjustment at all.
+	else if (m_measurementMode) {
 		offset = POINT2{};
 	}
-	// In measurement mode, the positions are shown relative to the start position - for the
-	// same fixed-FOV reason as above, that means the plain, unadjusted start position
-	// (captured once in enableMeasurementMode() and constant for the rest of the
-	// acquisition), not re-centered on the live stage+scanner position on every call.
-	else if (m_measurementMode) {
-		offset = m_startPosition;
-	}
 	return offset;
+}
+
+POINT2 ScanControl::getCurrentPositionOffset() {
+	// Unlike getPositionOffset(), this always starts from a true absolute position
+	// (getPosition(BOTH), see announcePositionScanner()) regardless of grid mode, so it needs
+	// its own reference: m_startPosition while a measurement is running (matching the
+	// relative-grid convention above), m_homePosition otherwise (matching the absolute-grid
+	// convention above; also used as the best available reference in live-preview mode before
+	// any grid mode-specific anchor is meaningful).
+	if (m_measurementMode) {
+		return POINT2{} - m_startPosition;
+	}
+	return POINT2{} - POINT2{ m_homePosition.x, m_homePosition.y };
 }
 
 /*
@@ -469,8 +483,11 @@ void ScanControl::announcePositions() {
 void ScanControl::announcePositionScanner() {
 	// Reflects the true current optical position (stage + scanner combined), not just the
 	// scanner, so this marker visibly moves through the grid - a fixed overlay, see
-	// getPositionOffset() - as the stage carries the laser from point to point.
-	const auto positionScannerPix = microMeterToPix(getPosition(PositionType::BOTH));
+	// getPositionOffset() - as the stage carries the laser from point to point. Needs its
+	// own offset (see getCurrentPositionOffset()) rather than getPositionOffset(), since it
+	// always starts from a true absolute position regardless of grid mode.
+	const auto offset = getCurrentPositionOffset();
+	const auto positionScannerPix = microMeterToPix(getPosition(PositionType::BOTH) + offset);
 	emit(s_positionScannerChanged(positionScannerPix));
 }
 
