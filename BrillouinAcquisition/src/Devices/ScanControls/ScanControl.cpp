@@ -341,35 +341,34 @@ POINT2 ScanControl::getPositionPix(POINT3 positionMicrometer, bool positionIsAbs
 }
 
 POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
-	if (positionIsAbsolute || m_measurementMode) {
-		getPosition(PositionType::STAGE);
-	}
-
 	// This is the mechanism from commit 0c70d11: the grid itself pans with the current
-	// stage(+scanner) position, so that whichever point is currently being measured always
-	// lands at the same fixed screen pixel - coinciding with the laser marker, which is a
-	// static calibration reference (see announcePositionScanner()) and does NOT itself track
-	// the stage. What looks like "the marker moving through the grid" is actually the grid
-	// sliding past a fixed marker. A "fixed grid, moving marker" redesign was tried and
-	// reverted - the calibration is set up for the panning convention below, not that one.
+	// stage position, so that whichever point is currently being measured always lands at
+	// the same fixed screen pixel - coinciding with the laser marker, which is a static
+	// calibration reference (see announcePositionScanner()) and does NOT itself track the
+	// stage. What looks like "the marker moving through the grid" is actually the grid
+	// sliding past a fixed marker.
 	//
 	// In normal (live-preview) mode, the positions are shown relative to the scanner
 	// position, so they track wherever the laser currently points within the FOV.
 	auto offset = m_positionScanner;
 	if (positionIsAbsolute) {
-		// Absolute positions are stored relative to absoluteGridOriginUm, which is captured
-		// as getPosition(BOTH) (stage + scanner, see setHome()/getHomePosition()). Projecting
-		// them into the current view must subtract that same stage+scanner position, not
-		// stage alone, or the overlay drifts by the scanner offset.
-		offset = POINT2{} - (m_positionStage + m_positionScanner);
+		// Absolute positions are stored as the raw target stage+scanner position directly
+		// (absoluteGridOriginUm + gridOffset, see gridOffsetToAbsoluteTarget()), so the
+		// scanner contribution is already baked into the stored value itself - subtracting
+		// it again here would double-count it and shift the whole grid by that amount.
+		// Only the stage position (which is what actually changes as the grid is scanned)
+		// needs to be undone, exactly like the measurement-mode branch below.
+		offset = POINT2{} - m_positionStage;
 	}
 	// In measurement mode, the positions are shown relative to the start position.
 	else if (m_measurementMode) {
-		// m_startPosition is captured as getPosition(BOTH) in enableMeasurementMode(), so it
-		// must be undone with stage + scanner as well, for the same reason as above (commit
-		// 0c70d11 only subtracted stage here, which is fine as long as the scanner never
-		// moves mid-acquisition, but isn't guaranteed in general).
-		offset = m_startPosition - (m_positionStage + m_positionScanner);
+		// m_startPosition is captured as getPosition(BOTH) (stage + scanner) in
+		// enableMeasurementMode(), but the scanner term cancels exactly the same way as
+		// above - only stage needs to be subtracted here. This is the literal formula from
+		// commit 0c70d11; adding a "- m_positionScanner" term here (as a previous revision
+		// of this function did) shifts the whole grid by the scanner offset instead of
+		// leaving it centered on the marker.
+		offset = m_startPosition - m_positionStage;
 	}
 	return offset;
 }
