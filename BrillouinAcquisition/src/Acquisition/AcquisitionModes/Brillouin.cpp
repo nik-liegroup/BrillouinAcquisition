@@ -547,11 +547,15 @@ void Brillouin::updatePositions() {
 	m_orderedPositionsRelative = std::move(plan.orderedPositionsRelative);
 	m_orderedIndices = std::move(plan.orderedIndices);
 	m_calibrationAllowed = std::move(plan.calibrationAllowed);
+	m_excludedPositions = std::move(plan.excludedPositionsAbsolute);
+	m_excludedPositionsRelative = std::move(plan.excludedPositionsRelative);
 
 	if (m_settings.gridCoordinatesAbsolute) {
 		emit(s_orderedPositionsChanged(m_orderedPositions));
+		emit(s_excludedPositionsChanged(m_excludedPositions));
 	} else {
 		emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
+		emit(s_excludedPositionsChanged(m_excludedPositionsRelative));
 	}
 }
 

@@ -248,6 +248,12 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		this,
 		[this](std::vector<POINT3> orderedPositions) { AOI_changed(orderedPositions); }
 	);
+	connection = QWidget::connect(
+		m_Brillouin,
+		&Brillouin::s_excludedPositionsChanged,
+		this,
+		[this](std::vector<POINT3> excludedPositions) { excludedAOI_changed(excludedPositions); }
+	);
 
 	m_Brillouin->determineScanOrder();
 
@@ -1658,6 +1664,7 @@ void BrillouinAcquisition::applyBrightfieldViewTransformChanged() {
 	m_ODTPlot.plotHandle->yAxis->setRange(QCPRange(1, brightfieldDisplayHeight()));
 	if (m_scanControl) {
 		AOI_changed(m_positionsMicrometer);
+		excludedAOI_changed(m_excludedPositionsMicrometer);
 		drawPositionScannerMarker(m_positionScanner);
 	}
 	updateImageODT();
@@ -3750,6 +3757,7 @@ void BrillouinAcquisition::initScanControl() {
 
 	// Update positions preview
 	AOI_changed(m_positionsMicrometer);
+	excludedAOI_changed(m_excludedPositionsMicrometer);
 
 	// reestablish m_scanControl connections
 	static QMetaObject::Connection connection;
@@ -4655,6 +4663,17 @@ void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositio
 }
 
 /*
+ * React when the set of grid points the ROI mask excludes has changed (preview-only, see
+ * ScanPlannerOutput::excludedPositionsAbsolute/Relative) - drives the red "outside ROI" markers.
+ */
+void BrillouinAcquisition::excludedAOI_changed(const std::vector<POINT3>& excludedPositions) {
+	m_excludedPositionsMicrometer = excludedPositions;
+	if (m_scanControl) {
+		update_AOI_preview();
+	}
+}
+
+/*
  * React when the scancontrol settings have changed, e.g. the start position was adjusted
  */
 void BrillouinAcquisition::on_scaleCalibrationChanged(const std::vector<POINT2>& positions) {
@@ -4688,6 +4707,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 		// permutation) - that duplicate, absolute-mode-only path was the actual bug, not
 		// something that needed a more elaborate replacement.
 		auto positionsPixelForRoi = m_positionsPixel;
+		std::vector<POINT2> excludedPixelForRoi;
 		std::vector<POINT2> roiPolygonPix;
 		if (colorByRoi && m_scanControl) {
 			// Recompute the marker pixels fresh here rather than trusting the cached
@@ -4699,11 +4719,19 @@ void BrillouinAcquisition::update_AOI_preview() {
 			// individually use the correct, shared conversion - recomputing both from the
 			// same instant closes that gap so on-screen coloring can never diverge from what
 			// ScanPlanner will actually include in the scan.
-			positionsPixelForRoi = m_scanControl->getPositionsPix(
-				m_positionsMicrometer, m_Brillouin->settings.gridCoordinatesAbsolute);
+			const auto gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
+			positionsPixelForRoi = m_scanControl->getPositionsPix(m_positionsMicrometer, gridAbsolute);
 			std::transform(positionsPixelForRoi.begin(), positionsPixelForRoi.end(), positionsPixelForRoi.begin(),
 				[this](POINT2 point) { return brightfieldRawToDisplay(point); }
 			);
+			// Points ScanPlanner itself excluded via the ROI mask (see
+			// ScanPlannerOutput::excludedPositionsAbsolute/Relative) - projected with the
+			// single-point, non-caching getPositionPix() so this doesn't clobber the AOI
+			// marker cache that getPositionsPix() above just refreshed.
+			excludedPixelForRoi.reserve(m_excludedPositionsMicrometer.size());
+			for (const auto& p : m_excludedPositionsMicrometer) {
+				excludedPixelForRoi.push_back(brightfieldRawToDisplay(m_scanControl->getPositionPix(p, gridAbsolute)));
+			}
 			roiPolygonPix.reserve(m_Brillouin->settings.roiPolygonUm.size());
 			for (const auto& p : m_Brillouin->settings.roiPolygonUm) {
 				auto pUm = gridOffsetToImagePlaneUm(p);
@@ -4778,25 +4806,30 @@ void BrillouinAcquisition::update_AOI_preview() {
 			}
 		}
 		if (colorByRoi) {
+			// positionsPixelForRoi is exactly ScanPlanner's included list and
+			// excludedPixelForRoi is exactly what it excluded (see
+			// ScanPlannerOutput::excludedPositionsAbsolute/Relative) - both already reflect
+			// the real in/out decision the actual scan will use, so there is nothing left to
+			// re-test here. Re-testing them against roiPolygonPix (a second, independent
+			// pixel-space classification) is what let the on-screen coloring disagree with
+			// what ScanPlanner would really include, whenever the two tests' notions of the
+			// current scanner/stage offset drifted apart even slightly.
 			QVector<double> xInside;
 			QVector<double> yInside;
 			QVector<double> xOutside;
 			QVector<double> yOutside;
 			xInside.reserve((int)positionsPixelForRoi.size());
 			yInside.reserve((int)positionsPixelForRoi.size());
-			xOutside.reserve((int)positionsPixelForRoi.size());
-			yOutside.reserve((int)positionsPixelForRoi.size());
+			xOutside.reserve((int)excludedPixelForRoi.size());
+			yOutside.reserve((int)excludedPixelForRoi.size());
 
-			for (gsl::index i{ 0 }; i < (gsl::index)positionsPixelForRoi.size(); i++) {
-				const auto& posPix = positionsPixelForRoi[(size_t)i];
-				const bool inside = pointInPolygon(POINT2{ posPix.x, posPix.y }, roiPolygonPix);
-				if (inside) {
-					xInside.push_back(posPix.x);
-					yInside.push_back(posPix.y);
-				} else {
-					xOutside.push_back(posPix.x);
-					yOutside.push_back(posPix.y);
-				}
+			for (const auto& posPix : positionsPixelForRoi) {
+				xInside.push_back(posPix.x);
+				yInside.push_back(posPix.y);
+			}
+			for (const auto& posPix : excludedPixelForRoi) {
+				xOutside.push_back(posPix.x);
+				yOutside.push_back(posPix.y);
 			}
 
 			if (!m_positionsMarkerInsideRoi) {

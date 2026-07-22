@@ -74,11 +74,6 @@ ScanPlannerOutput ScanPlanner::buildLegacyCartesianPlan(const ScanPlannerInput& 
 					position[input.scanOrderY],
 					position[input.scanOrderZ]
 				};
-				if (isRoiActive) {
-					if (!isPointInPolygon(POINT2{ gridPosition.x, gridPosition.y }, input.roiPolygonUm)) {
-						continue;
-					}
-				}
 
 				const auto origin = input.gridCoordinatesAbsolute
 					? input.absoluteGridOriginUm
@@ -93,6 +88,17 @@ ScanPlannerOutput ScanPlanner::buildLegacyCartesianPlan(const ScanPlannerInput& 
 					absolutePosition.y - input.startPosition.y,
 					absolutePosition.z - input.startPosition.z
 				};
+
+				if (isRoiActive) {
+					if (!isPointInPolygon(POINT2{ gridPosition.x, gridPosition.y }, input.roiPolygonUm)) {
+						// Excluded by the ROI mask - not part of the actual plan, kept only
+						// for the preview so it can still show what will be skipped.
+						output.excludedPositionsRelative.push_back(relativePosition);
+						output.excludedPositionsAbsolute.push_back(absolutePosition);
+						continue;
+					}
+				}
+
 				output.orderedPositionsRelative.push_back(relativePosition);
 				output.orderedPositionsAbsolute.push_back(absolutePosition);
 				output.orderedIndices.push_back(INDEX3{

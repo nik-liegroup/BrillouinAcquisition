@@ -225,6 +225,12 @@ private:
 	bool m_roiMaskAutoDisabled{ false };
 	std::vector<POINT3> m_positionsMicrometer;	// [µm]		Positions to raster, relative to current start point
 	std::vector<POINT2> m_positionsPixel;		// [pix]	Positions to raster
+	// Grid points the ROI mask excludes from the actual scan - preview-only (see
+	// ScanPlannerOutput::excludedPositionsAbsolute/Relative), shown as the red "outside ROI"
+	// markers. Pixel positions are not cached alongside these like m_positionsPixel is -
+	// they're re-derived from this list on every update_AOI_preview() call instead, since a
+	// stale cache here is exactly what let the ROI overlay and the markers drift apart before.
+	std::vector<POINT3> m_excludedPositionsMicrometer;
 	bool m_showPositions{ true };
 
 	// Dashed yellow outline(s) of the area covered by the brightfield overview mosaic
@@ -574,6 +580,7 @@ private slots:
 	void on_stepsZ_valueChanged(int);
 	void on_showOverlay_stateChanged(int);
 	void AOI_changed(const std::vector<POINT3>& orderedPositions);
+	void excludedAOI_changed(const std::vector<POINT3>& excludedPositions);
 	void on_scaleCalibrationChanged(const std::vector<POINT2>& positions);
 	void update_AOI_preview();
 	void updateRoiPolygonPreview();
