@@ -1280,7 +1280,7 @@ std::vector<POINT3> Brillouin::overviewBrightfieldPositionsForZ(int zIndex, cons
 			? POINT2{ 0, 0 }
 			: POINT2{ m_startPosition.x, m_startPosition.y };
 		for (const auto& xy : tileCentersXY) {
-			positions.push_back(overviewBrightfieldPositionForZ(zIndex, directionsZ, xy + xyOrigin));
+			positions.push_back(overviewBrightfieldPositionForZ(zIndex, directionsZ, POINT2{ xy.x + xyOrigin.x, xy.y + xyOrigin.y }));
 		}
 	} else {
 		positions.push_back(overviewBrightfieldPositionForZ(zIndex, directionsZ, POINT2{ m_startPosition.x, m_startPosition.y }));

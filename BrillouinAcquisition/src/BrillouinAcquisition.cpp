@@ -5100,8 +5100,8 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 	const auto offset = currentGridOffset(gridAbsolute);
 	for (size_t i = 0; i < outlines.size(); i++) {
 		const auto& corner = outlines[i];
-		const auto topLeft = brightfieldRawToDisplay(m_scanControl->microMeterToPix(corner.first + offset));
-		const auto bottomRight = brightfieldRawToDisplay(m_scanControl->microMeterToPix(corner.second + offset));
+		const auto topLeft = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ corner.first.x + offset.x, corner.first.y + offset.y }));
+		const auto bottomRight = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ corner.second.x + offset.x, corner.second.y + offset.y }));
 		m_overviewTileRects[i]->topLeft->setCoords(topLeft.x, topLeft.y);
 		m_overviewTileRects[i]->bottomRight->setCoords(bottomRight.x, bottomRight.y);
 	}
