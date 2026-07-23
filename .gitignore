@@ -8,6 +8,9 @@ BrillouinAcquisition/src/version.h
 *.h5
 *.mat
 
+# ...except scale calibration files, which should be tracked
+!BrillouinAcquisition/scaleCalibrationFiles/*.h5
+
 build/
 build*/
 

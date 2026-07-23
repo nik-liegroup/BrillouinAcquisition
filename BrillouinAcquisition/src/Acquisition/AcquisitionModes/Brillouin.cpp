@@ -9,6 +9,8 @@
 #include <thread>
 #include <limits>
 #include <map>
+#include <set>
+#include <functional>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -300,7 +302,7 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 
 	if (m_scanControl) {
 		m_scanControl->setPreset(ScanPreset::SCAN_LASEROFF);
-		m_scanControl->setPosition(m_startPosition);
+		m_scanControl->setPositionCompensated(m_startPosition);
 		m_scanControl->enableMeasurementMode(false);
 		QMetaObject::invokeMethod(
 			m_scanControl,
@@ -616,7 +618,7 @@ bool Brillouin::runSurfacePreScan() {
 			}
 		}
 		if (referencePositionFound) {
-			m_scanControl->setPosition(referencePosition);
+			m_scanControl->setPositionCompensated(referencePosition);
 			std::this_thread::sleep_for(std::chrono::milliseconds(20));
 		}
 		const int refFrames = std::max(1, m_settings.mediumReferenceFrameCount);
@@ -678,7 +680,9 @@ bool Brillouin::runSurfacePreScan() {
 					? m_settings.absoluteGridOriginUm.z
 					: m_startPosition.z;
 				const auto target = POINT3{ xyPosition.x, xyPosition.y, zOrigin + zRel };
-				m_scanControl->setPosition(target);
+				// setPositionCompensated() only pre-approaches x/y when they actually
+				// change, so within a column (z-only steps) this adds no extra motion.
+				m_scanControl->setPositionCompensated(target);
 				std::this_thread::sleep_for(std::chrono::milliseconds(20));
 				m_andor->getImageForAcquisition(frame.data());
 				const auto metric = estimateFrameMetric(frame);
@@ -883,13 +887,13 @@ void Brillouin::applySurfaceFollowPlan() {
 	}
 }
 
-POINT3 Brillouin::overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ) const {
+POINT3 Brillouin::overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ, const POINT2& xy) const {
 	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : m_startPosition;
 	const auto clampedZIndex = std::clamp(zIndex, 0, (int)directionsZ.size() - 1);
 
 	auto position = POINT3{
-		m_startPosition.x,
-		m_startPosition.y,
+		xy.x,
+		xy.y,
 		origin.z + directionsZ[clampedZIndex]
 	};
 
@@ -909,6 +913,286 @@ POINT3 Brillouin::overviewBrightfieldPositionForZ(int zIndex, const std::vector<
 	}
 
 	return position;
+}
+
+/*
+ * One position per z slice by default (at the current start position, matching the
+ * legacy behaviour), or one position per mosaic tile when overviewBrightfieldFullGrid
+ * is enabled in absolute grid mode, so the whole grid extent gets covered.
+ */
+std::vector<POINT3> Brillouin::overviewBrightfieldPositionsForZ(int zIndex, const std::vector<double>& directionsZ) const {
+	std::vector<POINT3> positions;
+	if (m_settings.overviewBrightfieldFullGrid && m_settings.gridCoordinatesAbsolute) {
+		const auto tileCentersXY = overviewTileCentersXY();
+		positions.reserve(tileCentersXY.size());
+		for (const auto& xy : tileCentersXY) {
+			positions.push_back(overviewBrightfieldPositionForZ(zIndex, directionsZ, xy));
+		}
+	} else {
+		positions.push_back(overviewBrightfieldPositionForZ(zIndex, directionsZ, POINT2{ m_startPosition.x, m_startPosition.y }));
+	}
+	return positions;
+}
+
+/*
+ * Tile centers (x/y, absolute µm) needed to cover the active measurement points with
+ * camera-FOV-sized images at (at least) 20% overlap. "Active" means the actual sampled
+ * grid points (m_orderedPositions/m_orderedIndices, already ROI-mask filtered by
+ * ScanPlanner) rather than the full rectangular [xMin,xMax]x[yMin,yMax] extent - an ROI
+ * mask or a grid whose points are spaced further apart than one FOV can otherwise leave
+ * large stretches with nothing to measure, which would be wasteful to tile.
+ *
+ * Points are first grouped into clusters using proximity (within one FOV size in each
+ * axis counts as "connected"), and each cluster is tiled independently - this avoids
+ * spending tiles bridging gaps between widely separated groups of points, while still
+ * fully covering everything and keeping the guaranteed overlap within each group.
+ *
+ * Falls back to a single tile at the grid center if the brightfield camera or scale
+ * calibration isn't available, or if no plan has been built yet.
+ */
+POINT2 Brillouin::overviewTileFootprintUm() const {
+	if (!m_scanControl || !m_brightfieldCamera) {
+		return POINT2{ 0.0, 0.0 };
+	}
+	const auto scaleCalibration = m_scanControl->getScaleCalibration();
+	const auto brightfieldSettings = m_brightfieldCamera->getSettings();
+	const auto width = (double)brightfieldSettings.roi.width_binned;
+	const auto height = (double)brightfieldSettings.roi.height_binned;
+	// Axis-aligned bounding box, in stage um, of the camera frame's footprint. Using
+	// |pixToMicrometerX| * width for the stage-x extent (and the Y equivalent for
+	// stage-y) is only correct if the camera's raw pixel axes line up with the stage's
+	// x/y motion axes. Some hardware calibrations are rotated relative to the stage
+	// (e.g. ZeissMTB_Erlangen's pixToMicrometerX/Y is a 90 degree rotation - a raw
+	// pixel-x step moves the stage-y coordinate, not stage-x), in which case that
+	// shortcut silently swaps which axis gets padded. This sums each pixel axis's
+	// contribution to each stage axis instead, which reduces to the same simple
+	// formula for an axis-aligned calibration and is also correct for a rotated one.
+	return POINT2{
+		std::abs(width * scaleCalibration.pixToMicrometerX.x) + std::abs(height * scaleCalibration.pixToMicrometerY.x),
+		std::abs(width * scaleCalibration.pixToMicrometerX.y) + std::abs(height * scaleCalibration.pixToMicrometerY.y)
+	};
+}
+
+std::vector<POINT2> Brillouin::overviewTileCentersXY() const {
+	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : m_startPosition;
+	const auto gridXMin = m_settings.xMin + origin.x;
+	const auto gridXMax = m_settings.xMax + origin.x;
+	const auto gridYMin = m_settings.yMin + origin.y;
+	const auto gridYMax = m_settings.yMax + origin.y;
+	const auto gridCenter = POINT2{ 0.5 * (gridXMin + gridXMax), 0.5 * (gridYMin + gridYMax) };
+
+	if (!m_scanControl || !m_brightfieldCamera) {
+		return { gridCenter };
+	}
+
+	const auto fov = overviewTileFootprintUm();
+	const auto fovWidthUm = fov.x;
+	const auto fovHeightUm = fov.y;
+	if (fovWidthUm <= 0.0 || fovHeightUm <= 0.0) {
+		return { gridCenter };
+	}
+
+	// Unique active (x, y) grid positions. The ROI mask is applied per (x, y) regardless
+	// of z (see ScanPlanner::buildLegacyCartesianPlan), so it's enough to look at the
+	// (x, y) index pairs once rather than per z slice.
+	std::set<std::pair<int, int>> seenIndexPairs;
+	std::vector<POINT2> activePoints;
+	const auto pointCount = std::min(m_orderedIndices.size(), m_orderedPositions.size());
+	for (size_t i = 0; i < pointCount; i++) {
+		const auto key = std::make_pair(m_orderedIndices[i].x, m_orderedIndices[i].y);
+		if (seenIndexPairs.insert(key).second) {
+			activePoints.push_back(POINT2{ m_orderedPositions[i].x, m_orderedPositions[i].y });
+		}
+	}
+	if (activePoints.empty()) {
+		// No plan built yet - fall back to something sensible rather than tiling nothing.
+		return { gridCenter };
+	}
+
+	constexpr auto overlapFraction = 0.2;
+
+	// Minimum number of FOV-sized tiles, spaced at (1 - overlapFraction) * fov, needed
+	// to span `extent`. Evenly redistributing that many tiles across the exact extent
+	// below (rather than using this nominal pitch directly) means the actual overlap
+	// ends up at least overlapFraction, never less.
+	auto requiredTileCount = [](double extent, double fov, double overlap) {
+		if (extent <= fov) {
+			return 1;
+		}
+		const auto pitch = fov * (1.0 - overlap);
+		return 1 + (int)std::ceil((extent - fov) / pitch);
+	};
+	auto tileCentersAlongAxis = [](double minEdge, double extent, double fov, int count) {
+		std::vector<double> centers(count);
+		if (count <= 1) {
+			centers[0] = minEdge + 0.5 * extent;
+			return centers;
+		}
+		const auto step = (extent - fov) / (double)(count - 1);
+		for (int i = 0; i < count; i++) {
+			centers[i] = minEdge + 0.5 * fov + i * step;
+		}
+		return centers;
+	};
+
+	// Union-find clustering: two active points are connected if they're within one FOV
+	// size of each other in both axes, i.e. close enough that covering both without a
+	// large empty gap between them is worthwhile.
+	std::vector<size_t> parent(activePoints.size());
+	for (size_t i = 0; i < parent.size(); i++) {
+		parent[i] = i;
+	}
+	std::function<size_t(size_t)> find = [&](size_t i) {
+		while (parent[i] != i) {
+			parent[i] = parent[parent[i]];
+			i = parent[i];
+		}
+		return i;
+	};
+	auto unite = [&](size_t a, size_t b) {
+		a = find(a);
+		b = find(b);
+		if (a != b) {
+			parent[a] = b;
+		}
+	};
+	for (size_t i = 0; i < activePoints.size(); i++) {
+		for (size_t j = i + 1; j < activePoints.size(); j++) {
+			const auto dx = std::abs(activePoints[i].x - activePoints[j].x);
+			const auto dy = std::abs(activePoints[i].y - activePoints[j].y);
+			if (dx <= fovWidthUm && dy <= fovHeightUm) {
+				unite(i, j);
+			}
+		}
+	}
+
+	std::map<size_t, std::vector<POINT2>> clusters;
+	for (size_t i = 0; i < activePoints.size(); i++) {
+		clusters[find(i)].push_back(activePoints[i]);
+	}
+
+	std::vector<POINT2> tiles;
+	for (const auto& entry : clusters) {
+		const auto& clusterPoints = entry.second;
+		auto clusterXMin = clusterPoints.front().x;
+		auto clusterXMax = clusterPoints.front().x;
+		auto clusterYMin = clusterPoints.front().y;
+		auto clusterYMax = clusterPoints.front().y;
+		for (const auto& p : clusterPoints) {
+			clusterXMin = std::min(clusterXMin, p.x);
+			clusterXMax = std::max(clusterXMax, p.x);
+			clusterYMin = std::min(clusterYMin, p.y);
+			clusterYMax = std::max(clusterYMax, p.y);
+		}
+		const auto tileCountX = requiredTileCount(clusterXMax - clusterXMin, fovWidthUm, overlapFraction);
+		const auto tileCountY = requiredTileCount(clusterYMax - clusterYMin, fovHeightUm, overlapFraction);
+		const auto centersX = tileCentersAlongAxis(clusterXMin, clusterXMax - clusterXMin, fovWidthUm, tileCountX);
+		const auto centersY = tileCentersAlongAxis(clusterYMin, clusterYMax - clusterYMin, fovHeightUm, tileCountY);
+		for (const auto y : centersY) {
+			for (const auto x : centersX) {
+				tiles.push_back(POINT2{ x, y });
+			}
+		}
+	}
+	return tiles;
+}
+
+std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUm() const {
+	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : m_startPosition;
+	const auto gridXMin = m_settings.xMin + origin.x;
+	const auto gridXMax = m_settings.xMax + origin.x;
+	const auto gridYMin = m_settings.yMin + origin.y;
+	const auto gridYMax = m_settings.yMax + origin.y;
+	const auto gridCenter = POINT2{ 0.5 * (gridXMin + gridXMax), 0.5 * (gridYMin + gridYMax) };
+
+	if (!m_scanControl || !m_brightfieldCamera) {
+		return { { gridCenter, gridCenter } };
+	}
+
+	const auto fov = overviewTileFootprintUm();
+	const auto fovWidthUm = fov.x;
+	const auto fovHeightUm = fov.y;
+	if (fovWidthUm <= 0.0 || fovHeightUm <= 0.0) {
+		return { { gridCenter, gridCenter } };
+	}
+
+	// Unique active (x, y) grid positions - see overviewTileCentersXY() for why this is
+	// enough without also looking at z.
+	std::set<std::pair<int, int>> seenIndexPairs;
+	std::vector<POINT2> activePoints;
+	const auto pointCount = std::min(m_orderedIndices.size(), m_orderedPositions.size());
+	for (size_t i = 0; i < pointCount; i++) {
+		const auto key = std::make_pair(m_orderedIndices[i].x, m_orderedIndices[i].y);
+		if (seenIndexPairs.insert(key).second) {
+			activePoints.push_back(POINT2{ m_orderedPositions[i].x, m_orderedPositions[i].y });
+		}
+	}
+	if (activePoints.empty()) {
+		return { { gridCenter, gridCenter } };
+	}
+
+	// Union-find clustering: same connectivity rule as overviewTileCentersXY(), so the
+	// outlines drawn here match the tile groups actually captured 1:1.
+	std::vector<size_t> parent(activePoints.size());
+	for (size_t i = 0; i < parent.size(); i++) {
+		parent[i] = i;
+	}
+	std::function<size_t(size_t)> find = [&](size_t i) {
+		while (parent[i] != i) {
+			parent[i] = parent[parent[i]];
+			i = parent[i];
+		}
+		return i;
+	};
+	auto unite = [&](size_t a, size_t b) {
+		a = find(a);
+		b = find(b);
+		if (a != b) {
+			parent[a] = b;
+		}
+	};
+	for (size_t i = 0; i < activePoints.size(); i++) {
+		for (size_t j = i + 1; j < activePoints.size(); j++) {
+			const auto dx = std::abs(activePoints[i].x - activePoints[j].x);
+			const auto dy = std::abs(activePoints[i].y - activePoints[j].y);
+			if (dx <= fovWidthUm && dy <= fovHeightUm) {
+				unite(i, j);
+			}
+		}
+	}
+
+	std::map<size_t, std::vector<POINT2>> clusters;
+	for (size_t i = 0; i < activePoints.size(); i++) {
+		clusters[find(i)].push_back(activePoints[i]);
+	}
+
+	std::vector<std::pair<POINT2, POINT2>> outlines;
+	outlines.reserve(clusters.size());
+	for (const auto& entry : clusters) {
+		const auto& clusterPoints = entry.second;
+		auto clusterXMin = clusterPoints.front().x;
+		auto clusterXMax = clusterPoints.front().x;
+		auto clusterYMin = clusterPoints.front().y;
+		auto clusterYMax = clusterPoints.front().y;
+		for (const auto& p : clusterPoints) {
+			clusterXMin = std::min(clusterXMin, p.x);
+			clusterXMax = std::max(clusterXMax, p.x);
+			clusterYMin = std::min(clusterYMin, p.y);
+			clusterYMax = std::max(clusterYMax, p.y);
+		}
+		// The union of the FOV-sized, (1 - overlap)-spaced tiles overviewTileCentersXY()
+		// lays out along an axis exactly spans [clusterMin, clusterMax] once more than one
+		// tile is needed, and the single centered FOV tile otherwise - so the tiled area's
+		// outline reduces to this, without needing the individual tile positions at all.
+		const auto clusterCenterX = 0.5 * (clusterXMin + clusterXMax);
+		const auto clusterCenterY = 0.5 * (clusterYMin + clusterYMax);
+		const auto outlineXMin = std::min(clusterXMin, clusterCenterX - 0.5 * fovWidthUm);
+		const auto outlineXMax = std::max(clusterXMax, clusterCenterX + 0.5 * fovWidthUm);
+		const auto outlineYMin = std::min(clusterYMin, clusterCenterY - 0.5 * fovHeightUm);
+		const auto outlineYMax = std::max(clusterYMax, clusterCenterY + 0.5 * fovHeightUm);
+		outlines.push_back({ POINT2{ outlineXMin, outlineYMin }, POINT2{ outlineXMax, outlineYMax } });
+	}
+	return outlines;
 }
 
 template <typename T>
@@ -959,7 +1243,7 @@ void Brillouin::captureOverviewBrightfield(
 	}
 
 	m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
-	m_scanControl->setPosition(position);
+	m_scanControl->setPositionCompensated(position);
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
 	auto brightfieldSettings = m_brightfieldCamera->getSettings();
@@ -1129,10 +1413,13 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	storage->setPositions("grid-coordinates-absolute", std::vector<double>{ m_settings.gridCoordinatesAbsolute ? 1.0 : 0.0 }, 1, originDims);
 
 	// Explicitly store which grid points were sampled to keep metadata consistent for sparse ROI scans.
+	// Must match the [zSteps, xSteps, ySteps] row-major layout the "x"/"y"/"z" datasets above use
+	// (x varies before y) - NOT the (z, y, x) convention h5bm's per-spectrum dataset naming uses,
+	// which is a different, unrelated indexing scheme.
 	auto sampledMask = std::vector<double>(gridPositionCount, 0.0);
 	for (gsl::index ll{ 0 }; ll < (gsl::index)m_orderedIndices.size(); ll++) {
 		const auto idx = m_orderedIndices[ll];
-		const auto flat = idx.z * (m_settings.xSteps * m_settings.ySteps) + idx.y * m_settings.xSteps + idx.x;
+		const auto flat = idx.z * (m_settings.xSteps * m_settings.ySteps) + idx.x * m_settings.ySteps + idx.y;
 		if (flat >= 0 && flat < gridPositionCount) {
 			sampledMask[flat] = 1.0;
 		}
@@ -1161,19 +1448,40 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	storage->setPositions("sampled-z", sampledZ, sampledRank, sampledDims);
 
 	if (m_settings.saveOverviewBrightfieldPerZ) {
-		hsize_t overviewDims[1] = { (hsize_t)m_settings.zSteps };
-		auto overviewX = std::vector<double>(m_settings.zSteps);
-		auto overviewY = std::vector<double>(m_settings.zSteps);
-		auto overviewZ = std::vector<double>(m_settings.zSteps);
+		// Flattened as [z0_tile0, z0_tile1, ..., z1_tile0, ...]; tileCount is constant
+		// across z since the tile layout only depends on the (z-independent) grid
+		// extent. overview-brightfield-tile-count lets a reader reshape this back into
+		// [zSteps, tileCount] and is 1 for the legacy single-image-per-z behaviour.
+		const auto tileCount = overviewBrightfieldPositionsForZ(0, directionsZ).size();
+		const auto totalOverviewCount = (size_t)m_settings.zSteps * tileCount;
+		hsize_t overviewDims[1] = { (hsize_t)totalOverviewCount };
+		auto overviewX = std::vector<double>(totalOverviewCount);
+		auto overviewY = std::vector<double>(totalOverviewCount);
+		auto overviewZ = std::vector<double>(totalOverviewCount);
 		for (gsl::index ii{ 0 }; ii < m_settings.zSteps; ii++) {
-			const auto position = overviewBrightfieldPositionForZ((int)ii, directionsZ);
-			overviewX[ii] = position.x;
-			overviewY[ii] = position.y;
-			overviewZ[ii] = position.z;
+			const auto positions = overviewBrightfieldPositionsForZ((int)ii, directionsZ);
+			for (size_t tt = 0; tt < positions.size() && tt < tileCount; tt++) {
+				const auto flatIndex = (size_t)ii * tileCount + tt;
+				const auto& position = positions[tt];
+				// Use the same convention as sampled-x/y/z above, so overview and
+				// Brillouin positions can be compared/overlaid directly without the
+				// caller having to know which fields are absolute vs. origin-relative.
+				overviewX[flatIndex] = m_settings.gridCoordinatesAbsolute
+					? position.x - m_settings.absoluteGridOriginUm.x
+					: position.x;
+				overviewY[flatIndex] = m_settings.gridCoordinatesAbsolute
+					? position.y - m_settings.absoluteGridOriginUm.y
+					: position.y;
+				overviewZ[flatIndex] = m_settings.gridCoordinatesAbsolute
+					? position.z - m_settings.absoluteGridOriginUm.z
+					: position.z;
+			}
 		}
 		storage->setPositions("overview-brightfield-x", overviewX, sampledRank, overviewDims);
 		storage->setPositions("overview-brightfield-y", overviewY, sampledRank, overviewDims);
 		storage->setPositions("overview-brightfield-z", overviewZ, sampledRank, overviewDims);
+		const hsize_t tileCountDims[1] = { 1 };
+		storage->setPositions("overview-brightfield-tile-count", std::vector<double>{ (double)tileCount }, 1, tileCountDims);
 	}
 	delete[] dims;
 
@@ -1207,7 +1515,9 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 
 	// move stage to first position, wait 50 ms for it to finish
 	if (m_scanControl) {
-		m_scanControl->setPosition(m_orderedPositions[0]);
+		// Approach from a consistent direction to compensate for stage hysteresis,
+		// so the grid is reached reproducibly regardless of where the stage was before.
+		m_scanControl->setPositionCompensated(m_orderedPositions[0]);
 	} else {
 		m_abort = true;
 		return;
@@ -1221,9 +1531,11 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 			if (calibrationTimer.elapsed() > (60e3 * m_settings.conCalibrationInterval)) {
 				calibrate(storage);
 				calibrationTimer.start();
-				// After we calibrated, we move back to the current position
+				// After we calibrated, we move back to the current position.
+				// The calibration preset can move the stage away (e.g. to a reference sample),
+				// so approach the grid point from a consistent direction to avoid hysteresis error.
 				if (m_scanControl) {
-					m_scanControl->setPosition(m_orderedPositions[ll]);
+					m_scanControl->setPositionCompensated(m_orderedPositions[ll]);
 				} else {
 					m_abort = true;
 					return;
@@ -1238,12 +1550,21 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		const auto zIndex = std::clamp(m_orderedIndices[ll].z, 0, std::max(0, m_settings.zSteps - 1));
 		if (m_settings.saveOverviewBrightfieldPerZ && !overviewCapturedForZ[zIndex]) {
 			overviewCapturedForZ[zIndex] = true;
-			captureOverviewBrightfield(storage, zIndex, zIndex, overviewBrightfieldPositionForZ(zIndex, directionsZ));
-			if (m_abort) {
-				return;
+			// One position (legacy behaviour) or one per mosaic tile covering the full
+			// grid extent, depending on overviewBrightfieldFullGrid; imageNumber stays
+			// unique per (z, tile) pair since tileCount is constant across z slices.
+			const auto overviewPositions = overviewBrightfieldPositionsForZ(zIndex, directionsZ);
+			for (size_t tt = 0; tt < overviewPositions.size(); tt++) {
+				const auto imageNumber = zIndex * (int)overviewPositions.size() + (int)tt;
+				captureOverviewBrightfield(storage, imageNumber, zIndex, overviewPositions[tt]);
+				if (m_abort) {
+					return;
+				}
 			}
 			if (m_scanControl) {
-				m_scanControl->setPosition(m_orderedPositions[ll]);
+				// The overview brightfield capture moves the stage away from the grid point,
+				// so approach it again from a consistent direction to avoid hysteresis error.
+				m_scanControl->setPositionCompensated(m_orderedPositions[ll]);
 				std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			} else {
 				m_abort = true;
@@ -1347,7 +1668,7 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		// move stage to next position
 		if (ll < ((gsl::index)nrPositions - 1)) {
 			if (m_scanControl) {
-				m_scanControl->setPosition(m_orderedPositions[ll + 1]);
+				m_scanControl->setPositionCompensated(m_orderedPositions[ll + 1]);
 			} else {
 				m_abort = true;
 				return;
@@ -1374,7 +1695,7 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	if (m_scanControl) {
 		m_scanControl->setPreset(ScanPreset::SCAN_LASEROFF);
 
-		m_scanControl->setPosition(m_startPosition);
+		m_scanControl->setPositionCompensated(m_startPosition);
 		m_scanControl->enableMeasurementMode(false);
 		emit(s_positionChanged({ 0, 0, 0 }, 0));
 		QMetaObject::invokeMethod(

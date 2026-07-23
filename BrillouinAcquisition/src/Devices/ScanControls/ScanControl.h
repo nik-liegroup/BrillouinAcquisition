@@ -128,6 +128,15 @@ public:
 	virtual void movePosition(POINT2 distance);
 	virtual void movePosition(const POINT3& distance);
 	virtual POINT3 getPosition(PositionType positionType = PositionType::BOTH);
+	// Moves to the target position, always approaching from lower x/y values.
+	// Mechanical translation stages exhibit backlash/hysteresis, so approaching
+	// a target from an inconsistent direction leads to inconsistent positioning
+	// (e.g. a grid point is not reached reproducibly). This mirrors the approach
+	// already used for scale calibration moves.
+	void setPositionCompensated(POINT3 position);
+	// Same idea as setPositionCompensated(), but for a relative move (used for
+	// click-to-move navigation in the live view).
+	void movePositionCompensated(POINT2 distance);
 
 	typedef enum class enScanDevice {
 		ZEISSECU = 0,
@@ -190,6 +199,10 @@ public slots:
 
 	std::vector<POINT2> getPositionsPix(const std::vector<POINT3>& positionsMicrometer);
 	std::vector<POINT2> getPositionsPix(const std::vector<POINT3>& positionsMicrometer, bool positionsAreAbsolute);
+	// Same conversion as getPositionsPix(), but without caching the position for
+	// re-emission on scale calibration change - use for ad-hoc overlay geometry
+	// (e.g. mosaic tile outlines) that must not clobber the cached AOI markers.
+	POINT2 getPositionPix(POINT3 positionMicrometer, bool positionIsAbsolute);
 
 	virtual POINT2 pixToMicroMeter(POINT2 positionPix);
 	virtual POINT2 microMeterToPix(POINT2 positionMicrometer);

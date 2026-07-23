@@ -93,6 +93,7 @@ struct BRILLOUIN_SETTINGS {
 			saveOverviewBrightfieldPerZ = settings.saveOverviewBrightfieldPerZ;
 			overviewBrightfieldExposureMs = settings.overviewBrightfieldExposureMs;
 			overviewBrightfieldGain = settings.overviewBrightfieldGain;
+			overviewBrightfieldFullGrid = settings.overviewBrightfieldFullGrid;
 			camera = settings.camera;
 			return *this;
 		}
@@ -142,6 +143,10 @@ struct BRILLOUIN_SETTINGS {
 		bool saveOverviewBrightfieldPerZ{ false };
 		int overviewBrightfieldExposureMs{ 4 };
 		double overviewBrightfieldGain{ 0.0 };
+		// Only meaningful (and only offered in the UI) when gridCoordinatesAbsolute is
+		// true: instead of one overview image per z slice at a fixed position, tile
+		// enough camera-FOV-sized images (20% overlap) to cover the whole grid extent.
+		bool overviewBrightfieldFullGrid{ false };
 
 		// ROI parameters
 		const double& xMin{ m_xMin };
@@ -254,6 +259,16 @@ public slots:
 
 	std::vector<POINT3> getOrderedPositions();
 
+	// Used by the GUI to draw the overview-mosaic outline in the live view, so these
+	// need to be callable from outside the class.
+	std::vector<POINT2> overviewTileCentersXY() const;
+	// Camera field of view in µm (x, y), as used to size each overview tile.
+	POINT2 overviewTileFootprintUm() const;
+	// One (topLeft, bottomRight) bounding box per group of active points close enough to be
+	// tiled together - i.e. the outline of the area actually covered by that group's tiles,
+	// not each individual tile.
+	std::vector<std::pair<POINT2, POINT2>> overviewTileOutlinesUm() const;
+
 private:
 	void abortMode(std::unique_ptr <StorageWrapper>& storage) override;
 
@@ -261,7 +276,8 @@ private:
 	void applySurfaceFollowPlan();
 	double estimateFrameMetric(const std::vector<std::byte>& image) const;
 	bool runSurfacePreScan();
-	POINT3 overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ) const;
+	POINT3 overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ, const POINT2& xy) const;
+	std::vector<POINT3> overviewBrightfieldPositionsForZ(int zIndex, const std::vector<double>& directionsZ) const;
 	void captureOverviewBrightfield(std::unique_ptr <StorageWrapper>& storage, int imageNumber, int zIndex, const POINT3& position);
 
 	std::string getRepetitionFilename();

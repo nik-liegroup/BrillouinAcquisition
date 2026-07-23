@@ -628,6 +628,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_mediumReferenceFrameCountSpinBox = ui->mediumReferenceFrameCountSpinBox;
 			m_absoluteGridCheckbox = ui->absoluteGridCheckbox;
 			m_saveOverviewBrightfieldPerZCheckbox = ui->saveOverviewBrightfieldPerZCheckbox;
+			m_overviewFullGridCheckbox = ui->overviewFullGridCheckbox;
 			m_editSpectralProxyRoiCheckbox = ui->editSpectralProxyRoiCheckbox;
 
 			connect(m_useRoiMaskCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
@@ -731,6 +732,13 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			connect(m_saveOverviewBrightfieldPerZCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
 				m_Brillouin->settings.saveOverviewBrightfieldPerZ = enabled;
 				updateEstimatedAcquisitionTime();
+				updateBrillouinSettings();
+			});
+
+			connect(m_overviewFullGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				m_Brillouin->settings.overviewBrightfieldFullGrid = enabled;
+				updateEstimatedAcquisitionTime();
+				updateOverviewTileOutlines();
 			});
 
 			connect(m_editSpectralProxyRoiCheckbox, &QAbstractButton::toggled, this, [this](bool enabled) {
@@ -1220,10 +1228,13 @@ POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm
 	if (!m_scanControl || !m_Brillouin->settings.gridCoordinatesAbsolute) {
 		return imagePlaneUm;
 	}
-	const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+	// Use the same (stage + scanner) position convention as getHomePosition() /
+	// absoluteGridOriginUm and setPosition(), otherwise a non-zero scanner offset
+	// introduces a constant error between where a point is drawn and where it is moved to.
+	const auto currentPosition = m_scanControl->getPosition();
 	return POINT2{
-		stagePosition.x + imagePlaneUm.x - m_Brillouin->settings.absoluteGridOriginUm.x,
-		stagePosition.y + imagePlaneUm.y - m_Brillouin->settings.absoluteGridOriginUm.y
+		currentPosition.x + imagePlaneUm.x - m_Brillouin->settings.absoluteGridOriginUm.x,
+		currentPosition.y + imagePlaneUm.y - m_Brillouin->settings.absoluteGridOriginUm.y
 	};
 }
 
@@ -1231,10 +1242,11 @@ POINT2 BrillouinAcquisition::gridOffsetToImagePlaneUm(const POINT2& gridOffset) 
 	if (!m_scanControl || !m_Brillouin->settings.gridCoordinatesAbsolute) {
 		return gridOffset;
 	}
-	const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+	// See imagePlaneUmToGridOffset() for why this must match its (stage + scanner) convention.
+	const auto currentPosition = m_scanControl->getPosition();
 	return POINT2{
-		m_Brillouin->settings.absoluteGridOriginUm.x + gridOffset.x - stagePosition.x,
-		m_Brillouin->settings.absoluteGridOriginUm.y + gridOffset.y - stagePosition.y
+		m_Brillouin->settings.absoluteGridOriginUm.x + gridOffset.x - currentPosition.x,
+		m_Brillouin->settings.absoluteGridOriginUm.y + gridOffset.y - currentPosition.y
 	};
 }
 
@@ -4382,6 +4394,17 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_useRoiMaskCheckbox->setEnabled(roiMaskPossible);
 		if (!roiMaskPossible && m_Brillouin->settings.useRoiMask) {
 			m_Brillouin->settings.useRoiMask = false;
+			m_roiMaskAutoDisabled = true;
+		} else if (roiMaskPossible && m_roiMaskAutoDisabled && !m_Brillouin->settings.useRoiMask) {
+			// The polygon (e.g. after dragging a point) is valid again after having been
+			// auto-disabled above for being invalid - restore it automatically, since it
+			// was never the user's choice to turn it off. Without this, useRoiMask stayed
+			// false until an unrelated action (adding a new point, which unconditionally
+			// re-enables the mask) happened to paper over the problem.
+			m_Brillouin->settings.useRoiMask = true;
+		}
+		if (roiMaskPossible) {
+			m_roiMaskAutoDisabled = false;
 		}
 		const QSignalBlocker blocker(*m_useRoiMaskCheckbox);
 		m_useRoiMaskCheckbox->setChecked(m_Brillouin->settings.useRoiMask);
@@ -4437,6 +4460,20 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_saveOverviewBrightfieldPerZCheckbox->setEnabled(
 			m_hasFluorescence && m_brightfieldCamera != nullptr && m_brightfieldCamera->getConnectionStatus()
 		);
+	}
+	if (m_overviewFullGridCheckbox) {
+		// Only meaningful once the grid is anchored to an absolute origin - in relative
+		// mode there's no fixed extent to tile against, so force it off rather than
+		// leave a stale setting that silently does nothing.
+		const auto fullGridPossible = m_Brillouin->settings.gridCoordinatesAbsolute
+			&& m_Brillouin->settings.saveOverviewBrightfieldPerZ;
+		if (!fullGridPossible && m_Brillouin->settings.overviewBrightfieldFullGrid) {
+			m_Brillouin->settings.overviewBrightfieldFullGrid = false;
+		}
+		const QSignalBlocker blocker(*m_overviewFullGridCheckbox);
+		m_overviewFullGridCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldFullGrid);
+		m_overviewFullGridCheckbox->setEnabled(fullGridPossible);
+		updateOverviewTileOutlines();
 	}
 	const auto homeControlsDisabled = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
 	ui->setHome->setDisabled(homeControlsDisabled);
@@ -4537,41 +4574,15 @@ void BrillouinAcquisition::update_AOI_preview() {
 		const bool colorByRoi = m_scanControl
 			&& m_Brillouin->settings.useRoiMask
 			&& m_Brillouin->settings.roiPolygonUm.size() >= 3;
+		// m_positionsPixel is already the correct, mode-aware projection of the current
+		// grid (ScanControl::convertPositionsToPix() branches on absolute vs. relative
+		// mode internally and both are mathematically consistent with the polygon
+		// projection below). Absolute mode used to instead rebuild the grid from scratch
+		// here, reading scan order back from three independent UI radio-button groups
+		// (which are not mutually exclusive with each other, so could yield an invalid
+		// permutation) - that duplicate, absolute-mode-only path was the actual bug, not
+		// something that needed a more elaborate replacement.
 		auto positionsPixelForRoi = m_positionsPixel;
-		if (colorByRoi && m_Brillouin->settings.gridCoordinatesAbsolute) {
-			const auto& settings = m_Brillouin->settings;
-			auto scanOrderX = ui->buttonGroup->checkedId();
-			auto scanOrderY = ui->buttonGroup_2->checkedId();
-			auto scanOrderZ = ui->buttonGroup_3->checkedId();
-			if (scanOrderX < 0) scanOrderX = 0;
-			if (scanOrderY < 0) scanOrderY = 1;
-			if (scanOrderZ < 0) scanOrderZ = 2;
-
-			std::vector<std::vector<double>> directions(3);
-			directions[(size_t)scanOrderX] = simplemath::linspace(settings.xMin, settings.xMax, settings.xSteps);
-			directions[(size_t)scanOrderY] = simplemath::linspace(settings.yMin, settings.yMax, settings.ySteps);
-			directions[(size_t)scanOrderZ] = simplemath::linspace(settings.zMin, settings.zMax, settings.zSteps);
-
-			positionsPixelForRoi.clear();
-			positionsPixelForRoi.reserve((size_t)settings.xSteps * (size_t)settings.ySteps * (size_t)settings.zSteps);
-			std::vector<double> position(3);
-			for (size_t ii = 0; ii < directions[2].size(); ii++) {
-				for (size_t jj = 0; jj < directions[1].size(); jj++) {
-					for (size_t kk = 0; kk < directions[0].size(); kk++) {
-						position[0] = directions[0][kk];
-						position[1] = directions[1][jj];
-						position[2] = directions[2][ii];
-						const POINT2 displayUm = gridOffsetToImagePlaneUm(POINT2{
-							position[(size_t)scanOrderX],
-							position[(size_t)scanOrderY]
-						});
-						positionsPixelForRoi.push_back(
-							brightfieldRawToDisplay(m_scanControl->microMeterToPix(displayUm))
-						);
-					}
-				}
-			}
-		}
 		std::vector<POINT2> roiPolygonPix;
 		if (colorByRoi && m_scanControl) {
 			roiPolygonPix.reserve(m_Brillouin->settings.roiPolygonUm.size());
@@ -4787,6 +4798,54 @@ void BrillouinAcquisition::update_AOI_preview() {
 		ui->customplot_brightfield->replot();
 	}
 	updateRoiPolygonPreview();
+	updateOverviewTileOutlines();
+}
+
+/*
+ * Show the outline (dashed yellow) of the area the brightfield overview mosaic will
+ * cover, in the live view, while "Full grid (mosaic)" is active - one outline per
+ * disjoint group of active points, not one rectangle per individual tile.
+ */
+void BrillouinAcquisition::updateOverviewTileOutlines() {
+	const bool showTiles = m_showPositions && m_scanControl && m_Brillouin->settings.overviewBrightfieldFullGrid;
+	if (!showTiles) {
+		if (!m_overviewTileRects.empty()) {
+			for (auto* rect : m_overviewTileRects) {
+				ui->customplot_brightfield->removeItem(rect);
+			}
+			m_overviewTileRects.clear();
+			ui->customplot_brightfield->replot();
+		}
+		return;
+	}
+
+	const auto outlines = m_Brillouin->overviewTileOutlinesUm();
+	const bool gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
+
+	while (m_overviewTileRects.size() > outlines.size()) {
+		ui->customplot_brightfield->removeItem(m_overviewTileRects.back());
+		m_overviewTileRects.pop_back();
+	}
+	while (m_overviewTileRects.size() < outlines.size()) {
+		auto* rect = new QCPItemRect(ui->customplot_brightfield);
+		QPen pen(Qt::yellow);
+		pen.setStyle(Qt::DashLine);
+		pen.setWidth(2);
+		rect->setPen(pen);
+		rect->setBrush(Qt::NoBrush);
+		m_overviewTileRects.push_back(rect);
+	}
+
+	for (size_t i = 0; i < outlines.size(); i++) {
+		const auto& corner = outlines[i];
+		const auto topLeft = brightfieldRawToDisplay(m_scanControl->getPositionPix(
+			POINT3{ corner.first.x, corner.first.y, 0 }, gridAbsolute));
+		const auto bottomRight = brightfieldRawToDisplay(m_scanControl->getPositionPix(
+			POINT3{ corner.second.x, corner.second.y, 0 }, gridAbsolute));
+		m_overviewTileRects[i]->topLeft->setCoords(topLeft.x, topLeft.y);
+		m_overviewTileRects[i]->bottomRight->setCoords(bottomRight.x, bottomRight.y);
+	}
+	ui->customplot_brightfield->replot();
 }
 
 void BrillouinAcquisition::updateRoiPolygonPreview() {
@@ -5297,6 +5356,7 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-save-overview-brightfield-per-z", m_Brillouin->settings.saveOverviewBrightfieldPerZ);
 	settings.setValue("brillouin-overview-brightfield-exposure-ms", m_Brillouin->settings.overviewBrightfieldExposureMs);
 	settings.setValue("brillouin-overview-brightfield-gain", m_Brillouin->settings.overviewBrightfieldGain);
+	settings.setValue("brillouin-overview-brightfield-full-grid", m_Brillouin->settings.overviewBrightfieldFullGrid);
 	settings.setValue("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft);
 	settings.setValue("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop);
 	settings.setValue("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth);
@@ -5428,6 +5488,7 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.saveOverviewBrightfieldPerZ = settings.value("brillouin-save-overview-brightfield-per-z", m_Brillouin->settings.saveOverviewBrightfieldPerZ).toBool();
 	m_Brillouin->settings.overviewBrightfieldExposureMs = settings.value("brillouin-overview-brightfield-exposure-ms", m_Brillouin->settings.overviewBrightfieldExposureMs).toInt();
 	m_Brillouin->settings.overviewBrightfieldGain = settings.value("brillouin-overview-brightfield-gain", m_Brillouin->settings.overviewBrightfieldGain).toDouble();
+	m_Brillouin->settings.overviewBrightfieldFullGrid = settings.value("brillouin-overview-brightfield-full-grid", m_Brillouin->settings.overviewBrightfieldFullGrid).toBool();
 	m_Brillouin->settings.surfaceProxyRoiLeft = settings.value("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft).toInt();
 	m_Brillouin->settings.surfaceProxyRoiTop = settings.value("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop).toInt();
 	m_Brillouin->settings.surfaceProxyRoiWidth = settings.value("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth).toInt();

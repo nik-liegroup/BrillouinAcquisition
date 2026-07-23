@@ -151,6 +151,7 @@ private:
 	QSpinBox* m_mediumReferenceFrameCountSpinBox{ nullptr };
 	QCheckBox* m_absoluteGridCheckbox{ nullptr };
 	QCheckBox* m_saveOverviewBrightfieldPerZCheckbox{ nullptr };
+	QCheckBox* m_overviewFullGridCheckbox{ nullptr };
 	QAbstractButton* m_editSpectralProxyRoiCheckbox{ nullptr };
 	QCPItemRect* m_spectralProxyRoiRectItem{ nullptr };
 	QCPItemRect* m_spectralProxyRoi2RectItem{ nullptr };
@@ -214,9 +215,20 @@ private:
 	QCPCurve* m_roiPolygonMarker{ nullptr };
 	int m_draggedRoiVertexIndex{ -1 };
 	bool m_draggingRoiVertex{ false };
+	// True only while useRoiMask is off because updateBrillouinSettings() auto-disabled it
+	// due to an invalid (self-intersecting / <3 point) polygon, as opposed to the user
+	// having deliberately unchecked it. Lets that same auto-disable be auto-undone once the
+	// polygon becomes valid again, without fighting a genuine user choice.
+	bool m_roiMaskAutoDisabled{ false };
 	std::vector<POINT3> m_positionsMicrometer;	// [µm]		Positions to raster, relative to current start point
 	std::vector<POINT2> m_positionsPixel;		// [pix]	Positions to raster
 	bool m_showPositions{ true };
+
+	// Dashed yellow outline(s) of the area covered by the brightfield overview mosaic
+	// (one per disjoint group of active points, not one per tile), shown in the live
+	// view while the "Full grid (mosaic)" overview option is active.
+	std::vector<QCPItemRect*> m_overviewTileRects;
+	void updateOverviewTileOutlines();
 
 	CAMERA_DEVICE m_cameraType{ CAMERA_DEVICE::UEYE };
 	CAMERA_DEVICE m_cameraTypeTemporary = m_cameraType;
