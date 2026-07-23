@@ -11,6 +11,7 @@
 #include <map>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 using namespace std::filesystem;
 
@@ -39,8 +40,8 @@ bool isPointInPolygonUm(const POINT2& point, const std::vector<POINT2>& polygon)
  * Public definitions
  */
 
-Brillouin::Brillouin(QObject* parent, Acquisition* acquisition, Camera*& andor, ScanControl*& scanControl)
-	: AcquisitionMode(parent, acquisition, scanControl), m_andor(andor) {
+Brillouin::Brillouin(QObject* parent, Acquisition* acquisition, Camera*& andor, Camera*& brightfieldCamera, ScanControl*& scanControl)
+	: AcquisitionMode(parent, acquisition, scanControl), m_andor(andor), m_brightfieldCamera(brightfieldCamera) {
 	static QMetaObject::Connection connection = QWidget::connect(
 		this,
 		&Brillouin::s_scanOrderChanged,
@@ -120,6 +121,9 @@ void Brillouin::waitForNextRepetition() {
 		}
 
 		m_acquisition->newRepetition(ACQUISITION_MODE::BRILLOUIN);
+		if (m_settings.saveOverviewBrightfieldPerZ) {
+			m_acquisition->newRepetition(ACQUISITION_MODE::FLUORESCENCE);
+		}
 
 		setAcquisitionStatus(ACQUISITION_STATUS::STARTED);
 		acquire(m_acquisition->m_storage);
@@ -500,8 +504,9 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 		return 0.0;
 	}
 
-	auto getValue = [&](int x, int y) -> double {
-		const auto idx = (size_t)y * width + x;
+	auto getDisplayValue = [&](int x, int displayY) -> double {
+		const auto rawY = height - 1 - displayY;
+		const auto idx = (size_t)rawY * width + x;
 		if (m_settings.camera.readout.dataType == "unsigned short") {
 			const auto* data = reinterpret_cast<const unsigned short*>(image.data());
 			return data[idx];
@@ -515,49 +520,29 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 	};
 
 	std::vector<double> metrics;
-	auto appendMetric = [&](int roiLeft, int roiTop, int roiWidth, int roiHeight) {
+	auto appendMetric = [&](int roiLeft, int roiDisplayBottom, int roiWidth, int roiHeight) {
 		if (roiWidth <= 0 || roiHeight <= 0) {
 			return;
 		}
 
 		roiLeft = std::max(0, roiLeft);
-		roiTop = std::max(0, roiTop);
+		roiDisplayBottom = std::max(0, roiDisplayBottom);
 		roiWidth = std::min(roiWidth, width - roiLeft);
-		roiHeight = std::min(roiHeight, height - roiTop);
+		roiHeight = std::min(roiHeight, height - roiDisplayBottom);
 		if (roiWidth <= 0 || roiHeight <= 0) {
 			return;
 		}
 
-		double signalSum{ 0.0 };
-		int signalCount{ 0 };
-		for (int y = roiTop; y < roiTop + roiHeight; y++) {
+		auto maxSignal = -std::numeric_limits<double>::infinity();
+		for (int displayY = roiDisplayBottom; displayY < roiDisplayBottom + roiHeight; displayY++) {
 			for (int x = roiLeft; x < roiLeft + roiWidth; x++) {
-				signalSum += getValue(x, y);
-				signalCount++;
+				maxSignal = std::max(maxSignal, getDisplayValue(x, displayY));
 			}
 		}
-		const auto signalMean = signalCount > 0 ? signalSum / signalCount : 0.0;
-
-		// Local background: one-pixel ring around signal ROI, clipped to frame.
-		const int bgLeft = std::max(0, roiLeft - 1);
-		const int bgTop = std::max(0, roiTop - 1);
-		const int bgRight = std::min(width - 1, roiLeft + roiWidth);
-		const int bgBottom = std::min(height - 1, roiTop + roiHeight);
-
-		double bgSum{ 0.0 };
-		int bgCount{ 0 };
-		for (int y = bgTop; y <= bgBottom; y++) {
-			for (int x = bgLeft; x <= bgRight; x++) {
-				const bool insideSignal = (x >= roiLeft && x < roiLeft + roiWidth && y >= roiTop && y < roiTop + roiHeight);
-				if (insideSignal) {
-					continue;
-				}
-				bgSum += getValue(x, y);
-				bgCount++;
-			}
+		if (!std::isfinite(maxSignal)) {
+			return;
 		}
-		const auto bgMean = bgCount > 0 ? bgSum / bgCount : 0.0;
-		metrics.push_back(signalMean - bgMean);
+		metrics.push_back(maxSignal);
 	};
 
 	appendMetric(
@@ -607,19 +592,63 @@ bool Brillouin::runSurfacePreScan() {
 	std::vector<std::vector<double>> zSurface(ySamples.size(), std::vector<double>(xSamples.size(), 0.0));
 	std::vector<std::vector<bool>> zSurfaceValid(ySamples.size(), std::vector<bool>(xSamples.size(), false));
 	auto frame = std::vector<std::byte>(m_settings.camera.roi.bytesPerFrame);
+	const auto totalSurfaceSteps = std::max(1, (int)(xSamples.size() * ySamples.size() * zSamples.size()));
+	int completedSurfaceSteps = 0;
 
 	// Measure medium reference before scanning if requested.
 	if (m_settings.useMediumReference) {
+		bool referencePositionFound = false;
+		POINT3 referencePosition{ 0.0, 0.0, 0.0 };
+		for (gsl::index yi{ 0 }; yi < (gsl::index)ySamples.size() && !referencePositionFound; yi++) {
+			for (gsl::index xi{ 0 }; xi < (gsl::index)xSamples.size(); xi++) {
+				const POINT2 coarsePoint{ xSamples[xi], ySamples[yi] };
+				if (m_settings.useRoiMask && !isPointInPolygonUm(coarsePoint, m_settings.roiPolygonUm)) {
+					continue;
+				}
+				const auto zOrigin = m_settings.gridCoordinatesAbsolute
+					? m_settings.absoluteGridOriginUm.z
+					: m_startPosition.z;
+				referencePosition = m_settings.gridCoordinatesAbsolute
+					? POINT3{ xSamples[xi] + m_settings.absoluteGridOriginUm.x, ySamples[yi] + m_settings.absoluteGridOriginUm.y, zOrigin }
+					: POINT3{ m_startPosition.x + xSamples[xi], m_startPosition.y + ySamples[yi], zOrigin };
+				referencePositionFound = true;
+				break;
+			}
+		}
+		if (referencePositionFound) {
+			m_scanControl->setPosition(referencePosition);
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		}
 		const int refFrames = std::max(1, m_settings.mediumReferenceFrameCount);
 		double refSum = 0.0;
 		for (int i = 0; i < refFrames; i++) {
+			if (m_abort) {
+				return false;
+			}
 			m_andor->getImageForAcquisition(frame.data());
-			refSum += estimateFrameMetric(frame);
+			const auto refMetric = estimateFrameMetric(frame);
+			refSum += refMetric;
+			const auto refProgress = 5.0 * (double)(i + 1) / refFrames;
+			emit(s_surfaceScanProgress(
+				refProgress,
+				QString("Surface reference %1/%2: metric %3")
+					.arg(i + 1)
+					.arg(refFrames)
+					.arg(refMetric, 0, 'f', 3)
+			));
 		}
 		m_settings.mediumReferenceValue = refSum / refFrames;
+		emit(s_surfaceScanProgress(
+			5.0,
+			QString("Surface reference measured: %1")
+				.arg(m_settings.mediumReferenceValue, 0, 'f', 3)
+		));
 	}
 
 	const auto dropFraction = std::clamp(m_settings.surfaceDropFraction, 0.0, 0.99);
+	const auto referenceThreshold = (m_settings.useMediumReference && m_settings.mediumReferenceValue > 1e-12)
+		? (1.0 - dropFraction) * m_settings.mediumReferenceValue
+		: std::numeric_limits<double>::quiet_NaN();
 
 	for (gsl::index yi{ 0 }; yi < (gsl::index)ySamples.size(); yi++) {
 		for (gsl::index xi{ 0 }; xi < (gsl::index)xSamples.size(); xi++) {
@@ -627,13 +656,13 @@ bool Brillouin::runSurfacePreScan() {
 			if (m_settings.useRoiMask && !isPointInPolygonUm(coarsePoint, m_settings.roiPolygonUm)) {
 				continue;
 			}
-			std::vector<double> metrics(zSamples.size(), 0.0);
-			auto bestMetric = -std::numeric_limits<double>::infinity();
-			auto bestIndex = size_t{ 0 };
 			bool foundSurface = false;
 			size_t foundIndex = 0;
 
 			for (gsl::index zi{ 0 }; zi < (gsl::index)zSamples.size(); zi++) {
+				if (m_abort) {
+					return false;
+				}
 				const auto zRel = zSamples[zi];
 				const auto xyPosition = [&]() {
 					if (m_settings.gridCoordinatesAbsolute) {
@@ -653,41 +682,86 @@ bool Brillouin::runSurfacePreScan() {
 				std::this_thread::sleep_for(std::chrono::milliseconds(20));
 				m_andor->getImageForAcquisition(frame.data());
 				const auto metric = estimateFrameMetric(frame);
-				metrics[(size_t)zi] = metric;
-				if (metric > bestMetric) {
-					bestMetric = metric;
-					bestIndex = (size_t)zi;
-				}
 
-				// One-direction stop criterion: find first drop relative to medium reference.
-				if (m_settings.useMediumReference && m_settings.mediumReferenceValue > 1e-12) {
-					const auto thresholdAbs = (1.0 - dropFraction) * m_settings.mediumReferenceValue;
-					if (metric <= thresholdAbs) {
-						foundSurface = true;
-						foundIndex = (size_t)zi;
-						break;
+				completedSurfaceSteps++;
+				const auto progress = 5.0 + 95.0 * (double)completedSurfaceSteps / totalSurfaceSteps;
+				emit(s_surfaceScanProgress(
+					progress,
+					QString("Surface scan %1%: x %2/%3, y %4/%5, z %6/%7, metric %8, threshold %9")
+						.arg(progress, 0, 'f', 1)
+						.arg((int)xi + 1)
+						.arg((int)xSamples.size())
+						.arg((int)yi + 1)
+						.arg((int)ySamples.size())
+						.arg((int)zi + 1)
+						.arg((int)zSamples.size())
+						.arg(metric, 0, 'f', 3)
+						.arg(referenceThreshold, 0, 'f', 3)
+				));
+
+				// Stop as soon as the ROI metric has dropped enough from the measured
+				// medium reference, but require three consecutive below-threshold frames
+				// at the same z position to avoid accepting a single noisy drop.
+				auto referenceDrop = std::isfinite(referenceThreshold) && metric <= referenceThreshold;
+				if (referenceDrop) {
+					for (int confirmationFrame = 0; confirmationFrame < 2; confirmationFrame++) {
+						if (m_abort) {
+							return false;
+						}
+						m_andor->getImageForAcquisition(frame.data());
+						const auto confirmationMetric = estimateFrameMetric(frame);
+						const auto confirmationDrop = confirmationMetric <= referenceThreshold;
+						emit(s_surfaceScanProgress(
+							progress,
+							QString("Surface confirmation %1/2 at x %2/%3, y %4/%5, z step %6/%7: metric %8, threshold %9")
+								.arg(confirmationFrame + 1)
+								.arg((int)xi + 1)
+								.arg((int)xSamples.size())
+								.arg((int)yi + 1)
+								.arg((int)ySamples.size())
+								.arg((int)zi + 1)
+								.arg((int)zSamples.size())
+								.arg(confirmationMetric, 0, 'f', 3)
+								.arg(referenceThreshold, 0, 'f', 3)
+						));
+						if (!confirmationDrop) {
+							referenceDrop = false;
+							break;
+						}
 					}
+				}
+				if (referenceDrop) {
+					foundSurface = true;
+					foundIndex = (size_t)zi;
+					emit(s_surfaceScanProgress(
+						progress,
+						QString("Surface found at x %1/%2, y %3/%4, z step %5/%6: metric %7 <= threshold %8")
+							.arg((int)xi + 1)
+							.arg((int)xSamples.size())
+							.arg((int)yi + 1)
+							.arg((int)ySamples.size())
+							.arg((int)zi + 1)
+							.arg((int)zSamples.size())
+							.arg(metric, 0, 'f', 3)
+							.arg(referenceThreshold, 0, 'f', 3)
+					));
+					break;
 				}
 			}
 
-			// Prefer threshold crossing from high signal to low signal if possible,
-			// fallback to maximum metric position.
-			auto surfaceIndex = foundSurface ? foundIndex : bestIndex;
 			if (!foundSurface) {
-				const auto minMetric = *std::min_element(metrics.begin(), metrics.end());
-				const auto maxMetric = *std::max_element(metrics.begin(), metrics.end());
-				const auto denom = std::max(1e-12, maxMetric - minMetric);
-				const auto threshold = std::clamp(m_settings.surfaceMetricThreshold, 0.0, 1.0);
-				for (size_t zi = 0; zi < metrics.size(); zi++) {
-					const auto norm = (metrics[zi] - minMetric) / denom;
-					if (norm <= threshold) {
-						surfaceIndex = zi;
-						break;
-					}
-				}
+				emit(s_surfaceScanProgress(
+					5.0 + 95.0 * (double)completedSurfaceSteps / totalSurfaceSteps,
+					QString("No surface drop found at x %1/%2, y %3/%4")
+						.arg((int)xi + 1)
+						.arg((int)xSamples.size())
+						.arg((int)yi + 1)
+						.arg((int)ySamples.size())
+				));
+				continue;
 			}
 
-			zSurface[yi][xi] = zSamples[surfaceIndex];
+			zSurface[yi][xi] = zSamples[foundIndex];
 			zSurfaceValid[yi][xi] = true;
 		}
 	}
@@ -805,7 +879,132 @@ void Brillouin::applySurfaceFollowPlan() {
 		} else {
 			emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
 		}
+		emit(s_surfaceScanProgress(100.0, "Surface scan finished."));
 	}
+}
+
+POINT3 Brillouin::overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ) const {
+	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : m_startPosition;
+	const auto clampedZIndex = std::clamp(zIndex, 0, (int)directionsZ.size() - 1);
+
+	auto position = POINT3{
+		m_startPosition.x,
+		m_startPosition.y,
+		origin.z + directionsZ[clampedZIndex]
+	};
+
+	if (m_settings.useSurfaceFollow) {
+		auto bestDistance2 = std::numeric_limits<double>::infinity();
+		for (gsl::index ii{ 0 }; ii < (gsl::index)m_orderedIndices.size(); ii++) {
+			if (m_orderedIndices[ii].z == clampedZIndex) {
+				const auto dx = m_orderedPositions[ii].x - position.x;
+				const auto dy = m_orderedPositions[ii].y - position.y;
+				const auto distance2 = dx * dx + dy * dy;
+				if (distance2 < bestDistance2) {
+					bestDistance2 = distance2;
+					position.z = m_orderedPositions[ii].z;
+				}
+			}
+		}
+	}
+
+	return position;
+}
+
+template <typename T>
+void enqueueOverviewBrightfieldImage(
+	std::unique_ptr<StorageWrapper>& storage,
+	int imageNumber,
+	CAMERA_SETTINGS& cameraSettings,
+	const std::vector<std::byte>& image
+) {
+	auto date = QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc())
+		.toString(Qt::ISODateWithMs).toStdString();
+	int rankData{ 3 };
+	auto dimsData = new hsize_t[3]{ 1, (hsize_t)cameraSettings.roi.height_binned, (hsize_t)cameraSettings.roi.width_binned };
+	const auto pixelCount = (size_t)cameraSettings.roi.height_binned * (size_t)cameraSettings.roi.width_binned;
+	auto typedImage = std::vector<T>(pixelCount);
+	const auto bytesToCopy = std::min(image.size(), typedImage.size() * sizeof(T));
+	if (bytesToCopy > 0) {
+		std::memcpy(typedImage.data(), image.data(), bytesToCopy);
+	}
+	auto img = new FLUOIMAGE<T>(
+		imageNumber,
+		rankData,
+		dimsData,
+		date,
+		"Brightfield z overview",
+		typedImage,
+		cameraSettings.exposureTime,
+		cameraSettings.gain,
+		cameraSettings.roi
+	);
+
+	QMetaObject::invokeMethod(
+		storage.get(),
+		[&storage = storage, img]() { storage.get()->s_enqueuePayload(img); },
+		Qt::AutoConnection
+	);
+}
+
+void Brillouin::captureOverviewBrightfield(
+	std::unique_ptr <StorageWrapper>& storage,
+	int imageNumber,
+	int zIndex,
+	const POINT3& position
+) {
+	if (!m_settings.saveOverviewBrightfieldPerZ || !m_brightfieldCamera || !m_brightfieldCamera->getConnectionStatus()
+		|| !m_scanControl || m_abort) {
+		return;
+	}
+
+	m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
+	m_scanControl->setPosition(position);
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+	auto brightfieldSettings = m_brightfieldCamera->getSettings();
+	brightfieldSettings.exposureTime = 1e-3 * std::max(1, m_settings.overviewBrightfieldExposureMs);
+	brightfieldSettings.gain = m_settings.overviewBrightfieldGain;
+	brightfieldSettings.frameCount = 1;
+	brightfieldSettings.readout.triggerMode = L"Software";
+	brightfieldSettings.readout.cycleMode = L"Fixed";
+
+	m_brightfieldCamera->startAcquisition(brightfieldSettings);
+	brightfieldSettings = m_brightfieldCamera->getSettings();
+
+	if (brightfieldSettings.roi.bytesPerFrame <= 0) {
+		m_brightfieldCamera->stopAcquisition();
+		m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
+		emit(s_surfaceScanProgress(
+			100.0 * (double)(zIndex + 1) / std::max(1, m_settings.zSteps),
+			QString("Skipped brightfield overview for z slice %1/%2: invalid frame size")
+				.arg(zIndex + 1)
+				.arg(m_settings.zSteps)
+		));
+		return;
+	}
+
+	std::vector<std::byte> image(brightfieldSettings.roi.bytesPerFrame);
+	m_brightfieldCamera->getImageForAcquisition(image.data(), false);
+	m_brightfieldCamera->stopAcquisition();
+
+	auto queuedImage = false;
+	if (brightfieldSettings.readout.dataType == "unsigned short") {
+		enqueueOverviewBrightfieldImage<unsigned short>(storage, imageNumber, brightfieldSettings, image);
+		queuedImage = true;
+	} else if (brightfieldSettings.readout.dataType == "unsigned char") {
+		enqueueOverviewBrightfieldImage<unsigned char>(storage, imageNumber, brightfieldSettings, image);
+		queuedImage = true;
+	}
+
+	if (queuedImage) {
+		emit(s_surfaceScanProgress(
+			100.0 * (double)(zIndex + 1) / std::max(1, m_settings.zSteps),
+			QString("Saved brightfield overview for z slice %1/%2").arg(zIndex + 1).arg(m_settings.zSteps)
+		));
+	}
+
+	m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
 }
 
 std::string Brillouin::getRepetitionFilename() {
@@ -874,6 +1073,9 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	auto resolutionXout = storage->getResolution("x");
 
 	writeScaleCalibration(storage, ACQUISITION_MODE::BRILLOUIN);
+	if (m_settings.saveOverviewBrightfieldPerZ) {
+		writeScaleCalibration(storage, ACQUISITION_MODE::FLUORESCENCE);
+	}
 
 	/*
 	 * Update the positions vector
@@ -895,9 +1097,10 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		m_abort = true;
 		return;
 	}
-	auto positionsX = std::vector<double>(nrPositions);
-	auto positionsY = std::vector<double>(nrPositions);
-	auto positionsZ = std::vector<double>(nrPositions);
+	const auto gridPositionCount = m_settings.xSteps * m_settings.ySteps * m_settings.zSteps;
+	auto positionsX = std::vector<double>(gridPositionCount);
+	auto positionsY = std::vector<double>(gridPositionCount);
+	auto positionsZ = std::vector<double>(gridPositionCount);
 	auto posIndex{ 0 };
 	for (gsl::index ii{ 0 }; ii < m_settings.zSteps; ii++) {
 		for (gsl::index jj{ 0 }; jj < m_settings.xSteps; jj++) {
@@ -919,13 +1122,18 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	storage->setPositions("x", positionsX, rank, dims);
 	storage->setPositions("y", positionsY, rank, dims);
 	storage->setPositions("z", positionsZ, rank, dims);
+	const hsize_t originDims[1] = { 1 };
+	storage->setPositions("absolute-origin-x", std::vector<double>{ m_settings.absoluteGridOriginUm.x }, 1, originDims);
+	storage->setPositions("absolute-origin-y", std::vector<double>{ m_settings.absoluteGridOriginUm.y }, 1, originDims);
+	storage->setPositions("absolute-origin-z", std::vector<double>{ m_settings.absoluteGridOriginUm.z }, 1, originDims);
+	storage->setPositions("grid-coordinates-absolute", std::vector<double>{ m_settings.gridCoordinatesAbsolute ? 1.0 : 0.0 }, 1, originDims);
 
 	// Explicitly store which grid points were sampled to keep metadata consistent for sparse ROI scans.
-	auto sampledMask = std::vector<double>(nrPositions, 0.0);
+	auto sampledMask = std::vector<double>(gridPositionCount, 0.0);
 	for (gsl::index ll{ 0 }; ll < (gsl::index)m_orderedIndices.size(); ll++) {
 		const auto idx = m_orderedIndices[ll];
 		const auto flat = idx.z * (m_settings.xSteps * m_settings.ySteps) + idx.y * m_settings.xSteps + idx.x;
-		if (flat >= 0 && flat < nrPositions) {
+		if (flat >= 0 && flat < gridPositionCount) {
 			sampledMask[flat] = 1.0;
 		}
 	}
@@ -951,18 +1159,23 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	storage->setPositions("sampled-x", sampledX, sampledRank, sampledDims);
 	storage->setPositions("sampled-y", sampledY, sampledRank, sampledDims);
 	storage->setPositions("sampled-z", sampledZ, sampledRank, sampledDims);
-	delete[] dims;
 
-	bool zSafetyWarned{ false };
-	auto warnIfZUnsafe = [this, &zSafetyWarned](const POINT3& position) {
-		if (!m_settings.useSurfaceFollow || !m_settings.useMaxSafeZSafety || zSafetyWarned) {
-			return;
+	if (m_settings.saveOverviewBrightfieldPerZ) {
+		hsize_t overviewDims[1] = { (hsize_t)m_settings.zSteps };
+		auto overviewX = std::vector<double>(m_settings.zSteps);
+		auto overviewY = std::vector<double>(m_settings.zSteps);
+		auto overviewZ = std::vector<double>(m_settings.zSteps);
+		for (gsl::index ii{ 0 }; ii < m_settings.zSteps; ii++) {
+			const auto position = overviewBrightfieldPositionForZ((int)ii, directionsZ);
+			overviewX[ii] = position.x;
+			overviewY[ii] = position.y;
+			overviewZ[ii] = position.z;
 		}
-		if (position.z > m_settings.maxSafeZUm) {
-			zSafetyWarned = true;
-			emit(s_surfaceZSafetyWarning(position.z, m_settings.maxSafeZUm));
-		}
-	};
+		storage->setPositions("overview-brightfield-x", overviewX, sampledRank, overviewDims);
+		storage->setPositions("overview-brightfield-y", overviewY, sampledRank, overviewDims);
+		storage->setPositions("overview-brightfield-z", overviewZ, sampledRank, overviewDims);
+	}
+	delete[] dims;
 
 	// do actual measurement
 	QMetaObject::invokeMethod(
@@ -990,10 +1203,10 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 
 	auto calibrationTimer = QElapsedTimer{};
 	calibrationTimer.start();
+	auto overviewCapturedForZ = std::vector<bool>(m_settings.zSteps, false);
 
 	// move stage to first position, wait 50 ms for it to finish
 	if (m_scanControl) {
-		warnIfZUnsafe(m_orderedPositions[0]);
 		m_scanControl->setPosition(m_orderedPositions[0]);
 	} else {
 		m_abort = true;
@@ -1010,7 +1223,6 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 				calibrationTimer.start();
 				// After we calibrated, we move back to the current position
 				if (m_scanControl) {
-					warnIfZUnsafe(m_orderedPositions[ll]);
 					m_scanControl->setPosition(m_orderedPositions[ll]);
 				} else {
 					m_abort = true;
@@ -1022,6 +1234,22 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 
 		auto nextCalibration = int{ (int)(100 * (1e-3 * calibrationTimer.elapsed()) / (60 * m_settings.conCalibrationInterval)) };
 		emit(s_timeToCalibration(nextCalibration));
+
+		const auto zIndex = std::clamp(m_orderedIndices[ll].z, 0, std::max(0, m_settings.zSteps - 1));
+		if (m_settings.saveOverviewBrightfieldPerZ && !overviewCapturedForZ[zIndex]) {
+			overviewCapturedForZ[zIndex] = true;
+			captureOverviewBrightfield(storage, zIndex, zIndex, overviewBrightfieldPositionForZ(zIndex, directionsZ));
+			if (m_abort) {
+				return;
+			}
+			if (m_scanControl) {
+				m_scanControl->setPosition(m_orderedPositions[ll]);
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			} else {
+				m_abort = true;
+				return;
+			}
+		}
 
 		std::vector<std::byte> images(m_settings.camera.roi.bytesPerFrame * m_settings.camera.frameCount);
 
@@ -1119,7 +1347,6 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		// move stage to next position
 		if (ll < ((gsl::index)nrPositions - 1)) {
 			if (m_scanControl) {
-				warnIfZUnsafe(m_orderedPositions[ll + 1]);
 				m_scanControl->setPosition(m_orderedPositions[ll + 1]);
 			} else {
 				m_abort = true;

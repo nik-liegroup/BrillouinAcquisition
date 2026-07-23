@@ -146,12 +146,11 @@ private:
 	QSpinBox* m_preScanXYBinSpinBox{ nullptr };
 	QDoubleSpinBox* m_preScanZStepSpinBox{ nullptr };
 	QDoubleSpinBox* m_preScanZTravelSpinBox{ nullptr };
-	QCheckBox* m_useMaxSafeZCheckbox{ nullptr };
-	QDoubleSpinBox* m_maxSafeZSpinBox{ nullptr };
 	QDoubleSpinBox* m_surfaceDropSpinBox{ nullptr };
 	QCheckBox* m_useMediumReferenceCheckbox{ nullptr };
 	QSpinBox* m_mediumReferenceFrameCountSpinBox{ nullptr };
 	QCheckBox* m_absoluteGridCheckbox{ nullptr };
+	QCheckBox* m_saveOverviewBrightfieldPerZCheckbox{ nullptr };
 	QAbstractButton* m_editSpectralProxyRoiCheckbox{ nullptr };
 	QCPItemRect* m_spectralProxyRoiRectItem{ nullptr };
 	QCPItemRect* m_spectralProxyRoi2RectItem{ nullptr };
@@ -201,6 +200,8 @@ private:
 	POINT2 m_positionScanner{ -1, -1 };
 	bool m_locatePositionScanner{ false };
 	BrightfieldViewRotation m_brightfieldViewRotation{ BrightfieldViewRotation::Rot0 };
+	bool m_brightfieldMirrorHorizontal{ false };
+	bool m_brightfieldMirrorVertical{ false };
 	int m_brightfieldRawWidth{ 1 };
 	int m_brightfieldRawHeight{ 1 };
 
@@ -247,7 +248,7 @@ private:
 	Thread m_acquisitionThread;
 	Thread m_plottingThread;
 
-	Brillouin* m_Brillouin = new Brillouin(nullptr, m_acquisition, m_andor, m_scanControl);
+	Brillouin* m_Brillouin = new Brillouin(nullptr, m_acquisition, m_andor, m_brightfieldCamera, m_scanControl);
 	ODT* m_ODT{ nullptr };
 	Fluorescence* m_Fluorescence{ nullptr };
 	VoltageCalibration* m_voltageCalibration{ nullptr };
@@ -385,9 +386,10 @@ private slots:
 	int brightfieldDisplayWidth() const;
 	int brightfieldDisplayHeight() const;
 	bool isBrightfieldRotated90() const;
+	bool hasBrightfieldViewTransform() const;
 	QString brightfieldRotationText() const;
-	void updateBrightfieldRotationButton();
-	void applyBrightfieldRotationChanged();
+	void updateBrightfieldTransformButtons();
+	void applyBrightfieldViewTransformChanged();
 
 	void xAxisRangeChangedODT(const QCPRange& newRange);
 	void yAxisRangeChangedODT(const QCPRange& newRange);
@@ -439,9 +441,14 @@ private slots:
 	void showAcqPosition(POINT3, int);
 	void showPosition(POINT3);
 	void updateEstimatedAcquisitionTime();
-	double theoreticalMaxSurfaceFollowZ() const;
-	bool isSurfaceZSafetySatisfied(QString* reason = nullptr) const;
 	void updateBrillouinStartAvailability();
+	void refreshSpectralProxyRoiRects();
+	POINT3 gridOffsetToAbsoluteTarget(const POINT3& gridOffset, const POINT3& relativeOrigin) const;
+	POINT3 absoluteTargetToGridOffset(const POINT3& absoluteTarget, const POINT3& relativeOrigin) const;
+	POINT2 imagePlaneUmToGridOffset(const POINT2& imagePlaneUm) const;
+	POINT2 gridOffsetToImagePlaneUm(const POINT2& gridOffset) const;
+	void preservePhysicalGridForAbsoluteMode(bool enabled);
+	void updateAbsoluteGridStatus();
 	void setHomePositionBounds(BOUNDS);
 	void setCurrentPositionBounds(BOUNDS bounds);
 	void showCalibrationInterval(int);
@@ -451,6 +458,8 @@ private slots:
 	void showEnabledModes(ACQUISITION_MODE mode);
 	void showBrillouinStatus(ACQUISITION_STATUS state);
 	void showBrillouinProgress(double progress, int seconds);
+	void showSurfaceScanProgress(double progress, const QString& message);
+	void on_measureSpectralProxyRoiButton_clicked();
 	void showODTStatus(ACQUISITION_STATUS state);
 	void showODTProgress(double progress, int seconds);
 	void showFluorescenceStatus(ACQUISITION_STATUS state);
@@ -475,6 +484,8 @@ private slots:
 
 	void on_camera_displayMode_currentIndexChanged(const QString& text);
 	void on_brightfieldRotationButton_clicked();
+	void on_brightfieldMirrorHorizontalButton_clicked();
+	void on_brightfieldMirrorVerticalButton_clicked();
 	void on_setBackground_clicked();
 
 	void applyGradient(const PLOT_SETTINGS& plotSettings);

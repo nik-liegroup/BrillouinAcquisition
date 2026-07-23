@@ -75,8 +75,6 @@ struct BRILLOUIN_SETTINGS {
 			preScanZMax = settings.preScanZMax;
 			surfaceMetricThreshold = settings.surfaceMetricThreshold;
 			surfaceSmoothSigmaUm = settings.surfaceSmoothSigmaUm;
-			maxSafeZUm = settings.maxSafeZUm;
-			useMaxSafeZSafety = settings.useMaxSafeZSafety;
 			surfaceDropFraction = settings.surfaceDropFraction;
 			surfaceScanDirection = settings.surfaceScanDirection;
 			surfaceProxyRoiLeft = settings.surfaceProxyRoiLeft;
@@ -92,6 +90,9 @@ struct BRILLOUIN_SETTINGS {
 			mediumReferenceFrameCount = settings.mediumReferenceFrameCount;
 			gridCoordinatesAbsolute = settings.gridCoordinatesAbsolute;
 			absoluteGridOriginUm = settings.absoluteGridOriginUm;
+			saveOverviewBrightfieldPerZ = settings.saveOverviewBrightfieldPerZ;
+			overviewBrightfieldExposureMs = settings.overviewBrightfieldExposureMs;
+			overviewBrightfieldGain = settings.overviewBrightfieldGain;
 			camera = settings.camera;
 			return *this;
 		}
@@ -123,8 +124,6 @@ struct BRILLOUIN_SETTINGS {
 		double preScanZMax{ 30.0 };
 		double surfaceMetricThreshold{ 0.1 };
 		double surfaceSmoothSigmaUm{ 5.0 };
-		double maxSafeZUm{ 0.0 };
-		bool useMaxSafeZSafety{ true };
 		double surfaceDropFraction{ 0.6 };
 		int surfaceScanDirection{ 1 }; // +1 increasing z, -1 decreasing z
 		int surfaceProxyRoiLeft{ 0 };
@@ -140,6 +139,9 @@ struct BRILLOUIN_SETTINGS {
 		int mediumReferenceFrameCount{ 5 };
 		bool gridCoordinatesAbsolute{ false };
 		POINT3 absoluteGridOriginUm{ 0.0, 0.0, 0.0 };
+		bool saveOverviewBrightfieldPerZ{ false };
+		int overviewBrightfieldExposureMs{ 4 };
+		double overviewBrightfieldGain{ 0.0 };
 
 		// ROI parameters
 		const double& xMin{ m_xMin };
@@ -213,7 +215,7 @@ class Brillouin : public AcquisitionMode {
 	Q_OBJECT
 
 public:
-	Brillouin(QObject* parent, Acquisition* acquisition, Camera*& andor, ScanControl*& scanControl);
+	Brillouin(QObject* parent, Acquisition* acquisition, Camera*& andor, Camera*& brightfieldCamera, ScanControl*& scanControl);
 	~Brillouin();
 
 	BRILLOUIN_SETTINGS& settings{ m_settings };
@@ -259,12 +261,15 @@ private:
 	void applySurfaceFollowPlan();
 	double estimateFrameMetric(const std::vector<std::byte>& image) const;
 	bool runSurfacePreScan();
+	POINT3 overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ) const;
+	void captureOverviewBrightfield(std::unique_ptr <StorageWrapper>& storage, int imageNumber, int zIndex, const POINT3& position);
 
 	std::string getRepetitionFilename();
 
 	BRILLOUIN_SETTINGS m_settings;
 	SCAN_ORDER m_scanOrder;
 	Camera*& m_andor;
+	Camera*& m_brightfieldCamera;
 	bool m_running{ false };				// is acquisition currently running
 	POINT3 m_startPosition{ 0, 0, 0 };
 
@@ -293,7 +298,7 @@ signals:
 	void s_calibrationRunning(bool);	// is calibration running
 	void s_scanOrderChanged(SCAN_ORDER);
 	void s_orderedPositionsChanged(std::vector<POINT3>);
-	void s_surfaceZSafetyWarning(double plannedZ, double maxSafeZ);
+	void s_surfaceScanProgress(double progress, QString message);
 };
 
 #endif //BRILLOUIN_H
