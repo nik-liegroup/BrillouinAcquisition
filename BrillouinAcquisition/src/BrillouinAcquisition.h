@@ -225,7 +225,26 @@ private:
 	bool m_roiMaskAutoDisabled{ false };
 	std::vector<POINT3> m_positionsMicrometer;	// [µm]		Positions to raster, relative to current start point
 	std::vector<POINT2> m_positionsPixel;		// [pix]	Positions to raster
+	// Grid points the ROI mask excludes from the actual scan - preview-only (see
+	// ScanPlannerOutput::excludedPositionsAbsolute/Relative), shown as the red "outside ROI"
+	// markers. Pixel positions are not cached alongside these like m_positionsPixel is -
+	// they're re-derived from this list on every update_AOI_preview() call instead, since a
+	// stale cache here is exactly what let the ROI overlay and the markers drift apart before.
+	std::vector<POINT3> m_excludedPositionsMicrometer;
 	bool m_showPositions{ true };
+
+	// Snapshot of ScanControl::getPositionOffset(m_currentGridOffsetIsAbsolute), delivered via
+	// ScanControl::s_gridOffsetChanged() atomically with the AOI pixel positions it was used
+	// to compute. ScanControl lives on a different thread, so a direct/live call to
+	// getPositionOffset() from here can race against that thread changing measurement mode
+	// (e.g. enableMeasurementMode(false) right at the end of an acquisition) between when the
+	// grid's own already-queued position signal was emitted and when this thread gets around
+	// to processing it - which is exactly what let the grid and the ROI polygon (each
+	// projected via a differently-timed live fetch) disagree in relative grid mode. Use this
+	// cached value instead of a fresh getPositionOffset() call so every overlay that needs an
+	// offset agrees with whatever the grid itself is currently showing.
+	POINT2 m_currentGridOffsetUm{ 0, 0 };
+	bool m_currentGridOffsetIsAbsolute{ false };
 
 	// Dashed yellow outline(s) of the area covered by the brightfield overview mosaic
 	// (one per disjoint group of active points, not one per tile), shown in the live
@@ -466,7 +485,14 @@ private slots:
 	POINT3 gridOffsetToAbsoluteTarget(const POINT3& gridOffset, const POINT3& relativeOrigin) const;
 	POINT3 absoluteTargetToGridOffset(const POINT3& absoluteTarget, const POINT3& relativeOrigin) const;
 	POINT2 imagePlaneUmToGridOffset(const POINT2& imagePlaneUm) const;
+	POINT2 imagePlaneUmToGridOffset(const POINT2& imagePlaneUm, bool gridAbsolute) const;
 	POINT2 gridOffsetToImagePlaneUm(const POINT2& gridOffset) const;
+	POINT2 gridOffsetToImagePlaneUm(const POINT2& gridOffset, bool gridAbsolute) const;
+	// Returns m_currentGridOffsetUm if it was cached for the requested mode, otherwise falls
+	// back to a live ScanControl::getPositionOffset() call (needed e.g. when
+	// preservePhysicalGridForAbsoluteMode() asks for the *other* mode's offset while the
+	// grid-coordinates-absolute setting itself is being toggled).
+	POINT2 currentGridOffset(bool gridAbsolute) const;
 	void preservePhysicalGridForAbsoluteMode(bool enabled);
 	void updateAbsoluteGridStatus();
 	void setHomePositionBounds(BOUNDS);
@@ -572,7 +598,9 @@ private slots:
 	void on_stepsZ_valueChanged(int);
 	void on_showOverlay_stateChanged(int);
 	void AOI_changed(const std::vector<POINT3>& orderedPositions);
+	void excludedAOI_changed(const std::vector<POINT3>& excludedPositions);
 	void on_scaleCalibrationChanged(const std::vector<POINT2>& positions);
+	void on_gridOffsetChanged(POINT2 offsetUm, bool positionIsAbsolute);
 	void update_AOI_preview();
 	void updateRoiPolygonPreview();
 

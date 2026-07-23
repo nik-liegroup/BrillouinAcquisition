@@ -91,6 +91,10 @@ struct BRILLOUIN_SETTINGS {
 			surfaceProxyRoi2Top = settings.surfaceProxyRoi2Top;
 			surfaceProxyRoi2Width = settings.surfaceProxyRoi2Width;
 			surfaceProxyRoi2Height = settings.surfaceProxyRoi2Height;
+			surfaceProxyRoiFrameWidth = settings.surfaceProxyRoiFrameWidth;
+			surfaceProxyRoiFrameHeight = settings.surfaceProxyRoiFrameHeight;
+			surfaceProxyRoi2FrameWidth = settings.surfaceProxyRoi2FrameWidth;
+			surfaceProxyRoi2FrameHeight = settings.surfaceProxyRoi2FrameHeight;
 			mediumReferenceValue = settings.mediumReferenceValue;
 			mediumReferenceFrameCount = settings.mediumReferenceFrameCount;
 			gridCoordinatesAbsolute = settings.gridCoordinatesAbsolute;
@@ -146,6 +150,17 @@ struct BRILLOUIN_SETTINGS {
 		int surfaceProxyRoi2Top{ 0 };
 		int surfaceProxyRoi2Width{ 0 };
 		int surfaceProxyRoi2Height{ 0 };
+		// Frame size the two ROIs above were drawn against. If the camera's actual frame
+		// size at measurement time (surface pre-scan, or a live preview reconfigured since)
+		// differs - e.g. a different ROI/binning was active - the stored rectangles are
+		// rescaled proportionally against these before use, instead of being applied as raw,
+		// now-mismatched pixel coordinates (which could clamp them to nothing and silently
+		// fall back to measuring the whole frame). 0 means "never drawn yet", in which case
+		// no rescaling is attempted.
+		int surfaceProxyRoiFrameWidth{ 0 };
+		int surfaceProxyRoiFrameHeight{ 0 };
+		int surfaceProxyRoi2FrameWidth{ 0 };
+		int surfaceProxyRoi2FrameHeight{ 0 };
 		// Medium reference is always measured before a surface scan - there is no other
 		// threshold source, so this isn't user-optional.
 		double mediumReferenceValue{ 0.0 };
@@ -355,6 +370,9 @@ private:
 	std::vector<POINT3> m_orderedPositionsRelative;	// The positions to measure relative to start position
 	std::vector<INDEX3> m_orderedIndices;	// The associated indices
 	std::vector<bool> m_calibrationAllowed;	// If a calibration is allowed for this position
+	// Grid points the ROI mask excluded from the plan - preview-only, see ScanPlannerOutput.
+	std::vector<POINT3> m_excludedPositions;
+	std::vector<POINT3> m_excludedPositionsRelative;
 
 private slots:
 	void acquire(std::unique_ptr <StorageWrapper>& storage) override;
@@ -368,6 +386,7 @@ signals:
 	void s_calibrationRunning(bool);	// is calibration running
 	void s_scanOrderChanged(SCAN_ORDER);
 	void s_orderedPositionsChanged(std::vector<POINT3>);
+	void s_excludedPositionsChanged(std::vector<POINT3>);
 	void s_surfaceScanProgress(double progress, QString message);
 };
 

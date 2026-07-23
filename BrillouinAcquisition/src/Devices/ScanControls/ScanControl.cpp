@@ -34,7 +34,13 @@ void ScanControl::setPositionCompensated(POINT3 position) {
 	// scanners do not need (and would just lose time to) this compensation.
 	if (supportsCapability(Capabilities::TranslationStage)) {
 		constexpr auto hysteresisCompensation{ 10.0 };	// [µm] distance for compensation of the stage hysteresis
-		constexpr auto epsilon{ 1e-6 };				// [µm] axes closer than this are considered unchanged
+		// getPosition() below re-queries the real hardware controller, not a cached software
+		// value, so its readback carries genuine encoder/COM round-trip noise - a picometer-
+		// scale epsilon never matches and would spuriously re-approach on every call, even
+		// when the xy target is identical to the previous one (e.g. repeated z-only moves
+		// within a surface-scan column). 0.5 µm is comfortably above that noise floor and
+		// comfortably below any real intended xy step.
+		constexpr auto epsilon{ 0.5 };					// [µm] axes closer than this are considered unchanged
 		const auto current = getPosition();
 		// To prevent problems with the hysteresis of the stage, we always approach
 		// the desired point coming from lower x/y values, just like the scale calibration does.
@@ -336,21 +342,41 @@ std::vector<POINT2> ScanControl::getPositionsPix(const std::vector<POINT3>& posi
 };
 
 POINT2 ScanControl::getPositionPix(POINT3 positionMicrometer, bool positionIsAbsolute) {
-	if (positionIsAbsolute || m_measurementMode) {
-		getPosition(PositionType::STAGE);
-	}
+	const auto offset = getPositionOffset(positionIsAbsolute);
+	return microMeterToPix(POINT2{ positionMicrometer.x, positionMicrometer.y } + offset);
+}
 
-	// In normal mode, the positions are shown relative to the scanner position.
+POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
+	// This is the mechanism from commit 0c70d11: the grid itself pans with the current
+	// stage position, so that whichever point is currently being measured always lands at
+	// the same fixed screen pixel - coinciding with the laser marker, which is a static
+	// calibration reference (see announcePositionScanner()) and does NOT itself track the
+	// stage. What looks like "the marker moving through the grid" is actually the grid
+	// sliding past a fixed marker.
+	//
+	// In normal (live-preview) mode, the positions are shown relative to the scanner
+	// position, so they track wherever the laser currently points within the FOV.
 	auto offset = m_positionScanner;
 	if (positionIsAbsolute) {
+		// Absolute positions are stored as the raw target stage+scanner position directly
+		// (absoluteGridOriginUm + gridOffset, see gridOffsetToAbsoluteTarget()), so the
+		// scanner contribution is already baked into the stored value itself - subtracting
+		// it again here would double-count it and shift the whole grid by that amount.
+		// Only the stage position (which is what actually changes as the grid is scanned)
+		// needs to be undone, exactly like the measurement-mode branch below.
 		offset = POINT2{} - m_positionStage;
 	}
 	// In measurement mode, the positions are shown relative to the start position.
 	else if (m_measurementMode) {
+		// m_startPosition is captured as getPosition(BOTH) (stage + scanner) in
+		// enableMeasurementMode(), but the scanner term cancels exactly the same way as
+		// above - only stage needs to be subtracted here. This is the literal formula from
+		// commit 0c70d11; adding a "- m_positionScanner" term here (as a previous revision
+		// of this function did) shifts the whole grid by the scanner offset instead of
+		// leaving it centered on the marker.
 		offset = m_startPosition - m_positionStage;
 	}
-
-	return microMeterToPix(POINT2{ positionMicrometer.x, positionMicrometer.y } + offset);
+	return offset;
 }
 
 /*
@@ -416,29 +442,35 @@ void ScanControl::calculateCurrentPositionBounds(POINT3 currentPosition) {
 }
 
 /*
- * This functions announces the updated AOI positions if necessary.
- * We check if the stage or scanner position has changed since the last announcement
- * and announce new positions under these conditions:
- *	- if the stage position has changed and a scan is currently running
- *	- if the scanner position has changed and no scan is running
- * (the AOI positions are static with respect to the laser focus during preview, and
- * static with respect to the sample during scanning).
+ * Announces updated marker positions if necessary.
+ *
+ * The AOI markers (crosses/ROI) redraw whenever stage or scanner changes: live-preview mode
+ * tracks the scanner, absolute and measurement mode track stage+scanner combined (see
+ * getPositionOffset()) - in every mode the grid pans so that whichever point is currently
+ * being measured lands at the same fixed screen pixel (see commit 0c70d11, the original
+ * version of this mechanism, and announcePositionScanner() below for the marker it lands on).
  */
 void ScanControl::announcePositions() {
-	// Measurement mode and stage position didn't change significantly --> do nothing
-	if ((m_measurementMode || m_AOI_positionsAbsolute) && abs(m_positionStageOld - m_positionStage) < 1e-6) return;
-	// Preview mode and scanner position didn't change significantly --> do nothing
-	if (!m_measurementMode && !m_AOI_positionsAbsolute && abs(m_positionScannerOld - m_positionScanner) < 1e-6) return;
+	const auto stageChanged = abs(m_positionStageOld - m_positionStage) >= 1e-6;
+	const auto scannerChanged = abs(m_positionScannerOld - m_positionScanner) >= 1e-6;
+	if (!stageChanged && !scannerChanged) {
+		return;
+	}
 
-	// Set new positions if they have significantly changed
-	m_positionScannerOld = m_positionScanner;
 	m_positionStageOld = m_positionStage;
+	m_positionScannerOld = m_positionScanner;
 
+	// Emitted first so a queued receiver processes the offset snapshot before the pixel
+	// positions that were computed from the exact same offset (see s_gridOffsetChanged()).
+	emit(s_gridOffsetChanged(getPositionOffset(m_AOI_positionsAbsolute), m_AOI_positionsAbsolute));
 	emit(s_scaleCalibrationChanged(convertPositionsToPix()));
 }
 
 void ScanControl::announcePositionScanner() {
-	auto positionScannerPix = microMeterToPix(m_positionScanner);
+	// A static calibration reference (see locatePositionScanner()), not something that
+	// tracks the stage - the grid itself is what pans past this fixed point during a scan
+	// (see getPositionOffset()/announcePositions()).
+	const auto positionScannerPix = microMeterToPix(m_positionScanner);
 	emit(s_positionScannerChanged(positionScannerPix));
 }
 
@@ -455,20 +487,7 @@ void ScanControl::registerCapability(Capabilities capability) {
 
 std::vector<POINT2> ScanControl::convertPositionsToPix() {
 	auto positionsPix = std::vector<POINT2>(m_AOI_positions.size());
-
-	if (m_AOI_positionsAbsolute || m_measurementMode) {
-		getPosition(PositionType::STAGE);
-	}
-
-	// In normal mode, the positions are shown relative to the scanner position.
-	auto offset = m_positionScanner;
-	if (m_AOI_positionsAbsolute) {
-		offset = POINT2{} - m_positionStage;
-	}
-	// In measurement mode, the positions are shown relative to the start position.
-	else if (this->m_measurementMode) {
-		offset = this->m_startPosition - m_positionStage;
-	}
+	const auto offset = getPositionOffset(m_AOI_positionsAbsolute);
 
 	std::transform(m_AOI_positions.begin(), m_AOI_positions.end(), positionsPix.begin(),
 		[this, offset](POINT3 point) {

@@ -106,9 +106,10 @@ void NIDAQ::setPosition(POINT2 position) {
 	// Set the scan position
 	applyPosition();
 
-	// Announce the updated positions
-	announcePositions();
-	announcePositionScanner();
+	// Announce the updated positions - announcePosition() also updates the numeric position
+	// readout (positionX/Y/Z), not just the AOI markers, and already calls
+	// announcePositions() (which itself calls announcePositionScanner()) internally.
+	announcePosition();
 }
 
 void NIDAQ::setPosition(POINT3 position) {

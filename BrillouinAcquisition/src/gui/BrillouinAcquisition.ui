@@ -1555,13 +1555,13 @@ QTabBar::tab:!selected {
                       <x>0</x>
                       <y>0</y>
                      <width>280</width>
-                     <height>1100</height>
+                     <height>1275</height>
                      </rect>
                     </property>
                     <property name="minimumSize">
                      <size>
                       <width>280</width>
-                      <height>1100</height>
+                      <height>1275</height>
                      </size>
                     </property>
                     <widget class="QGroupBox" name="acquisitionAOI">
@@ -1570,7 +1570,7 @@ QTabBar::tab:!selected {
                       <x>8</x>
                       <y>28</y>
                       <width>264</width>
-                       <height>650</height>
+                       <height>825</height>
                       </rect>
                      </property>
                      <property name="title">
@@ -2113,7 +2113,7 @@ QTabBar::tab:!selected {
                        <x>8</x>
                        <y>224</y>
                        <width>248</width>
-                       <height>450</height>
+                       <height>590</height>
                       </rect>
                      </property>
                      <layout class="QGridLayout" name="advancedPlanningGrid">
@@ -2248,13 +2248,13 @@ QTabBar::tab:!selected {
                         <property name="minimumSize">
                          <size>
                           <width>0</width>
-                          <height>372</height>
+                          <height>440</height>
                          </size>
                         </property>
                         <property name="maximumSize">
                          <size>
                           <width>16777215</width>
-                          <height>372</height>
+                          <height>440</height>
                          </size>
                         </property>
                         <property name="title">
@@ -2557,7 +2557,7 @@ QTabBar::tab:!selected {
                      <property name="geometry">
                        <rect>
                         <x>8</x>
-                       <y>792</y>
+                       <y>967</y>
                         <width>264</width>
                         <height>137</height>
                       </rect>
@@ -2800,7 +2800,7 @@ QTabBar::tab:!selected {
                     <property name="geometry">
                       <rect>
                        <x>8</x>
-                       <y>935</y>
+                       <y>1110</y>
                        <width>264</width>
                        <height>137</height>
                       </rect>
@@ -2994,7 +2994,7 @@ border: none;</string>
                      <property name="geometry">
                        <rect>
                         <x>8</x>
-                       <y>697</y>
+                       <y>872</y>
                         <width>264</width>
                         <height>89</height>
                       </rect>

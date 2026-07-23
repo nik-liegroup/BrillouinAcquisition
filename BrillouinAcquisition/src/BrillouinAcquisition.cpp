@@ -248,6 +248,12 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		this,
 		[this](std::vector<POINT3> orderedPositions) { AOI_changed(orderedPositions); }
 	);
+	connection = QWidget::connect(
+		m_Brillouin,
+		&Brillouin::s_excludedPositionsChanged,
+		this,
+		[this](std::vector<POINT3> excludedPositions) { excludedAOI_changed(excludedPositions); }
+	);
 
 	m_Brillouin->determineScanOrder();
 
@@ -573,11 +579,17 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				m_Brillouin->settings.surfaceProxyRoi2Top = displayRoiTop;
 				m_Brillouin->settings.surfaceProxyRoi2Width = clampedRight - clampedLeft + 1;
 				m_Brillouin->settings.surfaceProxyRoi2Height = displayRoiHeight;
+				// Recorded so this rectangle can be rescaled if the frame size at
+				// measurement time turns out to differ - see estimateFrameMetric().
+				m_Brillouin->settings.surfaceProxyRoi2FrameWidth = frameW;
+				m_Brillouin->settings.surfaceProxyRoi2FrameHeight = frameH;
 			} else {
 				m_Brillouin->settings.surfaceProxyRoiLeft = clampedLeft;
 				m_Brillouin->settings.surfaceProxyRoiTop = displayRoiTop;
 				m_Brillouin->settings.surfaceProxyRoiWidth = clampedRight - clampedLeft + 1;
 				m_Brillouin->settings.surfaceProxyRoiHeight = displayRoiHeight;
+				m_Brillouin->settings.surfaceProxyRoiFrameWidth = frameW;
+				m_Brillouin->settings.surfaceProxyRoiFrameHeight = frameH;
 			}
 
 			updateSpectralProxyRoiRect(m_spectralProxyActiveRoiIndex);
@@ -1131,10 +1143,12 @@ QCPItemRect* BrillouinAcquisition::ensureSpectralProxyRoiRect(int index) {
 
 void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	const auto& settings = m_Brillouin->settings;
-	const auto left = index == 1 ? settings.surfaceProxyRoi2Left : settings.surfaceProxyRoiLeft;
-	const auto top = index == 1 ? settings.surfaceProxyRoi2Top : settings.surfaceProxyRoiTop;
-	const auto width = index == 1 ? settings.surfaceProxyRoi2Width : settings.surfaceProxyRoiWidth;
-	const auto height = index == 1 ? settings.surfaceProxyRoi2Height : settings.surfaceProxyRoiHeight;
+	auto left = index == 1 ? settings.surfaceProxyRoi2Left : settings.surfaceProxyRoiLeft;
+	auto top = index == 1 ? settings.surfaceProxyRoi2Top : settings.surfaceProxyRoiTop;
+	auto width = index == 1 ? settings.surfaceProxyRoi2Width : settings.surfaceProxyRoiWidth;
+	auto height = index == 1 ? settings.surfaceProxyRoi2Height : settings.surfaceProxyRoiHeight;
+	const auto refW = index == 1 ? settings.surfaceProxyRoi2FrameWidth : settings.surfaceProxyRoiFrameWidth;
+	const auto refH = index == 1 ? settings.surfaceProxyRoi2FrameHeight : settings.surfaceProxyRoiFrameHeight;
 	auto** rectItem = index == 1 ? &m_spectralProxyRoi2RectItem : &m_spectralProxyRoiRectItem;
 
 	if (width <= 0 || height <= 0) {
@@ -1149,6 +1163,20 @@ void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	auto* mapData = m_BrillouinPlot.colorMap ? m_BrillouinPlot.colorMap->data() : nullptr;
 	const int frameW = mapData ? std::max(1, mapData->keySize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.width_binned);
 	const int frameH = mapData ? std::max(1, mapData->valueSize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.height_binned);
+	// Rescale onto the currently displayed frame if it differs from whatever frame this ROI
+	// was drawn against, so the visible rectangle never silently drifts off-screen or
+	// shrinks to nothing after a camera ROI/binning change - see estimateFrameMetric() for
+	// why the actual measurement does the same.
+	if (refW > 0 && refW != frameW) {
+		const auto scaleX = (double)frameW / refW;
+		left = (int)std::lround(left * scaleX);
+		width = (int)std::lround(width * scaleX);
+	}
+	if (refH > 0 && refH != frameH) {
+		const auto scaleY = (double)frameH / refH;
+		top = (int)std::lround(top * scaleY);
+		height = (int)std::lround(height * scaleY);
+	}
 	const int displayLeft = std::clamp(left, 0, frameW - 1);
 	const int displayRight = std::clamp(left + width - 1, displayLeft, frameW - 1);
 	const int displayBottom = std::clamp(top, 0, frameH - 1);
@@ -1186,6 +1214,10 @@ void BrillouinAcquisition::clearSpectralProxyRois() {
 	m_Brillouin->settings.surfaceProxyRoi2Top = 0;
 	m_Brillouin->settings.surfaceProxyRoi2Width = 0;
 	m_Brillouin->settings.surfaceProxyRoi2Height = 0;
+	m_Brillouin->settings.surfaceProxyRoiFrameWidth = 0;
+	m_Brillouin->settings.surfaceProxyRoiFrameHeight = 0;
+	m_Brillouin->settings.surfaceProxyRoi2FrameWidth = 0;
+	m_Brillouin->settings.surfaceProxyRoi2FrameHeight = 0;
 	updateSpectralProxyRoiRect(0);
 	updateSpectralProxyRoiRect(1);
 	m_spectralProxyNextRoiIndex = 0;
@@ -1239,29 +1271,63 @@ POINT3 BrillouinAcquisition::absoluteTargetToGridOffset(const POINT3& absoluteTa
 	};
 }
 
+POINT2 BrillouinAcquisition::currentGridOffset(bool gridAbsolute) const {
+	if (gridAbsolute == m_currentGridOffsetIsAbsolute) {
+		return m_currentGridOffsetUm;
+	}
+	// Cached snapshot is for the other mode (or none has arrived yet) - fall back to a live
+	// fetch. Only reachable from preservePhysicalGridForAbsoluteMode()'s round-trip through
+	// the mode that's being switched away from, not from the ordinary per-frame overlay
+	// redraw path, so the small race window here doesn't reproduce the bug this was fixed for.
+	if (!m_scanControl) {
+		return POINT2{};
+	}
+	return m_scanControl->getPositionOffset(gridAbsolute);
+}
+
 POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm) const {
-	if (!m_scanControl || !m_Brillouin->settings.gridCoordinatesAbsolute) {
+	return imagePlaneUmToGridOffset(imagePlaneUm, m_Brillouin->settings.gridCoordinatesAbsolute);
+}
+
+// gridAbsolute is taken explicitly (rather than always read from the current settings) so
+// preservePhysicalGridForAbsoluteMode() can convert through the OLD mode's convention and
+// back through the NEW one when the grid-coordinates-absolute setting itself is what's
+// changing - it must not silently use "current settings" for both directions of that
+// conversion, or it re-derives the exact kind of offset mismatch this was fixed for.
+POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm, bool gridAbsolute) const {
+	if (!m_scanControl) {
 		return imagePlaneUm;
 	}
-	// Use the same (stage + scanner) position convention as getHomePosition() /
-	// absoluteGridOriginUm and setPosition(), otherwise a non-zero scanner offset
-	// introduces a constant error between where a point is drawn and where it is moved to.
-	const auto currentPosition = m_scanControl->getPosition();
+	// roiPolygonUm is stored in the exact same grid-offset frame as the measurement grid
+	// itself (ScanPlanner tests it directly against the pre-origin grid position, see
+	// ScanPlanner::isPointInPolygon()). The AOI markers reach that same frame via
+	// ScanControl::getPositionOffset() (absolute mode also adds absoluteGridOriginUm first,
+	// since ScanPlanner's absolute positions have the origin baked in) - reusing that exact
+	// conversion, instead of re-deriving it here, is what keeps the ROI overlay glued to the
+	// markers in every grid mode (this used to be a no-op for non-absolute grids, which is
+	// why the polygon stayed put while the markers tracked the live scanner offset).
+	const auto origin = gridAbsolute ? m_Brillouin->settings.absoluteGridOriginUm : POINT3{};
+	const auto offset = currentGridOffset(gridAbsolute);
 	return POINT2{
-		currentPosition.x + imagePlaneUm.x - m_Brillouin->settings.absoluteGridOriginUm.x,
-		currentPosition.y + imagePlaneUm.y - m_Brillouin->settings.absoluteGridOriginUm.y
+		imagePlaneUm.x - offset.x - origin.x,
+		imagePlaneUm.y - offset.y - origin.y
 	};
 }
 
 POINT2 BrillouinAcquisition::gridOffsetToImagePlaneUm(const POINT2& gridOffset) const {
-	if (!m_scanControl || !m_Brillouin->settings.gridCoordinatesAbsolute) {
+	return gridOffsetToImagePlaneUm(gridOffset, m_Brillouin->settings.gridCoordinatesAbsolute);
+}
+
+POINT2 BrillouinAcquisition::gridOffsetToImagePlaneUm(const POINT2& gridOffset, bool gridAbsolute) const {
+	if (!m_scanControl) {
 		return gridOffset;
 	}
-	// See imagePlaneUmToGridOffset() for why this must match its (stage + scanner) convention.
-	const auto currentPosition = m_scanControl->getPosition();
+	// See imagePlaneUmToGridOffset() for why this must match ScanControl's own convention.
+	const auto origin = gridAbsolute ? m_Brillouin->settings.absoluteGridOriginUm : POINT3{};
+	const auto offset = currentGridOffset(gridAbsolute);
 	return POINT2{
-		m_Brillouin->settings.absoluteGridOriginUm.x + gridOffset.x - currentPosition.x,
-		m_Brillouin->settings.absoluteGridOriginUm.y + gridOffset.y - currentPosition.y
+		origin.x + gridOffset.x + offset.x,
+		origin.y + gridOffset.y + offset.y
 	};
 }
 
@@ -1270,44 +1336,45 @@ void BrillouinAcquisition::preservePhysicalGridForAbsoluteMode(bool enabled) {
 		return;
 	}
 
-	const auto oldRelativeOrigin = m_scanControl->getPosition();
 	const auto oldAbsoluteMode = m_Brillouin->settings.gridCoordinatesAbsolute;
 	const auto oldAbsoluteOrigin = m_Brillouin->settings.absoluteGridOriginUm;
+	// Z has no scanner/stage split - getPosition().z is always just the focus position -
+	// so the plain origin-difference used below is not subject to the X/Y mismatch this
+	// function used to have and is kept as its own, simpler path.
+	const auto currentFocus = m_scanControl->getPosition().z;
 	if (enabled) {
 		m_Brillouin->settings.absoluteGridOriginUm = m_scanControl->getHomePosition();
 	}
 
-	auto oldOffsetToAbsolute = [&](const POINT3& gridOffset) {
-		const auto origin = oldAbsoluteMode ? oldAbsoluteOrigin : oldRelativeOrigin;
-		return POINT3{ origin.x + gridOffset.x, origin.y + gridOffset.y, origin.z + gridOffset.z };
+	// X/Y: round-trip each stored point through gridOffsetToImagePlaneUm()/
+	// imagePlaneUmToGridOffset() - the exact functions the grid and the ROI polygon are
+	// actually drawn with - instead of re-deriving the offset a third time. That guarantees
+	// whatever currently renders on screen is preserved exactly, in both directions, because
+	// switching modes can no longer disagree with what put it there in the first place.
+	auto convertXY = [&](const POINT2& gridOffset) {
+		const auto imagePlaneUm = gridOffsetToImagePlaneUm(gridOffset, oldAbsoluteMode);
+		return imagePlaneUmToGridOffset(imagePlaneUm, enabled);
 	};
-	auto absoluteToNewOffset = [&](const POINT3& absoluteTarget) {
-		const auto origin = enabled ? m_Brillouin->settings.absoluteGridOriginUm : oldRelativeOrigin;
-		return POINT3{ absoluteTarget.x - origin.x, absoluteTarget.y - origin.y, absoluteTarget.z - origin.z };
+	auto convertZ = [&](double gridOffsetZ) {
+		const auto oldOriginZ = oldAbsoluteMode ? oldAbsoluteOrigin.z : currentFocus;
+		const auto newOriginZ = enabled ? m_Brillouin->settings.absoluteGridOriginUm.z : currentFocus;
+		return (oldOriginZ + gridOffsetZ) - newOriginZ;
 	};
 
-	const auto newMin = absoluteToNewOffset(oldOffsetToAbsolute(POINT3{
-		m_Brillouin->settings.xMin,
-		m_Brillouin->settings.yMin,
-		m_Brillouin->settings.zMin
-	}));
-	const auto newMax = absoluteToNewOffset(oldOffsetToAbsolute(POINT3{
-		m_Brillouin->settings.xMax,
-		m_Brillouin->settings.yMax,
-		m_Brillouin->settings.zMax
-	}));
+	const auto newMinXY = convertXY(POINT2{ m_Brillouin->settings.xMin, m_Brillouin->settings.yMin });
+	const auto newMaxXY = convertXY(POINT2{ m_Brillouin->settings.xMax, m_Brillouin->settings.yMax });
+	const auto newMinZ = convertZ(m_Brillouin->settings.zMin);
+	const auto newMaxZ = convertZ(m_Brillouin->settings.zMax);
 
-	m_Brillouin->settings.setXMin(newMin.x);
-	m_Brillouin->settings.setXMax(newMax.x);
-	m_Brillouin->settings.setYMin(newMin.y);
-	m_Brillouin->settings.setYMax(newMax.y);
-	m_Brillouin->settings.setZMin(newMin.z);
-	m_Brillouin->settings.setZMax(newMax.z);
+	m_Brillouin->settings.setXMin(newMinXY.x);
+	m_Brillouin->settings.setXMax(newMaxXY.x);
+	m_Brillouin->settings.setYMin(newMinXY.y);
+	m_Brillouin->settings.setYMax(newMaxXY.y);
+	m_Brillouin->settings.setZMin(newMinZ);
+	m_Brillouin->settings.setZMax(newMaxZ);
 
 	for (auto& point : m_Brillouin->settings.roiPolygonUm) {
-		const auto absolutePoint = oldOffsetToAbsolute(POINT3{ point.x, point.y, 0.0 });
-		const auto newPoint = absoluteToNewOffset(absolutePoint);
-		point = POINT2{ newPoint.x, newPoint.y };
+		point = convertXY(point);
 	}
 }
 
@@ -1637,6 +1704,7 @@ void BrillouinAcquisition::applyBrightfieldViewTransformChanged() {
 	m_ODTPlot.plotHandle->yAxis->setRange(QCPRange(1, brightfieldDisplayHeight()));
 	if (m_scanControl) {
 		AOI_changed(m_positionsMicrometer);
+		excludedAOI_changed(m_excludedPositionsMicrometer);
 		drawPositionScannerMarker(m_positionScanner);
 	}
 	updateImageODT();
@@ -2025,20 +2093,29 @@ void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
 	};
 
 	const auto& settings = m_Brillouin->settings;
+	// Rescale onto the currently displayed frame if it differs from whatever frame the ROI
+	// was drawn against - see Brillouin::estimateFrameMetric() for why (keeps this manual
+	// check honest about what the actual surface scan would measure).
+	auto rescaled = [](int value, int refSize, int currentSize) {
+		if (refSize <= 0 || refSize == currentSize) {
+			return value;
+		}
+		return (int)std::lround(value * (double)currentSize / refSize);
+	};
 	double roi1Mean{ 0.0 };
 	double roi2Mean{ 0.0 };
 	const bool hasRoi1 = measureRoi(
-		settings.surfaceProxyRoiLeft,
-		settings.surfaceProxyRoiTop,
-		settings.surfaceProxyRoiWidth,
-		settings.surfaceProxyRoiHeight,
+		rescaled(settings.surfaceProxyRoiLeft, settings.surfaceProxyRoiFrameWidth, frameW),
+		rescaled(settings.surfaceProxyRoiTop, settings.surfaceProxyRoiFrameHeight, frameH),
+		rescaled(settings.surfaceProxyRoiWidth, settings.surfaceProxyRoiFrameWidth, frameW),
+		rescaled(settings.surfaceProxyRoiHeight, settings.surfaceProxyRoiFrameHeight, frameH),
 		roi1Mean
 	);
 	const bool hasRoi2 = measureRoi(
-		settings.surfaceProxyRoi2Left,
-		settings.surfaceProxyRoi2Top,
-		settings.surfaceProxyRoi2Width,
-		settings.surfaceProxyRoi2Height,
+		rescaled(settings.surfaceProxyRoi2Left, settings.surfaceProxyRoi2FrameWidth, frameW),
+		rescaled(settings.surfaceProxyRoi2Top, settings.surfaceProxyRoi2FrameHeight, frameH),
+		rescaled(settings.surfaceProxyRoi2Width, settings.surfaceProxyRoi2FrameWidth, frameW),
+		rescaled(settings.surfaceProxyRoi2Height, settings.surfaceProxyRoi2FrameHeight, frameH),
 		roi2Mean
 	);
 
@@ -3729,6 +3806,7 @@ void BrillouinAcquisition::initScanControl() {
 
 	// Update positions preview
 	AOI_changed(m_positionsMicrometer);
+	excludedAOI_changed(m_excludedPositionsMicrometer);
 
 	// reestablish m_scanControl connections
 	static QMetaObject::Connection connection;
@@ -3787,6 +3865,12 @@ void BrillouinAcquisition::initScanControl() {
 		&ScanControl::currentPositionBoundsChanged,
 		this,
 		[this](BOUNDS bounds) { setCurrentPositionBounds(bounds); }
+	);
+	connection = QWidget::connect(
+		m_scanControl,
+		&ScanControl::s_gridOffsetChanged,
+		this,
+		[this](POINT2 offsetUm, bool positionIsAbsolute) { on_gridOffsetChanged(offsetUm, positionIsAbsolute); }
 	);
 	connection = QWidget::connect(
 		m_scanControl,
@@ -4541,11 +4625,10 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		);
 	}
 	if (m_overviewFullGridCheckbox) {
-		// Only meaningful once the grid is anchored to an absolute origin - in relative
-		// mode there's no fixed extent to tile against, so force it off rather than
-		// leave a stale setting that silently does nothing.
-		const auto fullGridPossible = m_Brillouin->settings.gridCoordinatesAbsolute
-			&& m_Brillouin->settings.saveOverviewBrightfieldPerZ;
+		// Works in both absolute and relative grid mode (see
+		// Brillouin::overviewBrightfieldPositionsForZ()) - only actually needs per-Z overview
+		// capture to be enabled at all, or it'd be a setting that silently does nothing.
+		const auto fullGridPossible = m_Brillouin->settings.saveOverviewBrightfieldPerZ;
 		if (!fullGridPossible && m_Brillouin->settings.overviewBrightfieldFullGrid) {
 			m_Brillouin->settings.overviewBrightfieldFullGrid = false;
 		}
@@ -4634,6 +4717,17 @@ void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositio
 }
 
 /*
+ * React when the set of grid points the ROI mask excludes has changed (preview-only, see
+ * ScanPlannerOutput::excludedPositionsAbsolute/Relative) - drives the red "outside ROI" markers.
+ */
+void BrillouinAcquisition::excludedAOI_changed(const std::vector<POINT3>& excludedPositions) {
+	m_excludedPositionsMicrometer = excludedPositions;
+	if (m_scanControl) {
+		update_AOI_preview();
+	}
+}
+
+/*
  * React when the scancontrol settings have changed, e.g. the start position was adjusted
  */
 void BrillouinAcquisition::on_scaleCalibrationChanged(const std::vector<POINT2>& positions) {
@@ -4642,6 +4736,17 @@ void BrillouinAcquisition::on_scaleCalibrationChanged(const std::vector<POINT2>&
 		[this](POINT2 point) { return brightfieldRawToDisplay(point); }
 	);
 	update_AOI_preview();
+}
+
+/*
+ * ScanControl emits this immediately before s_scaleCalibrationChanged, from the exact same
+ * getPositionOffset() call the just-emitted pixel positions were computed with - see
+ * m_currentGridOffsetUm's declaration for why update_AOI_preview()/updateRoiPolygonPreview()
+ * must use this cached snapshot rather than calling getPositionOffset() live.
+ */
+void BrillouinAcquisition::on_gridOffsetChanged(POINT2 offsetUm, bool positionIsAbsolute) {
+	m_currentGridOffsetUm = offsetUm;
+	m_currentGridOffsetIsAbsolute = positionIsAbsolute;
 }
 
 /*
@@ -4667,8 +4772,30 @@ void BrillouinAcquisition::update_AOI_preview() {
 		// permutation) - that duplicate, absolute-mode-only path was the actual bug, not
 		// something that needed a more elaborate replacement.
 		auto positionsPixelForRoi = m_positionsPixel;
+		std::vector<POINT2> excludedPixelForRoi;
 		std::vector<POINT2> roiPolygonPix;
 		if (colorByRoi && m_scanControl) {
+			// Project every overlay (markers, excluded points, ROI polygon outline) from the
+			// same cached offset snapshot (see m_currentGridOffsetUm) instead of
+			// ScanControl::getPositionsPix()/getPositionPix(), which each re-derive the offset
+			// with their own live ScanControl::getPositionOffset() call. ScanControl lives on
+			// another thread, so those live calls could each observe a different offset if
+			// something there (e.g. enableMeasurementMode(false) at acquisition end) changes
+			// mid-way through this function - which is exactly what let this coloring pass
+			// disagree with the ROI polygon in relative grid mode.
+			const auto gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
+			const auto offset = currentGridOffset(gridAbsolute);
+			positionsPixelForRoi.clear();
+			positionsPixelForRoi.reserve(m_positionsMicrometer.size());
+			for (const auto& p : m_positionsMicrometer) {
+				const auto pix = m_scanControl->microMeterToPix(POINT2{ p.x, p.y } + offset);
+				positionsPixelForRoi.push_back(brightfieldRawToDisplay(pix));
+			}
+			excludedPixelForRoi.reserve(m_excludedPositionsMicrometer.size());
+			for (const auto& p : m_excludedPositionsMicrometer) {
+				const auto pix = m_scanControl->microMeterToPix(POINT2{ p.x, p.y } + offset);
+				excludedPixelForRoi.push_back(brightfieldRawToDisplay(pix));
+			}
 			roiPolygonPix.reserve(m_Brillouin->settings.roiPolygonUm.size());
 			for (const auto& p : m_Brillouin->settings.roiPolygonUm) {
 				auto pUm = gridOffsetToImagePlaneUm(p);
@@ -4743,25 +4870,30 @@ void BrillouinAcquisition::update_AOI_preview() {
 			}
 		}
 		if (colorByRoi) {
+			// positionsPixelForRoi is exactly ScanPlanner's included list and
+			// excludedPixelForRoi is exactly what it excluded (see
+			// ScanPlannerOutput::excludedPositionsAbsolute/Relative) - both already reflect
+			// the real in/out decision the actual scan will use, so there is nothing left to
+			// re-test here. Re-testing them against roiPolygonPix (a second, independent
+			// pixel-space classification) is what let the on-screen coloring disagree with
+			// what ScanPlanner would really include, whenever the two tests' notions of the
+			// current scanner/stage offset drifted apart even slightly.
 			QVector<double> xInside;
 			QVector<double> yInside;
 			QVector<double> xOutside;
 			QVector<double> yOutside;
 			xInside.reserve((int)positionsPixelForRoi.size());
 			yInside.reserve((int)positionsPixelForRoi.size());
-			xOutside.reserve((int)positionsPixelForRoi.size());
-			yOutside.reserve((int)positionsPixelForRoi.size());
+			xOutside.reserve((int)excludedPixelForRoi.size());
+			yOutside.reserve((int)excludedPixelForRoi.size());
 
-			for (gsl::index i{ 0 }; i < (gsl::index)positionsPixelForRoi.size(); i++) {
-				const auto& posPix = positionsPixelForRoi[(size_t)i];
-				const bool inside = pointInPolygon(POINT2{ posPix.x, posPix.y }, roiPolygonPix);
-				if (inside) {
-					xInside.push_back(posPix.x);
-					yInside.push_back(posPix.y);
-				} else {
-					xOutside.push_back(posPix.x);
-					yOutside.push_back(posPix.y);
-				}
+			for (const auto& posPix : positionsPixelForRoi) {
+				xInside.push_back(posPix.x);
+				yInside.push_back(posPix.y);
+			}
+			for (const auto& posPix : excludedPixelForRoi) {
+				xOutside.push_back(posPix.x);
+				yOutside.push_back(posPix.y);
 			}
 
 			if (!m_positionsMarkerInsideRoi) {
@@ -4956,12 +5088,20 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 		m_overviewTileRects.push_back(rect);
 	}
 
+	// corner.first/second come from overviewTileOutlinesUm(), which - like m_orderedPositions/
+	// m_orderedPositionsRelative it's built from - is already origin-inclusive in absolute
+	// mode and origin-excluded (pure offset) in relative mode; NOT the pre-origin frame
+	// roiPolygonUm uses. So this must mirror ScanControl::convertPositionsToPix()'s own
+	// "point + offset" formula directly rather than going through gridOffsetToImagePlaneUm()
+	// (which adds absoluteGridOriginUm again - correct for roiPolygonUm, a double-count here).
+	// The offset itself still comes from the cached snapshot (see m_currentGridOffsetUm)
+	// rather than a live getPositionOffset() call, for the same cross-thread-race reason the
+	// ROI polygon overlay was fixed for.
+	const auto offset = currentGridOffset(gridAbsolute);
 	for (size_t i = 0; i < outlines.size(); i++) {
 		const auto& corner = outlines[i];
-		const auto topLeft = brightfieldRawToDisplay(m_scanControl->getPositionPix(
-			POINT3{ corner.first.x, corner.first.y, 0 }, gridAbsolute));
-		const auto bottomRight = brightfieldRawToDisplay(m_scanControl->getPositionPix(
-			POINT3{ corner.second.x, corner.second.y, 0 }, gridAbsolute));
+		const auto topLeft = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ corner.first.x + offset.x, corner.first.y + offset.y }));
+		const auto bottomRight = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ corner.second.x + offset.x, corner.second.y + offset.y }));
 		m_overviewTileRects[i]->topLeft->setCoords(topLeft.x, topLeft.y);
 		m_overviewTileRects[i]->bottomRight->setCoords(bottomRight.x, bottomRight.y);
 	}
@@ -5491,6 +5631,10 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-surface-proxy-roi-2-top", m_Brillouin->settings.surfaceProxyRoi2Top);
 	settings.setValue("brillouin-surface-proxy-roi-2-width", m_Brillouin->settings.surfaceProxyRoi2Width);
 	settings.setValue("brillouin-surface-proxy-roi-2-height", m_Brillouin->settings.surfaceProxyRoi2Height);
+	settings.setValue("brillouin-surface-proxy-roi-frame-width", m_Brillouin->settings.surfaceProxyRoiFrameWidth);
+	settings.setValue("brillouin-surface-proxy-roi-frame-height", m_Brillouin->settings.surfaceProxyRoiFrameHeight);
+	settings.setValue("brillouin-surface-proxy-roi-2-frame-width", m_Brillouin->settings.surfaceProxyRoi2FrameWidth);
+	settings.setValue("brillouin-surface-proxy-roi-2-frame-height", m_Brillouin->settings.surfaceProxyRoi2FrameHeight);
 	settings.setValue("brillouin-camera-roi-left", m_deviceSettings.camera.roi.left);
 	settings.setValue("brillouin-camera-roi-top", m_deviceSettings.camera.roi.top);
 	settings.setValue("brillouin-camera-roi-width-physical", m_deviceSettings.camera.roi.width_physical);
@@ -5626,5 +5770,9 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.surfaceProxyRoi2Top = settings.value("brillouin-surface-proxy-roi-2-top", m_Brillouin->settings.surfaceProxyRoi2Top).toInt();
 	m_Brillouin->settings.surfaceProxyRoi2Width = settings.value("brillouin-surface-proxy-roi-2-width", m_Brillouin->settings.surfaceProxyRoi2Width).toInt();
 	m_Brillouin->settings.surfaceProxyRoi2Height = settings.value("brillouin-surface-proxy-roi-2-height", m_Brillouin->settings.surfaceProxyRoi2Height).toInt();
+	m_Brillouin->settings.surfaceProxyRoiFrameWidth = settings.value("brillouin-surface-proxy-roi-frame-width", m_Brillouin->settings.surfaceProxyRoiFrameWidth).toInt();
+	m_Brillouin->settings.surfaceProxyRoiFrameHeight = settings.value("brillouin-surface-proxy-roi-frame-height", m_Brillouin->settings.surfaceProxyRoiFrameHeight).toInt();
+	m_Brillouin->settings.surfaceProxyRoi2FrameWidth = settings.value("brillouin-surface-proxy-roi-2-frame-width", m_Brillouin->settings.surfaceProxyRoi2FrameWidth).toInt();
+	m_Brillouin->settings.surfaceProxyRoi2FrameHeight = settings.value("brillouin-surface-proxy-roi-2-frame-height", m_Brillouin->settings.surfaceProxyRoi2FrameHeight).toInt();
 	settings.endGroup();
 }

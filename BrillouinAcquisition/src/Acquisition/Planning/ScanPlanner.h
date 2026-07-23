@@ -30,6 +30,12 @@ struct ScanPlannerOutput {
 	std::vector<POINT3> orderedPositionsRelative;
 	std::vector<INDEX3> orderedIndices;
 	std::vector<bool> calibrationAllowed;
+	// Grid points the ROI mask excluded from the plan above - kept only so the preview can
+	// show what will NOT be measured. Always empty when useRoiMask is off, and also empty
+	// whenever the safety fallback below kicks in (that fallback means nothing was actually
+	// excluded from the real scan, so there is nothing to show as excluded either).
+	std::vector<POINT3> excludedPositionsAbsolute;
+	std::vector<POINT3> excludedPositionsRelative;
 };
 
 class ScanPlanner {
