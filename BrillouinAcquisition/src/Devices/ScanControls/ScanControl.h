@@ -267,6 +267,14 @@ signals:
 	void currentPositionBoundsChanged(BOUNDS);
 	void s_scaleCalibrationChanged(std::vector<POINT2>);
 	void s_positionScannerChanged(POINT2);
+	// Emitted alongside s_scaleCalibrationChanged, from the same computation, so a receiver
+	// on another thread can cache the exact offset the just-emitted AOI pixel positions were
+	// built from - see getPositionOffset()/announcePositions() for why re-fetching this live
+	// afterward (rather than using this snapshot) is racy whenever something on this thread
+	// (e.g. enableMeasurementMode(false) at the end of an acquisition) changes what
+	// getPositionOffset() would return before the receiver gets around to processing the
+	// queued signal.
+	void s_gridOffsetChanged(POINT2 offsetUm, bool positionIsAbsolute);
 };
 
 #endif // SCANCONTROL_H

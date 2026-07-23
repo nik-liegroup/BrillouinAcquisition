@@ -1271,6 +1271,20 @@ POINT3 BrillouinAcquisition::absoluteTargetToGridOffset(const POINT3& absoluteTa
 	};
 }
 
+POINT2 BrillouinAcquisition::currentGridOffset(bool gridAbsolute) const {
+	if (gridAbsolute == m_currentGridOffsetIsAbsolute) {
+		return m_currentGridOffsetUm;
+	}
+	// Cached snapshot is for the other mode (or none has arrived yet) - fall back to a live
+	// fetch. Only reachable from preservePhysicalGridForAbsoluteMode()'s round-trip through
+	// the mode that's being switched away from, not from the ordinary per-frame overlay
+	// redraw path, so the small race window here doesn't reproduce the bug this was fixed for.
+	if (!m_scanControl) {
+		return POINT2{};
+	}
+	return m_scanControl->getPositionOffset(gridAbsolute);
+}
+
 POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm) const {
 	return imagePlaneUmToGridOffset(imagePlaneUm, m_Brillouin->settings.gridCoordinatesAbsolute);
 }
@@ -1293,7 +1307,7 @@ POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm
 	// markers in every grid mode (this used to be a no-op for non-absolute grids, which is
 	// why the polygon stayed put while the markers tracked the live scanner offset).
 	const auto origin = gridAbsolute ? m_Brillouin->settings.absoluteGridOriginUm : POINT3{};
-	const auto offset = m_scanControl->getPositionOffset(gridAbsolute);
+	const auto offset = currentGridOffset(gridAbsolute);
 	return POINT2{
 		imagePlaneUm.x - offset.x - origin.x,
 		imagePlaneUm.y - offset.y - origin.y
@@ -1310,7 +1324,7 @@ POINT2 BrillouinAcquisition::gridOffsetToImagePlaneUm(const POINT2& gridOffset, 
 	}
 	// See imagePlaneUmToGridOffset() for why this must match ScanControl's own convention.
 	const auto origin = gridAbsolute ? m_Brillouin->settings.absoluteGridOriginUm : POINT3{};
-	const auto offset = m_scanControl->getPositionOffset(gridAbsolute);
+	const auto offset = currentGridOffset(gridAbsolute);
 	return POINT2{
 		origin.x + gridOffset.x + offset.x,
 		origin.y + gridOffset.y + offset.y
@@ -3854,6 +3868,12 @@ void BrillouinAcquisition::initScanControl() {
 	);
 	connection = QWidget::connect(
 		m_scanControl,
+		&ScanControl::s_gridOffsetChanged,
+		this,
+		[this](POINT2 offsetUm, bool positionIsAbsolute) { on_gridOffsetChanged(offsetUm, positionIsAbsolute); }
+	);
+	connection = QWidget::connect(
+		m_scanControl,
 		&ScanControl::s_scaleCalibrationChanged,
 		this,
 		[this](std::vector<POINT2> positions) { on_scaleCalibrationChanged(positions); }
@@ -4605,11 +4625,10 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		);
 	}
 	if (m_overviewFullGridCheckbox) {
-		// Only meaningful once the grid is anchored to an absolute origin - in relative
-		// mode there's no fixed extent to tile against, so force it off rather than
-		// leave a stale setting that silently does nothing.
-		const auto fullGridPossible = m_Brillouin->settings.gridCoordinatesAbsolute
-			&& m_Brillouin->settings.saveOverviewBrightfieldPerZ;
+		// Works in both absolute and relative grid mode (see
+		// Brillouin::overviewBrightfieldPositionsForZ()) - only actually needs per-Z overview
+		// capture to be enabled at all, or it'd be a setting that silently does nothing.
+		const auto fullGridPossible = m_Brillouin->settings.saveOverviewBrightfieldPerZ;
 		if (!fullGridPossible && m_Brillouin->settings.overviewBrightfieldFullGrid) {
 			m_Brillouin->settings.overviewBrightfieldFullGrid = false;
 		}
@@ -4720,6 +4739,17 @@ void BrillouinAcquisition::on_scaleCalibrationChanged(const std::vector<POINT2>&
 }
 
 /*
+ * ScanControl emits this immediately before s_scaleCalibrationChanged, from the exact same
+ * getPositionOffset() call the just-emitted pixel positions were computed with - see
+ * m_currentGridOffsetUm's declaration for why update_AOI_preview()/updateRoiPolygonPreview()
+ * must use this cached snapshot rather than calling getPositionOffset() live.
+ */
+void BrillouinAcquisition::on_gridOffsetChanged(POINT2 offsetUm, bool positionIsAbsolute) {
+	m_currentGridOffsetUm = offsetUm;
+	m_currentGridOffsetIsAbsolute = positionIsAbsolute;
+}
+
+/*
  * Update the plot showing the measurement positions as overlay in the brightfield preview
  */
 void BrillouinAcquisition::update_AOI_preview() {
@@ -4745,27 +4775,26 @@ void BrillouinAcquisition::update_AOI_preview() {
 		std::vector<POINT2> excludedPixelForRoi;
 		std::vector<POINT2> roiPolygonPix;
 		if (colorByRoi && m_scanControl) {
-			// Recompute the marker pixels fresh here rather than trusting the cached
-			// m_positionsPixel: that cache is only refreshed when ScanControl announces a
-			// position change, while roiPolygonPix below is always projected using whatever
-			// the scanner/stage offset is *right now*. If those two moments ever differ
-			// (e.g. this call was triggered by something other than a position change), the
-			// two overlays would briefly disagree about inside vs. outside even though both
-			// individually use the correct, shared conversion - recomputing both from the
-			// same instant closes that gap so on-screen coloring can never diverge from what
-			// ScanPlanner will actually include in the scan.
+			// Project every overlay (markers, excluded points, ROI polygon outline) from the
+			// same cached offset snapshot (see m_currentGridOffsetUm) instead of
+			// ScanControl::getPositionsPix()/getPositionPix(), which each re-derive the offset
+			// with their own live ScanControl::getPositionOffset() call. ScanControl lives on
+			// another thread, so those live calls could each observe a different offset if
+			// something there (e.g. enableMeasurementMode(false) at acquisition end) changes
+			// mid-way through this function - which is exactly what let this coloring pass
+			// disagree with the ROI polygon in relative grid mode.
 			const auto gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
-			positionsPixelForRoi = m_scanControl->getPositionsPix(m_positionsMicrometer, gridAbsolute);
-			std::transform(positionsPixelForRoi.begin(), positionsPixelForRoi.end(), positionsPixelForRoi.begin(),
-				[this](POINT2 point) { return brightfieldRawToDisplay(point); }
-			);
-			// Points ScanPlanner itself excluded via the ROI mask (see
-			// ScanPlannerOutput::excludedPositionsAbsolute/Relative) - projected with the
-			// single-point, non-caching getPositionPix() so this doesn't clobber the AOI
-			// marker cache that getPositionsPix() above just refreshed.
+			const auto offset = currentGridOffset(gridAbsolute);
+			positionsPixelForRoi.clear();
+			positionsPixelForRoi.reserve(m_positionsMicrometer.size());
+			for (const auto& p : m_positionsMicrometer) {
+				const auto pix = m_scanControl->microMeterToPix(POINT2{ p.x, p.y } + offset);
+				positionsPixelForRoi.push_back(brightfieldRawToDisplay(pix));
+			}
 			excludedPixelForRoi.reserve(m_excludedPositionsMicrometer.size());
 			for (const auto& p : m_excludedPositionsMicrometer) {
-				excludedPixelForRoi.push_back(brightfieldRawToDisplay(m_scanControl->getPositionPix(p, gridAbsolute)));
+				const auto pix = m_scanControl->microMeterToPix(POINT2{ p.x, p.y } + offset);
+				excludedPixelForRoi.push_back(brightfieldRawToDisplay(pix));
 			}
 			roiPolygonPix.reserve(m_Brillouin->settings.roiPolygonUm.size());
 			for (const auto& p : m_Brillouin->settings.roiPolygonUm) {
@@ -5059,12 +5088,20 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 		m_overviewTileRects.push_back(rect);
 	}
 
+	// corner.first/second come from overviewTileOutlinesUm(), which - like m_orderedPositions/
+	// m_orderedPositionsRelative it's built from - is already origin-inclusive in absolute
+	// mode and origin-excluded (pure offset) in relative mode; NOT the pre-origin frame
+	// roiPolygonUm uses. So this must mirror ScanControl::convertPositionsToPix()'s own
+	// "point + offset" formula directly rather than going through gridOffsetToImagePlaneUm()
+	// (which adds absoluteGridOriginUm again - correct for roiPolygonUm, a double-count here).
+	// The offset itself still comes from the cached snapshot (see m_currentGridOffsetUm)
+	// rather than a live getPositionOffset() call, for the same cross-thread-race reason the
+	// ROI polygon overlay was fixed for.
+	const auto offset = currentGridOffset(gridAbsolute);
 	for (size_t i = 0; i < outlines.size(); i++) {
 		const auto& corner = outlines[i];
-		const auto topLeft = brightfieldRawToDisplay(m_scanControl->getPositionPix(
-			POINT3{ corner.first.x, corner.first.y, 0 }, gridAbsolute));
-		const auto bottomRight = brightfieldRawToDisplay(m_scanControl->getPositionPix(
-			POINT3{ corner.second.x, corner.second.y, 0 }, gridAbsolute));
+		const auto topLeft = brightfieldRawToDisplay(m_scanControl->microMeterToPix(corner.first + offset));
+		const auto bottomRight = brightfieldRawToDisplay(m_scanControl->microMeterToPix(corner.second + offset));
 		m_overviewTileRects[i]->topLeft->setCoords(topLeft.x, topLeft.y);
 		m_overviewTileRects[i]->bottomRight->setCoords(bottomRight.x, bottomRight.y);
 	}

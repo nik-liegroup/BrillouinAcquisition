@@ -1259,15 +1259,28 @@ POINT3 Brillouin::overviewBrightfieldPositionForZ(int zIndex, const std::vector<
 /*
  * One position per z slice by default (at the current start position, matching the
  * legacy behaviour), or one position per mosaic tile when overviewBrightfieldFullGrid
- * is enabled in absolute grid mode, so the whole grid extent gets covered.
+ * is enabled, so the whole grid extent gets covered - works in both absolute and relative
+ * grid mode, since overviewTileCentersXY() already computes tile centers correctly for
+ * either (see its own comments for why relative mode needs m_orderedPositionsRelative
+ * instead of m_orderedPositions).
  */
 std::vector<POINT3> Brillouin::overviewBrightfieldPositionsForZ(int zIndex, const std::vector<double>& directionsZ) const {
 	std::vector<POINT3> positions;
-	if (m_settings.overviewBrightfieldFullGrid && m_settings.gridCoordinatesAbsolute) {
+	if (m_settings.overviewBrightfieldFullGrid) {
 		const auto tileCentersXY = overviewTileCentersXY();
 		positions.reserve(tileCentersXY.size());
+		// overviewTileCentersXY() returns tile centers in the same frame m_orderedPositions/
+		// m_orderedPositionsRelative are in: origin-inclusive (absolute stage um) for
+		// absolute mode, but a pure grid offset with no origin baked in for relative mode
+		// (see its comments). overviewBrightfieldPositionForZ() below expects an absolute
+		// stage position - the single-tile branch already passes m_startPosition directly,
+		// which only works because it IS the absolute position - so relative-mode tile
+		// centers need m_startPosition added back in here to match that same convention.
+		const auto xyOrigin = m_settings.gridCoordinatesAbsolute
+			? POINT2{ 0, 0 }
+			: POINT2{ m_startPosition.x, m_startPosition.y };
 		for (const auto& xy : tileCentersXY) {
-			positions.push_back(overviewBrightfieldPositionForZ(zIndex, directionsZ, xy));
+			positions.push_back(overviewBrightfieldPositionForZ(zIndex, directionsZ, xy + xyOrigin));
 		}
 	} else {
 		positions.push_back(overviewBrightfieldPositionForZ(zIndex, directionsZ, POINT2{ m_startPosition.x, m_startPosition.y }));

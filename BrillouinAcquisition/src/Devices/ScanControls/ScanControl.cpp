@@ -460,6 +460,9 @@ void ScanControl::announcePositions() {
 	m_positionStageOld = m_positionStage;
 	m_positionScannerOld = m_positionScanner;
 
+	// Emitted first so a queued receiver processes the offset snapshot before the pixel
+	// positions that were computed from the exact same offset (see s_gridOffsetChanged()).
+	emit(s_gridOffsetChanged(getPositionOffset(m_AOI_positionsAbsolute), m_AOI_positionsAbsolute));
 	emit(s_scaleCalibrationChanged(convertPositionsToPix()));
 }
 
