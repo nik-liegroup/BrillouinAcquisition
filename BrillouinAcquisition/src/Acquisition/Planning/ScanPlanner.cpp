@@ -35,10 +35,32 @@ ScanPlannerOutput ScanPlanner::buildLegacyCartesianPlan(const ScanPlannerInput& 
 	std::vector<int> indices(3);
 	auto isRoiActive = input.useRoiMask && input.roiPolygonUm.size() >= 3;
 
+	// Serpentine (boustrophedon) traversal: alternate the direction of each inner loop
+	// every time the loop above it advances, instead of always restarting from index 0.
+	// A plain nested raster otherwise flies back to the start of a row/plane on every
+	// increment of the outer loop - real, avoidable stage travel that a snake path removes
+	// while visiting exactly the same set of grid points, just in a different order.
+	// Downstream consumers key off `indices`/absolute position, not list order, so
+	// reordering here is safe.
+	//
+	// reverseKK is driven by a row counter that keeps running across ii (z-layer)
+	// boundaries, not reset per layer - reverseJJ already makes each new layer resume at
+	// whichever Y-extreme the previous layer ended on, and continuing the row parity
+	// across that boundary too means the X-reversal direction also picks up exactly where
+	// the previous layer left off, so the whole 3D path is continuous (a layer change only
+	// steps in z, at the same x/y, regardless of whether the row counts are odd or even).
+	// Resetting reverseKK per layer (e.g. from the in-layer row index alone) would only get
+	// this right when the row count happens to be even.
+	size_t globalRowCount = 0;
 	for (size_t ii = 0; ii < directions[2].size(); ii++) {
-		for (size_t jj = 0; jj < directions[1].size(); jj++) {
+		const auto reverseJJ = (ii % 2) == 1;
+		for (size_t jjRaw = 0; jjRaw < directions[1].size(); jjRaw++) {
+			const auto jj = reverseJJ ? (directions[1].size() - 1 - jjRaw) : jjRaw;
 			auto lineStarted = false;
-			for (size_t kk = 0; kk < directions[0].size(); kk++) {
+			const auto reverseKK = (globalRowCount % 2) == 1;
+			globalRowCount++;
+			for (size_t kkRaw = 0; kkRaw < directions[0].size(); kkRaw++) {
+				const auto kk = reverseKK ? (directions[0].size() - 1 - kkRaw) : kkRaw;
 				indices[0] = (int)kk;
 				indices[1] = (int)jj;
 				indices[2] = (int)ii;

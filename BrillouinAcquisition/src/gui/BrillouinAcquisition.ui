@@ -2248,13 +2248,13 @@ QTabBar::tab:!selected {
                         <property name="minimumSize">
                          <size>
                           <width>0</width>
-                          <height>270</height>
+                          <height>372</height>
                          </size>
                         </property>
                         <property name="maximumSize">
                          <size>
                           <width>16777215</width>
-                          <height>270</height>
+                          <height>372</height>
                          </size>
                         </property>
                         <property name="title">
@@ -2370,9 +2370,12 @@ QTabBar::tab:!selected {
                           </widget>
                          </item>
                          <item row="5" column="0">
-                          <widget class="QCheckBox" name="useMediumReferenceCheckbox">
+                          <widget class="QLabel" name="mediumReferenceLabel">
                            <property name="text">
-                            <string>Use medium ref</string>
+                            <string>Medium reference</string>
+                           </property>
+                           <property name="toolTip">
+                            <string>Always measured before a surface scan - it's the only threshold source for surface detection.</string>
                            </property>
                           </widget>
                          </item>
@@ -2395,7 +2398,108 @@ QTabBar::tab:!selected {
                            </property>
                           </widget>
                          </item>
-                         <item row="6" column="0" colspan="2">
+                         <item row="6" column="0">
+                          <widget class="QLabel" name="surfaceMaxRewindLabel">
+                           <property name="text">
+                            <string>Rewind cap [um]</string>
+                           </property>
+                           <property name="toolTip">
+                            <string>Neighbor-seeded search: max distance allowed stepping back towards water when the neighboring column's z estimate is already past the surface here. If exceeded without recovering above threshold, this point is marked as no surface found.</string>
+                           </property>
+                          </widget>
+                         </item>
+                         <item row="6" column="1">
+                          <widget class="QDoubleSpinBox" name="surfaceMaxRewindSpinBox">
+                           <property name="toolTip">
+                            <string>Neighbor-seeded search: max distance allowed stepping back towards water when the neighboring column's z estimate is already past the surface here. If exceeded without recovering above threshold, this point is marked as no surface found.</string>
+                           </property>
+                           <property name="decimals">
+                            <number>1</number>
+                           </property>
+                           <property name="minimum">
+                            <double>0.000000000000000</double>
+                           </property>
+                           <property name="maximum">
+                            <double>1000000.000000000000000</double>
+                           </property>
+                          </widget>
+                         </item>
+                         <item row="7" column="0">
+                          <widget class="QLabel" name="surfaceVerificationStepsLabel">
+                           <property name="text">
+                            <string>Verify steps [K]</string>
+                           </property>
+                           <property name="toolTip">
+                            <string>Number of extra z-steps measured after a candidate surface crossing before accepting it, to confirm the signal keeps behaving like a real interface (see verify tolerance) rather than a noise dip. 0 disables verification.</string>
+                           </property>
+                          </widget>
+                         </item>
+                         <item row="7" column="1">
+                          <widget class="QSpinBox" name="surfaceVerificationStepsSpinBox">
+                           <property name="toolTip">
+                            <string>Number of extra z-steps measured after a candidate surface crossing before accepting it, to confirm the signal keeps behaving like a real interface (see verify tolerance) rather than a noise dip. 0 disables verification.</string>
+                           </property>
+                           <property name="minimum">
+                            <number>0</number>
+                           </property>
+                           <property name="maximum">
+                            <number>100</number>
+                           </property>
+                          </widget>
+                         </item>
+                         <item row="8" column="0">
+                          <widget class="QLabel" name="surfaceVerificationFrameAverageLabel">
+                           <property name="text">
+                            <string>Verify frames [M]</string>
+                           </property>
+                           <property name="toolTip">
+                            <string>Number of frames averaged at the candidate crossing and at each of the K verification steps, to reduce noise. 1 = single frame (fastest, default).</string>
+                           </property>
+                          </widget>
+                         </item>
+                         <item row="8" column="1">
+                          <widget class="QSpinBox" name="surfaceVerificationFrameAverageSpinBox">
+                           <property name="toolTip">
+                            <string>Number of frames averaged at the candidate crossing and at each of the K verification steps, to reduce noise. 1 = single frame (fastest, default).</string>
+                           </property>
+                           <property name="suffix">
+                            <string> frames</string>
+                           </property>
+                           <property name="minimum">
+                            <number>1</number>
+                           </property>
+                           <property name="maximum">
+                            <number>1000</number>
+                           </property>
+                          </widget>
+                         </item>
+                         <item row="9" column="0">
+                          <widget class="QLabel" name="surfaceVerificationToleranceLabel">
+                           <property name="text">
+                            <string>Verify tolerance [%]</string>
+                           </property>
+                           <property name="toolTip">
+                            <string>How much the mean of the (frame-averaged) second half of the K-step verification window may rise above the first half's mean before a candidate crossing is rejected as a noise dip rather than a real, monotonically dropping surface.</string>
+                           </property>
+                          </widget>
+                         </item>
+                         <item row="9" column="1">
+                          <widget class="QDoubleSpinBox" name="surfaceVerificationToleranceSpinBox">
+                           <property name="toolTip">
+                            <string>How much the mean of the (frame-averaged) second half of the K-step verification window may rise above the first half's mean before a candidate crossing is rejected as a noise dip rather than a real, monotonically dropping surface.</string>
+                           </property>
+                           <property name="decimals">
+                            <number>1</number>
+                           </property>
+                           <property name="minimum">
+                            <double>0.000000000000000</double>
+                           </property>
+                           <property name="maximum">
+                            <double>100.000000000000000</double>
+                           </property>
+                          </widget>
+                         </item>
+                         <item row="10" column="0" colspan="2">
                           <widget class="QPushButton" name="editSpectralProxyRoiCheckbox">
                            <property name="minimumSize">
                             <size>
@@ -2414,7 +2518,7 @@ QTabBar::tab:!selected {
                            </property>
                           </widget>
                          </item>
-                         <item row="7" column="0" colspan="2">
+                         <item row="11" column="0" colspan="2">
                           <widget class="QPushButton" name="measureSpectralProxyRoiButton">
                            <property name="minimumSize">
                             <size>
@@ -3030,6 +3134,25 @@ border: none;</string>
                      </property>
                      <property name="text">
                       <string>Start</string>
+                     </property>
+                    </widget>
+                    <widget class="QPushButton" name="fullGridButton">
+                     <property name="enabled">
+                      <bool>false</bool>
+                     </property>
+                     <property name="geometry">
+                      <rect>
+                       <x>220</x>
+                       <y>8</y>
+                       <width>64</width>
+                       <height>18</height>
+                      </rect>
+                     </property>
+                     <property name="toolTip">
+                      <string>Only available after a surface scan pauses for review: measure every grid point instead of just the ones with a surface z value. Points without one are measured starting at their original (pre-surface-follow) z.</string>
+                     </property>
+                     <property name="text">
+                      <string>Full grid</string>
                      </property>
                     </widget>
                    </widget>

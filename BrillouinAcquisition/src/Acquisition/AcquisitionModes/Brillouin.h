@@ -5,6 +5,8 @@
 #include "../../Devices/Cameras/Camera.h"
 #include "../../helper/thread.h"
 #include "src/lib/buffer_circular.h"
+#include <set>
+#include <utility>
 
 
 struct SCAN_ORDER {
@@ -65,6 +67,10 @@ struct BRILLOUIN_SETTINGS {
 			useSurfaceFollow = settings.useSurfaceFollow;
 			surfaceZOffsetUm = settings.surfaceZOffsetUm;
 			surfaceFollowHalfRangeUm = settings.surfaceFollowHalfRangeUm;
+			surfaceMaxRewindUm = settings.surfaceMaxRewindUm;
+			surfaceVerificationSteps = settings.surfaceVerificationSteps;
+			surfaceVerificationFrameAverage = settings.surfaceVerificationFrameAverage;
+			surfaceVerificationToleranceFraction = settings.surfaceVerificationToleranceFraction;
 			preScanXYBin = settings.preScanXYBin;
 			preScanZStepUm = settings.preScanZStepUm;
 			preScanZTravelRangeUm = settings.preScanZTravelRangeUm;
@@ -85,7 +91,6 @@ struct BRILLOUIN_SETTINGS {
 			surfaceProxyRoi2Top = settings.surfaceProxyRoi2Top;
 			surfaceProxyRoi2Width = settings.surfaceProxyRoi2Width;
 			surfaceProxyRoi2Height = settings.surfaceProxyRoi2Height;
-			useMediumReference = settings.useMediumReference;
 			mediumReferenceValue = settings.mediumReferenceValue;
 			mediumReferenceFrameCount = settings.mediumReferenceFrameCount;
 			gridCoordinatesAbsolute = settings.gridCoordinatesAbsolute;
@@ -115,6 +120,12 @@ struct BRILLOUIN_SETTINGS {
 		bool useSurfaceFollow{ false };
 		double surfaceZOffsetUm{ 0.0 };
 		double surfaceFollowHalfRangeUm{ 10.0 };
+		// Neighbor-seeded surface search: each coarse column starts its search from the
+		// nearest already-found neighbor's z instead of a blind full-range sweep.
+		double surfaceMaxRewindUm{ 15.0 };			// max distance allowed stepping back towards water before giving up
+		int surfaceVerificationSteps{ 3 };			// K: extra steps checked after a threshold crossing before accepting it
+		int surfaceVerificationFrameAverage{ 1 };	// M: frames averaged per point during verification (1 = off)
+		double surfaceVerificationToleranceFraction{ 0.05 }; // allowed relative rebound in the verification window
 		int preScanXYBin{ 3 };
 		double preScanZStepUm{ 3.0 };
 		double preScanZTravelRangeUm{ 30.0 };
@@ -135,7 +146,8 @@ struct BRILLOUIN_SETTINGS {
 		int surfaceProxyRoi2Top{ 0 };
 		int surfaceProxyRoi2Width{ 0 };
 		int surfaceProxyRoi2Height{ 0 };
-		bool useMediumReference{ true };
+		// Medium reference is always measured before a surface scan - there is no other
+		// threshold source, so this isn't user-optional.
 		double mediumReferenceValue{ 0.0 };
 		int mediumReferenceFrameCount{ 5 };
 		bool gridCoordinatesAbsolute{ false };
@@ -232,6 +244,12 @@ public slots:
 	void finaliseRepetitions();
 	void finaliseRepetitions(int, int);
 
+	// Resumes an acquisition paused at ACQUISITION_STATUS::WAITFORSURFACEREVIEW (see
+	// acquire()). fullGrid selects between measuring every grid point (points without a
+	// surface z value keep their flat scan-plan default) or only the points that got one.
+	// A no-op if not currently paused for review.
+	void continueAfterSurfaceReview(bool fullGrid);
+
 	void setStepNumberX(int);
 	void setStepNumberY(int);
 	void setStepNumberZ(int);
@@ -258,6 +276,18 @@ public slots:
 	void determineScanOrder();
 
 	std::vector<POINT3> getOrderedPositions();
+	// Same order/length as getOrderedPositions() - lets a caller match each position back
+	// to its (x, y) scan-plan index, e.g. against getSurfaceFoundXYIndices().
+	std::vector<INDEX3> getOrderedIndices() const;
+
+	// (x, y) scan-plan index pairs that ended up with a surface z value (directly found
+	// or interpolated) after the most recent surface pre-scan - i.e. the points a
+	// surface-follow acquisition can actually use. Empty until a surface scan has run.
+	std::set<std::pair<int, int>> getSurfaceFoundXYIndices() const;
+	// Subset of getSurfaceFoundXYIndices() whose z value leans on at least one gap-filled
+	// coarse cell (see the gap-fill pass in runSurfacePreScan()), as opposed to being
+	// interpolated purely from genuinely-measured ones.
+	std::set<std::pair<int, int>> getSurfaceInterpolatedXYIndices() const;
 
 	// Used by the GUI to draw the overview-mosaic outline in the live view, so these
 	// need to be callable from outside the class.
@@ -275,12 +305,36 @@ private:
 	void calibrate(std::unique_ptr <StorageWrapper>& storage);
 	void applySurfaceFollowPlan();
 	double estimateFrameMetric(const std::vector<std::byte>& image) const;
-	bool runSurfacePreScan();
+
+	// The actual measurement loop - the back half of what used to be all of acquire(),
+	// split out so continueAfterSurfaceReview() can also reach it after a surface-review
+	// pause. Assumes the position/calibration vectors and storage metadata are ready.
+	void runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage);
+	// End-of-repetition bookkeeping (advance the counter, schedule the next repetition or
+	// finalize) - shared between waitForNextRepetition()'s normal path and
+	// continueAfterSurfaceReview(), which both need to run it exactly once per repetition,
+	// whether or not a surface-review pause happened in between.
+	void finishRepetition();
+
+	// Outcome of a coarse surface pre-scan: which (x, y) columns actually crossed the
+	// medium-reference drop threshold, so the caller can report any that didn't rather
+	// than silently leaving their z position at the flat scan-plan default.
+	struct SurfaceScanResult {
+		bool success{ false };
+		int totalColumns{ 0 };
+		int failedColumns{ 0 };
+	};
+	SurfaceScanResult runSurfacePreScan();
 	POINT3 overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ, const POINT2& xy) const;
 	std::vector<POINT3> overviewBrightfieldPositionsForZ(int zIndex, const std::vector<double>& directionsZ) const;
 	void captureOverviewBrightfield(std::unique_ptr <StorageWrapper>& storage, int imageNumber, int zIndex, const POINT3& position);
 
 	std::string getRepetitionFilename();
+
+	// Populated at the end of runSurfacePreScan() - see getSurfaceFoundXYIndices().
+	std::set<std::pair<int, int>> m_surfaceFoundXYIndices;
+	// Populated at the end of runSurfacePreScan() - see getSurfaceInterpolatedXYIndices().
+	std::set<std::pair<int, int>> m_surfaceInterpolatedXYIndices;
 
 	BRILLOUIN_SETTINGS m_settings;
 	SCAN_ORDER m_scanOrder;

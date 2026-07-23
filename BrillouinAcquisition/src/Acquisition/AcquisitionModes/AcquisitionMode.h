@@ -16,7 +16,11 @@ enum class ACQUISITION_STATUS {
 	ALIGNING,
 	WAITFORREPETITION,
 	STARTED,
-	RUNNING
+	RUNNING,
+	// Brillouin-only: paused after a surface pre-scan so the user can review which grid
+	// points got a surface z value before committing to measuring them. See
+	// Brillouin::continueAfterSurfaceReview().
+	WAITFORSURFACEREVIEW
 };
 
 class AcquisitionMode : public QObject {

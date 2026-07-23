@@ -624,8 +624,11 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_preScanZStepSpinBox = ui->preScanZStepSpinBox;
 			m_preScanZTravelSpinBox = ui->preScanZTravelSpinBox;
 			m_surfaceDropSpinBox = ui->surfaceDropSpinBox;
-			m_useMediumReferenceCheckbox = ui->useMediumReferenceCheckbox;
 			m_mediumReferenceFrameCountSpinBox = ui->mediumReferenceFrameCountSpinBox;
+			m_surfaceMaxRewindSpinBox = ui->surfaceMaxRewindSpinBox;
+			m_surfaceVerificationStepsSpinBox = ui->surfaceVerificationStepsSpinBox;
+			m_surfaceVerificationFrameAverageSpinBox = ui->surfaceVerificationFrameAverageSpinBox;
+			m_surfaceVerificationToleranceSpinBox = ui->surfaceVerificationToleranceSpinBox;
 			m_absoluteGridCheckbox = ui->absoluteGridCheckbox;
 			m_saveOverviewBrightfieldPerZCheckbox = ui->saveOverviewBrightfieldPerZCheckbox;
 			m_overviewFullGridCheckbox = ui->overviewFullGridCheckbox;
@@ -685,8 +688,11 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				if (m_preScanZStepSpinBox) m_preScanZStepSpinBox->setEnabled(enabled);
 				if (m_preScanZTravelSpinBox) m_preScanZTravelSpinBox->setEnabled(enabled);
 				if (m_surfaceDropSpinBox) m_surfaceDropSpinBox->setEnabled(enabled);
-				if (m_useMediumReferenceCheckbox) m_useMediumReferenceCheckbox->setEnabled(enabled);
-				if (m_mediumReferenceFrameCountSpinBox) m_mediumReferenceFrameCountSpinBox->setEnabled(enabled && m_Brillouin->settings.useMediumReference);
+				if (m_mediumReferenceFrameCountSpinBox) m_mediumReferenceFrameCountSpinBox->setEnabled(enabled);
+				if (m_surfaceMaxRewindSpinBox) m_surfaceMaxRewindSpinBox->setEnabled(enabled);
+				if (m_surfaceVerificationStepsSpinBox) m_surfaceVerificationStepsSpinBox->setEnabled(enabled);
+				if (m_surfaceVerificationFrameAverageSpinBox) m_surfaceVerificationFrameAverageSpinBox->setEnabled(enabled);
+				if (m_surfaceVerificationToleranceSpinBox) m_surfaceVerificationToleranceSpinBox->setEnabled(enabled);
 				if (m_editSpectralProxyRoiCheckbox) m_editSpectralProxyRoiCheckbox->setEnabled(enabled);
 				updateBrillouinStartAvailability();
 				update_AOI_preview();
@@ -707,15 +713,24 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				m_Brillouin->settings.surfaceDropFraction = value / 100.0;
 			});
 
-			connect(m_useMediumReferenceCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
-				m_Brillouin->settings.useMediumReference = enabled;
-				if (m_mediumReferenceFrameCountSpinBox) {
-					m_mediumReferenceFrameCountSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow && enabled);
-				}
-			});
-
 			connect(m_mediumReferenceFrameCountSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
 				m_Brillouin->settings.mediumReferenceFrameCount = std::max(1, value);
+			});
+
+			connect(m_surfaceMaxRewindSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+				m_Brillouin->settings.surfaceMaxRewindUm = std::max(0.0, value);
+			});
+
+			connect(m_surfaceVerificationStepsSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+				m_Brillouin->settings.surfaceVerificationSteps = std::max(0, value);
+			});
+
+			connect(m_surfaceVerificationFrameAverageSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+				m_Brillouin->settings.surfaceVerificationFrameAverage = std::max(1, value);
+			});
+
+			connect(m_surfaceVerificationToleranceSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+				m_Brillouin->settings.surfaceVerificationToleranceFraction = std::max(0.0, value) / 100.0;
 			});
 
 			connect(m_absoluteGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
@@ -1875,6 +1890,10 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 			string = "Acquisition aborted.";
 			ui->progressBar->setValue(0);
 			ui->BrillouinStart->setText("Start");
+			if (m_brightfieldPreviewStartedForSurfaceReview) {
+				m_brightfieldPreviewStartedForSurfaceReview = false;
+				showBrightfieldPreviewRunning(false);
+			}
 			break;
 		case ACQUISITION_STATUS::FINISHED:
 			string = "Acquisition finished.";
@@ -1884,6 +1903,13 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 		case ACQUISITION_STATUS::STARTED:
 			string = "Acquisition started.";
 			ui->progressBar->setValue(0);
+			if (m_brightfieldPreviewStartedForSurfaceReview) {
+				// Leaving the review pause (Continue/Full grid was clicked) - stop the
+				// live view we auto-started for it, but only that one, not one the user
+				// may have started themselves for an unrelated reason.
+				m_brightfieldPreviewStartedForSurfaceReview = false;
+				showBrightfieldPreviewRunning(false);
+			}
 			[[fallthrough]];
 		case ACQUISITION_STATUS::RUNNING:
 			ui->BrillouinStart->setText("Cancel");
@@ -1893,6 +1919,20 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 			ui->BrillouinStart->setText("Stop");
 			running = true;
 			break;
+		case ACQUISITION_STATUS::WAITFORSURFACEREVIEW:
+			string = "Surface scan finished - review the grid, then Continue or Full grid.";
+			ui->BrillouinStart->setText("Continue");
+			running = true;
+			// Live view at the pre-acquisition position/preset already set up by
+			// Brillouin::acquire() itself - this just brings the GUI's own preview state
+			// (button text, frame grab loop) in sync with it, unless the user already had
+			// it running themselves.
+			if (!m_brightfieldPreviewRunning) {
+				m_brightfieldPreviewStartedForSurfaceReview = true;
+				showBrightfieldPreviewRunning(true);
+			}
+			update_AOI_preview();
+			break;
 		case ACQUISITION_STATUS::STOPPED:
 			ui->BrillouinStart->setText("Start");
 			break;
@@ -1900,6 +1940,7 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 			ui->BrillouinStart->setText("Start");
 			break;
 	}
+	ui->fullGridButton->setEnabled(status == ACQUISITION_STATUS::WAITFORSURFACEREVIEW);
 	ui->progressBar->setFormat(string);
 
 	ui->actionOpen_Acquisition->setDisabled(running);
@@ -4318,6 +4359,16 @@ void BrillouinAcquisition::on_camera_singleShot_clicked() {
 }
 
 void BrillouinAcquisition::on_BrillouinStart_clicked() {
+	if (m_Brillouin->getStatus() == ACQUISITION_STATUS::WAITFORSURFACEREVIEW) {
+		QMetaObject::invokeMethod(
+			m_Brillouin,
+			[&m_Brillouin = m_Brillouin]() {
+				m_Brillouin->continueAfterSurfaceReview(false);
+			},
+			Qt::AutoConnection
+		);
+		return;
+	}
 	if (m_Brillouin->getStatus() < ACQUISITION_STATUS::STARTED) {
 		if (m_Brillouin->settings.useRoiMask && m_Brillouin->settings.roiPolygonUm.size() < 3) {
 			QMessageBox::warning(
@@ -4353,6 +4404,19 @@ void BrillouinAcquisition::on_BrillouinStart_clicked() {
 	} else {
 		m_Brillouin->m_abort = true;
 	}
+}
+
+void BrillouinAcquisition::on_fullGridButton_clicked() {
+	if (m_Brillouin->getStatus() != ACQUISITION_STATUS::WAITFORSURFACEREVIEW) {
+		return;
+	}
+	QMetaObject::invokeMethod(
+		m_Brillouin,
+		[&m_Brillouin = m_Brillouin]() {
+			m_Brillouin->continueAfterSurfaceReview(true);
+		},
+		Qt::AutoConnection
+	);
 }
 
 void BrillouinAcquisition::updateFilename(const std::string& filename) {
@@ -4440,15 +4504,30 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_surfaceDropSpinBox->setValue(100.0 * m_Brillouin->settings.surfaceDropFraction);
 		m_surfaceDropSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
 	}
-	if (m_useMediumReferenceCheckbox) {
-		const QSignalBlocker blocker(*m_useMediumReferenceCheckbox);
-		m_useMediumReferenceCheckbox->setChecked(m_Brillouin->settings.useMediumReference);
-		m_useMediumReferenceCheckbox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
-	}
 	if (m_mediumReferenceFrameCountSpinBox) {
 		const QSignalBlocker blocker(*m_mediumReferenceFrameCountSpinBox);
 		m_mediumReferenceFrameCountSpinBox->setValue(std::max(1, m_Brillouin->settings.mediumReferenceFrameCount));
-		m_mediumReferenceFrameCountSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow && m_Brillouin->settings.useMediumReference);
+		m_mediumReferenceFrameCountSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
+	}
+	if (m_surfaceMaxRewindSpinBox) {
+		const QSignalBlocker blocker(*m_surfaceMaxRewindSpinBox);
+		m_surfaceMaxRewindSpinBox->setValue(std::max(0.0, m_Brillouin->settings.surfaceMaxRewindUm));
+		m_surfaceMaxRewindSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
+	}
+	if (m_surfaceVerificationStepsSpinBox) {
+		const QSignalBlocker blocker(*m_surfaceVerificationStepsSpinBox);
+		m_surfaceVerificationStepsSpinBox->setValue(std::max(0, m_Brillouin->settings.surfaceVerificationSteps));
+		m_surfaceVerificationStepsSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
+	}
+	if (m_surfaceVerificationFrameAverageSpinBox) {
+		const QSignalBlocker blocker(*m_surfaceVerificationFrameAverageSpinBox);
+		m_surfaceVerificationFrameAverageSpinBox->setValue(std::max(1, m_Brillouin->settings.surfaceVerificationFrameAverage));
+		m_surfaceVerificationFrameAverageSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
+	}
+	if (m_surfaceVerificationToleranceSpinBox) {
+		const QSignalBlocker blocker(*m_surfaceVerificationToleranceSpinBox);
+		m_surfaceVerificationToleranceSpinBox->setValue(100.0 * m_Brillouin->settings.surfaceVerificationToleranceFraction);
+		m_surfaceVerificationToleranceSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
 	}
 	if (m_absoluteGridCheckbox) {
 		const QSignalBlocker blocker(*m_absoluteGridCheckbox);
@@ -4570,7 +4649,12 @@ void BrillouinAcquisition::on_scaleCalibrationChanged(const std::vector<POINT2>&
  */
 void BrillouinAcquisition::update_AOI_preview() {
 	if (m_showPositions) {
-		const bool showSurfaceSquares = m_Brillouin->settings.useSurfaceFollow;
+		// Paused for surface-scan review: show only the actual measurement-grid points
+		// that ended up with a surface z value (found or interpolated) as squares, with no
+		// cross markers - reviewMode below overrides the ordinary pre-scan coarse-grid
+		// preview squares and hides the crosses, but keeps their connecting line.
+		const bool reviewMode = m_Brillouin->getStatus() == ACQUISITION_STATUS::WAITFORSURFACEREVIEW;
+		const bool showSurfaceSquares = reviewMode || m_Brillouin->settings.useSurfaceFollow;
 		const bool colorByRoi = m_scanControl
 			&& m_Brillouin->settings.useRoiMask
 			&& m_Brillouin->settings.roiPolygonUm.size() >= 3;
@@ -4594,7 +4678,23 @@ void BrillouinAcquisition::update_AOI_preview() {
 		QVector<double> squareX;
 		QVector<double> squareY;
 		const auto& squarePositionsPixel = colorByRoi ? positionsPixelForRoi : m_positionsPixel;
-		if (showSurfaceSquares && !squarePositionsPixel.empty()) {
+		if (reviewMode && !squarePositionsPixel.empty()) {
+			// squarePositionsPixel is index-aligned with getOrderedIndices() - both are
+			// projections/copies of the same orderedPositions the surface scan produced.
+			const auto orderedIndices = m_Brillouin->getOrderedIndices();
+			const auto foundXYIndices = m_Brillouin->getSurfaceFoundXYIndices();
+			const auto count = std::min(orderedIndices.size(), squarePositionsPixel.size());
+			squareX.reserve((int)count);
+			squareY.reserve((int)count);
+			for (size_t i = 0; i < count; i++) {
+				const auto key = std::make_pair(orderedIndices[i].x, orderedIndices[i].y);
+				if (foundXYIndices.find(key) == foundXYIndices.end()) {
+					continue;
+				}
+				squareX.push_back(squarePositionsPixel[i].x);
+				squareY.push_back(squarePositionsPixel[i].y);
+			}
+		} else if (showSurfaceSquares && !squarePositionsPixel.empty()) {
 			const auto xyBin = std::max(1, m_Brillouin->settings.preScanXYBin);
 			double minX = squarePositionsPixel.front().x;
 			double maxX = squarePositionsPixel.front().x;
@@ -4701,6 +4801,20 @@ void BrillouinAcquisition::update_AOI_preview() {
 				scatterStyle.setSize(8);
 				m_positionsMarkerOutsideRoi->setScatterStyle(scatterStyle);
 			}
+			// Reviewing a finished surface scan: keep the connecting line but hide the
+			// cross markers themselves, since the squares above already show the points
+			// that matter now. Re-applied every call (not just at creation) so it tracks
+			// reviewMode as it changes.
+			{
+				auto scatterStyle = m_positionsMarkerInsideRoi->scatterStyle();
+				scatterStyle.setShape(reviewMode ? QCPScatterStyle::ssNone : QCPScatterStyle::ssCross);
+				m_positionsMarkerInsideRoi->setScatterStyle(scatterStyle);
+			}
+			{
+				auto scatterStyle = m_positionsMarkerOutsideRoi->scatterStyle();
+				scatterStyle.setShape(reviewMode ? QCPScatterStyle::ssNone : QCPScatterStyle::ssCross);
+				m_positionsMarkerOutsideRoi->setScatterStyle(scatterStyle);
+			}
 			m_positionsMarkerInsideRoi->setData(xInside, yInside);
 			m_positionsMarkerOutsideRoi->setData(xOutside, yOutside);
 			if (showSurfaceSquares && m_positionsMarkerSquareInsideRoi) {
@@ -4753,6 +4867,12 @@ void BrillouinAcquisition::update_AOI_preview() {
 				scatterStyle.setBrush(Qt::NoBrush);
 				scatterStyle.setSize(10);
 				m_positionsMarkerSquare->setScatterStyle(scatterStyle);
+			}
+			// See the colorByRoi branch above for why this is re-applied every call.
+			{
+				auto scatterStyle = m_positionsMarker->scatterStyle();
+				scatterStyle.setShape(reviewMode ? QCPScatterStyle::ssNone : QCPScatterStyle::ssCross);
+				m_positionsMarker->setScatterStyle(scatterStyle);
 			}
 			m_positionsMarker->setData(xPos, yPos);
 			if (showSurfaceSquares && m_positionsMarkerSquare) {
@@ -5332,7 +5452,8 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-calibration-exposure-time", m_Brillouin->settings.calibrationExposureTime);
 	settings.setValue("brillouin-use-roi-mask", m_Brillouin->settings.useRoiMask);
 	settings.setValue("brillouin-roi-polygon-um", serializeRoiPolygon(m_Brillouin->settings.roiPolygonUm));
-	settings.setValue("brillouin-use-surface-follow", m_Brillouin->settings.useSurfaceFollow);
+	// useSurfaceFollow is deliberately not persisted - it should always start off,
+	// regardless of how the previous session ended.
 	settings.setValue("brillouin-surface-z-offset-um", m_Brillouin->settings.surfaceZOffsetUm);
 	settings.setValue("brillouin-surface-follow-half-range-um", m_Brillouin->settings.surfaceFollowHalfRangeUm);
 	settings.setValue("brillouin-pre-scan-xy-bin", m_Brillouin->settings.preScanXYBin);
@@ -5346,10 +5467,15 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-surface-metric-threshold", m_Brillouin->settings.surfaceMetricThreshold);
 	settings.setValue("brillouin-surface-smooth-sigma-um", m_Brillouin->settings.surfaceSmoothSigmaUm);
 	settings.setValue("brillouin-surface-drop-fraction", m_Brillouin->settings.surfaceDropFraction);
-	settings.setValue("brillouin-use-medium-reference", m_Brillouin->settings.useMediumReference);
 	settings.setValue("brillouin-medium-reference-value", m_Brillouin->settings.mediumReferenceValue);
 	settings.setValue("brillouin-medium-reference-frame-count", m_Brillouin->settings.mediumReferenceFrameCount);
-	settings.setValue("brillouin-grid-coordinates-absolute", m_Brillouin->settings.gridCoordinatesAbsolute);
+	settings.setValue("brillouin-surface-max-rewind-um", m_Brillouin->settings.surfaceMaxRewindUm);
+	settings.setValue("brillouin-surface-verification-steps", m_Brillouin->settings.surfaceVerificationSteps);
+	settings.setValue("brillouin-surface-verification-frame-average", m_Brillouin->settings.surfaceVerificationFrameAverage);
+	settings.setValue("brillouin-surface-verification-tolerance-fraction", m_Brillouin->settings.surfaceVerificationToleranceFraction);
+	// gridCoordinatesAbsolute is deliberately not persisted - it should always start off,
+	// regardless of how the previous session ended. The origin itself is still saved/
+	// restored below, in case the user re-enables absolute mode.
 	settings.setValue("brillouin-absolute-grid-origin-x-um", m_Brillouin->settings.absoluteGridOriginUm.x);
 	settings.setValue("brillouin-absolute-grid-origin-y-um", m_Brillouin->settings.absoluteGridOriginUm.y);
 	settings.setValue("brillouin-absolute-grid-origin-z-um", m_Brillouin->settings.absoluteGridOriginUm.z);
@@ -5464,7 +5590,7 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.calibrationExposureTime = settings.value("brillouin-calibration-exposure-time", m_Brillouin->settings.calibrationExposureTime).toDouble();
 	m_Brillouin->settings.useRoiMask = settings.value("brillouin-use-roi-mask", m_Brillouin->settings.useRoiMask).toBool();
 	m_Brillouin->settings.roiPolygonUm = deserializeRoiPolygon(settings.value("brillouin-roi-polygon-um", "").toString());
-	m_Brillouin->settings.useSurfaceFollow = settings.value("brillouin-use-surface-follow", m_Brillouin->settings.useSurfaceFollow).toBool();
+	// useSurfaceFollow is deliberately not restored - always starts off (see saveSettings()).
 	m_Brillouin->settings.surfaceZOffsetUm = settings.value("brillouin-surface-z-offset-um", m_Brillouin->settings.surfaceZOffsetUm).toDouble();
 	m_Brillouin->settings.surfaceFollowHalfRangeUm = settings.value("brillouin-surface-follow-half-range-um", m_Brillouin->settings.surfaceFollowHalfRangeUm).toDouble();
 	m_Brillouin->settings.preScanXYBin = settings.value("brillouin-pre-scan-xy-bin", m_Brillouin->settings.preScanXYBin).toInt();
@@ -5478,10 +5604,13 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.surfaceMetricThreshold = settings.value("brillouin-surface-metric-threshold", m_Brillouin->settings.surfaceMetricThreshold).toDouble();
 	m_Brillouin->settings.surfaceSmoothSigmaUm = settings.value("brillouin-surface-smooth-sigma-um", m_Brillouin->settings.surfaceSmoothSigmaUm).toDouble();
 	m_Brillouin->settings.surfaceDropFraction = settings.value("brillouin-surface-drop-fraction", m_Brillouin->settings.surfaceDropFraction).toDouble();
-	m_Brillouin->settings.useMediumReference = settings.value("brillouin-use-medium-reference", m_Brillouin->settings.useMediumReference).toBool();
 	m_Brillouin->settings.mediumReferenceValue = settings.value("brillouin-medium-reference-value", m_Brillouin->settings.mediumReferenceValue).toDouble();
 	m_Brillouin->settings.mediumReferenceFrameCount = settings.value("brillouin-medium-reference-frame-count", m_Brillouin->settings.mediumReferenceFrameCount).toInt();
-	m_Brillouin->settings.gridCoordinatesAbsolute = settings.value("brillouin-grid-coordinates-absolute", m_Brillouin->settings.gridCoordinatesAbsolute).toBool();
+	m_Brillouin->settings.surfaceMaxRewindUm = settings.value("brillouin-surface-max-rewind-um", m_Brillouin->settings.surfaceMaxRewindUm).toDouble();
+	m_Brillouin->settings.surfaceVerificationSteps = settings.value("brillouin-surface-verification-steps", m_Brillouin->settings.surfaceVerificationSteps).toInt();
+	m_Brillouin->settings.surfaceVerificationFrameAverage = settings.value("brillouin-surface-verification-frame-average", m_Brillouin->settings.surfaceVerificationFrameAverage).toInt();
+	m_Brillouin->settings.surfaceVerificationToleranceFraction = settings.value("brillouin-surface-verification-tolerance-fraction", m_Brillouin->settings.surfaceVerificationToleranceFraction).toDouble();
+	// gridCoordinatesAbsolute is deliberately not restored - always starts off (see saveSettings()).
 	m_Brillouin->settings.absoluteGridOriginUm.x = settings.value("brillouin-absolute-grid-origin-x-um", m_Brillouin->settings.absoluteGridOriginUm.x).toDouble();
 	m_Brillouin->settings.absoluteGridOriginUm.y = settings.value("brillouin-absolute-grid-origin-y-um", m_Brillouin->settings.absoluteGridOriginUm.y).toDouble();
 	m_Brillouin->settings.absoluteGridOriginUm.z = settings.value("brillouin-absolute-grid-origin-z-um", m_Brillouin->settings.absoluteGridOriginUm.z).toDouble();

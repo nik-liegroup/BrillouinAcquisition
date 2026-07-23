@@ -147,8 +147,11 @@ private:
 	QDoubleSpinBox* m_preScanZStepSpinBox{ nullptr };
 	QDoubleSpinBox* m_preScanZTravelSpinBox{ nullptr };
 	QDoubleSpinBox* m_surfaceDropSpinBox{ nullptr };
-	QCheckBox* m_useMediumReferenceCheckbox{ nullptr };
 	QSpinBox* m_mediumReferenceFrameCountSpinBox{ nullptr };
+	QDoubleSpinBox* m_surfaceMaxRewindSpinBox{ nullptr };
+	QSpinBox* m_surfaceVerificationStepsSpinBox{ nullptr };
+	QSpinBox* m_surfaceVerificationFrameAverageSpinBox{ nullptr };
+	QDoubleSpinBox* m_surfaceVerificationToleranceSpinBox{ nullptr };
 	QCheckBox* m_absoluteGridCheckbox{ nullptr };
 	QCheckBox* m_saveOverviewBrightfieldPerZCheckbox{ nullptr };
 	QCheckBox* m_overviewFullGridCheckbox{ nullptr };
@@ -277,6 +280,10 @@ private:
 	StoragePath m_storagePath{ "", "." };
 	bool m_previewRunning{ false };
 	bool m_brightfieldPreviewRunning{ false };
+	// True only while the brightfield live view was auto-started for a surface-scan
+	// review pause, so leaving that state can stop it again without also stopping a live
+	// view the user had already started manually for an unrelated reason.
+	bool m_brightfieldPreviewStartedForSurfaceReview{ false };
 	ACQUISITION_MODE m_enabledModes{ ACQUISITION_MODE::NONE };
 
 	bool m_hasFluorescence{ false };
@@ -377,6 +384,7 @@ private slots:
 	void initBeampathButtons();
 
 	void on_BrillouinStart_clicked();
+	void on_fullGridButton_clicked();
 	void microscopeElementPositionsChanged(const std::vector<double>&);
 	void microscopeElementPositionChanged(DeviceElement element, double position);
 	void on_camera_playPause_clicked();
