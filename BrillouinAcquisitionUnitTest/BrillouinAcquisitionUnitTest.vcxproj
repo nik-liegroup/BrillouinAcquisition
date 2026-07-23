@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -161,40 +161,40 @@
     <ClInclude Include="stdafx.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="..\BrillouinAcquisition\x64\Debug\BrillouinAcquisition.pch" />
+    <None Include="..\BrillouinAcquisition\x64\$(Configuration)\BrillouinAcquisition.pch" />
   </ItemGroup>
   <ItemGroup>
-    <Object Include="..\BrillouinAcquisition\x64\Debug\Acquisition.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\AcquisitionMode.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\Camera.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\com.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\filtermount.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\h5bm.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\logger.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\moc_Acquisition.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\moc_AcquisitionMode.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\moc_camera.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\moc_device.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\moc_filtermount.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\moc_h5bm.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\moc_NIDAQ.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\moc_ODTControl.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\moc_scancontrol.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\moc_storage.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\moc_thread.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\moc_VoltageCalibration.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\moc_ZeissECU.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\NIDAQ.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\ODTControl.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\qrc_BrillouinAcquisition.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\scancontrol.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\stdafx.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\storage.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\unwrap2D.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\unwrap2.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\VoltageCalibration.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\xsample.obj" />
-    <Object Include="..\BrillouinAcquisition\x64\Debug\ZeissECU.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\Acquisition.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\AcquisitionMode.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\Camera.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\com.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\filtermount.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\h5bm.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\logger.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_Acquisition.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_AcquisitionMode.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_camera.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_device.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_filtermount.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_h5bm.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_NIDAQ.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_ODTControl.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_scancontrol.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_storage.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_thread.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_VoltageCalibration.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_ZeissECU.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\NIDAQ.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\ODTControl.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\qrc_BrillouinAcquisition.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\scancontrol.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\stdafx.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\storage.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\unwrap2D.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\unwrap2.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\VoltageCalibration.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\xsample.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\ZeissECU.obj" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="..\BrillouinAcquisition\external\eigen\debug\msvc\eigen.natvis" />
@@ -211,3 +211,4 @@
     </VisualStudio>
   </ProjectExtensions>
 </Project>
+

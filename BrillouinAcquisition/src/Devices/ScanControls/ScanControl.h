@@ -23,12 +23,12 @@ enum class ScanPreset {
 ENABLE_BITMASK_OPERATORS(ScanPreset)
 
 struct BOUNDS {
-	double xMin{ -1e3 };	// [µm] minimal x-value
-	double xMax{ 1e3 };		// [µm] maximal x-value
-	double yMin{ -1e3 };	// [µm] minimal y-value
-	double yMax{ 1e3 };		// [µm] maximal y-value
-	double zMin{ -1e3 };	// [µm] minimal z-value
-	double zMax{ 1e3 };		// [µm] maximal z-value
+	double xMin{ -1e3 };	// [um] minimal x-value
+	double xMax{ 1e3 };		// [um] maximal x-value
+	double yMin{ -1e3 };	// [um] minimal y-value
+	double yMax{ 1e3 };		// [um] maximal y-value
+	double zMin{ -1e3 };	// [um] minimal z-value
+	double zMax{ 1e3 };		// [um] maximal z-value
 };
 
 enum class Capabilities {
@@ -188,6 +188,7 @@ public slots:
 	ScaleCalibrationData getScaleCalibration();
 
 	std::vector<POINT2> getPositionsPix(const std::vector<POINT3>& positionsMicrometer);
+	std::vector<POINT2> getPositionsPix(const std::vector<POINT3>& positionsMicrometer, bool positionsAreAbsolute);
 
 	virtual POINT2 pixToMicroMeter(POINT2 positionPix);
 	virtual POINT2 microMeterToPix(POINT2 positionMicrometer);
@@ -206,13 +207,13 @@ protected:
 
 	std::vector<Capabilities> m_capabilities;
 
-	double m_positionFocus{ 0 };			// [µm]	position of the focus (z-position)
-	POINT2 m_positionStage{ 0, 0 };			// [µm]	position of the stage (x-y-position)
-	POINT2 m_positionScanner{ 0, 0 };		// [µm]	position of the scanner (x-y-position)
+	double m_positionFocus{ 0 };			// [um]	position of the focus (z-position)
+	POINT2 m_positionStage{ 0, 0 };			// [um]	position of the stage (x-y-position)
+	POINT2 m_positionScanner{ 0, 0 };		// [um]	position of the scanner (x-y-position)
 
 	bool m_isCompatible{ false };
 	POINT3 m_homePosition{ 0, 0, 0 };
-	POINT2 m_startPosition{ 0, 0 };		// [µm]	start position
+	POINT2 m_startPosition{ 0, 0 };		// [um]	start position
 
 	ScaleCalibrationData m_scaleCalibration;
 
@@ -226,6 +227,7 @@ protected:
 	BOUNDS m_currentPositionBounds;
 
 	bool m_measurementMode{ false };
+	bool m_AOI_positionsAbsolute{ false };
 	POINT2 m_positionStageOld{ 0, 0 };
 	POINT2 m_positionScannerOld{ 0, 0 };
 

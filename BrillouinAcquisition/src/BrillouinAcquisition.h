@@ -48,6 +48,13 @@ typedef struct {
 	STAGE_SETTINGS stage;
 } SETTINGS_DEVICES;
 
+enum class BrightfieldViewRotation {
+	Rot0 = 0,
+	Rot90 = 1,
+	Rot180 = 2,
+	Rot270 = 3
+};
+
 enum ROI_SOURCE {
 	BOX,
 	PLOT
@@ -132,6 +139,24 @@ private:
 	void plotting(PLOT_SETTINGS* plotSettings, long long dim_x, long long dim_y, const std::vector<T>& unpackedBuffer);
 
 	Ui::BrillouinAcquisitionClass* ui;
+	QCheckBox* m_useRoiMaskCheckbox{ nullptr };
+	QAbstractButton* m_editRoiCheckbox{ nullptr };
+	QPushButton* m_clearRoiButton{ nullptr };
+	QCheckBox* m_useSurfaceFollowCheckbox{ nullptr };
+	QSpinBox* m_preScanXYBinSpinBox{ nullptr };
+	QDoubleSpinBox* m_preScanZStepSpinBox{ nullptr };
+	QDoubleSpinBox* m_preScanZTravelSpinBox{ nullptr };
+	QCheckBox* m_useMaxSafeZCheckbox{ nullptr };
+	QDoubleSpinBox* m_maxSafeZSpinBox{ nullptr };
+	QDoubleSpinBox* m_safetyMarginSpinBox{ nullptr };
+	QDoubleSpinBox* m_surfaceDropSpinBox{ nullptr };
+	QCheckBox* m_useMediumReferenceCheckbox{ nullptr };
+	QSpinBox* m_mediumReferenceFrameCountSpinBox{ nullptr };
+	QCheckBox* m_absoluteGridCheckbox{ nullptr };
+	QAbstractButton* m_editSpectralProxyRoiCheckbox{ nullptr };
+	QCPItemRect* m_spectralProxyRoiRectItem{ nullptr };
+	QPoint m_spectralProxyDragStart;
+	bool m_spectralProxyDragActive{ false };
 	ScanControl::SCAN_DEVICE m_scanControllerType = ScanControl::SCAN_DEVICE::ZEISSECU;
 	ScanControl::SCAN_DEVICE m_scanControllerTypeTemporary = m_scanControllerType;
 
@@ -170,8 +195,20 @@ private:
 	QCPGraph* m_positionScannerMarker{ nullptr };
 	POINT2 m_positionScanner{ -1, -1 };
 	bool m_locatePositionScanner{ false };
+	BrightfieldViewRotation m_brightfieldViewRotation{ BrightfieldViewRotation::Rot0 };
+	bool m_brightfieldRotationCounterClockwise{ false };
+	int m_brightfieldRawWidth{ 1 };
+	int m_brightfieldRawHeight{ 1 };
 
 	QCPCurve* m_positionsMarker{ nullptr };
+	QCPCurve* m_positionsMarkerSquare{ nullptr };
+	QCPCurve* m_positionsMarkerInsideRoi{ nullptr };
+	QCPCurve* m_positionsMarkerOutsideRoi{ nullptr };
+	QCPCurve* m_positionsMarkerSquareInsideRoi{ nullptr };
+	QCPCurve* m_positionsMarkerSquareOutsideRoi{ nullptr };
+	QCPCurve* m_roiPolygonMarker{ nullptr };
+	int m_draggedRoiVertexIndex{ -1 };
+	bool m_draggingRoiVertex{ false };
 	std::vector<POINT3> m_positionsMicrometer;	// [µm]		Positions to raster, relative to current start point
 	std::vector<POINT2> m_positionsPixel;		// [pix]	Positions to raster
 	bool m_showPositions{ true };
@@ -339,6 +376,14 @@ private slots:
 	void initializePlot(PLOT_SETTINGS plotSettings);
 
 	void drawPositionScannerMarker(POINT2 positionScanner);
+	POINT2 brightfieldRawToDisplay(POINT2 point) const;
+	POINT2 brightfieldDisplayToRaw(POINT2 point) const;
+	int brightfieldDisplayWidth() const;
+	int brightfieldDisplayHeight() const;
+	bool isBrightfieldRotated90() const;
+	QString brightfieldRotationText() const;
+	void updateBrightfieldRotationButton();
+	void applyBrightfieldRotationChanged();
 
 	void xAxisRangeChangedODT(const QCPRange& newRange);
 	void yAxisRangeChangedODT(const QCPRange& newRange);
@@ -389,6 +434,7 @@ private slots:
 	void cameraODTOptionsChanged(const CAMERA_OPTIONS& options);
 	void showAcqPosition(POINT3, int);
 	void showPosition(POINT3);
+	void updateEstimatedAcquisitionTime();
 	void setHomePositionBounds(BOUNDS);
 	void setCurrentPositionBounds(BOUNDS bounds);
 	void showCalibrationInterval(int);
@@ -421,6 +467,8 @@ private slots:
 	void on_pixelEncodingODT_currentIndexChanged(const QString& text);
 
 	void on_camera_displayMode_currentIndexChanged(const QString& text);
+	void on_brightfieldRotationButton_clicked();
+	void on_brightfieldRotationCcw_stateChanged(int state);
 	void on_setBackground_clicked();
 
 	void applyGradient(const PLOT_SETTINGS& plotSettings);
@@ -489,6 +537,7 @@ private slots:
 	void AOI_changed(const std::vector<POINT3>& orderedPositions);
 	void on_scaleCalibrationChanged(const std::vector<POINT2>& positions);
 	void update_AOI_preview();
+	void updateRoiPolygonPreview();
 
 	// live calibration
 	void on_preCalibration_stateChanged(int);

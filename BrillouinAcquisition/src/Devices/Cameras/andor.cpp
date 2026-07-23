@@ -166,6 +166,8 @@ int Andor::acquireImage(std::byte* buffer) {
 	auto ret = AT_WaitBuffer(m_camera, &Buffer, &m_bytesPerFrame, 1500 * m_settings.exposureTime);
 	// return if AT_WaitBuffer timed out
 	if (ret != AT_SUCCESS) {
+		AT_Flush(m_camera);
+		delete[] UserBuffer;
 		return 0;
 	}
 

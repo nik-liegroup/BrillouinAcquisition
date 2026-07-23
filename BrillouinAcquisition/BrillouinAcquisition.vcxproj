@@ -172,6 +172,7 @@
 		<ClCompile Include="src\Acquisition\Acquisition.cpp" />
 		<ClCompile Include="src\Acquisition\AcquisitionModes\AcquisitionMode.cpp" />
 		<ClCompile Include="src\Acquisition\AcquisitionModes\ScaleCalibration.cpp" />
+		<ClCompile Include="src\Acquisition\Planning\ScanPlanner.cpp" />
 		<ClCompile Include="src\Acquisition\AcquisitionModes\VoltageCalibration.cpp" />
 		<ClCompile Include="src\Acquisition\AcquisitionModes\Fluorescence.cpp" />
 		<ClCompile Include="src\Devices\Cameras\andor.cpp" />
@@ -254,6 +255,7 @@
 		<ClInclude Include="src\wrapper\unwrap2.h" />
 		<QtMoc Include="src\wrapper\storage.h" />
 		<QtMoc Include="src\Acquisition\AcquisitionModes\ScaleCalibration.h" />
+		<ClInclude Include="src\Acquisition\Planning\ScanPlanner.h" />
 		<ClInclude Include="src\Acquisition\AcquisitionModes\ScaleCalibrationHelper.h" />
 		<QtMoc Include="src\Acquisition\Acquisition.h" />
 		<QtMoc Include="src\Acquisition\AcquisitionModes\Brillouin.h" />

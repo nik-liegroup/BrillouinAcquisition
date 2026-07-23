@@ -2,7 +2,7 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
 
   <PropertyGroup Label="QtSettings">
-    <QtInstallDir>C:\Qt\5.15.x\5.15.2\msvc2019_64</QtInstallDir>
+    <QtInstallDir>C:\Qt\5.15.2\msvc2019_64</QtInstallDir>
     <QtVersion>qt_5_15_2</QtVersion>
     <QtModules>core;gui;widgets;serialport;printsupport</QtModules>
   </PropertyGroup>
@@ -14,8 +14,8 @@
 
   <PropertyGroup Label="ThirdPartyPaths">
     <!-- Hardcoded absolute paths; adjust if your installs differ -->
-    <QTDIR>C:\Qt\5.15.x\5.15.2\msvc2019_64</QTDIR>
-    <ANDOR_SDK_DIR>C:\Program Files\Andor SDK3</ANDOR_SDK_DIR>
+    <QTDIR>C:\Qt\5.15.2\msvc2019_64</QTDIR>
+    <ANDOR_SDK_DIR>D:\Niklas\Software</ANDOR_SDK_DIR>
     <HDF5_DIR>C:\Program Files\HDF_Group\HDF5\1.12.1</HDF5_DIR>
     <THORLABS_DIR>C:\Program Files\Thorlabs\Kinesis</THORLABS_DIR>
     <NI_EXTCOMPILER_DIR>C:\Program Files (x86)\National Instruments\Shared\ExternalCompilerSupport\C</NI_EXTCOMPILER_DIR>
@@ -23,7 +23,7 @@
     <POINT_GREY_DIR>C:\Program Files\Point Grey Research\FlyCapture2</POINT_GREY_DIR>
     <PHOTOMETRICS_PVCAM_DIR>c:\Program Files\Photometrics\PVCamSDK</PHOTOMETRICS_PVCAM_DIR>
     <CARL_ZEISS_MTB_DIR>C:\Program Files\Carl Zeiss\MTB 2011 - 2.15.0.2</CARL_ZEISS_MTB_DIR>
-    <OPENCV_DIR>C:\Users\ralajan\Downloads\BrillouinMicroscopy\OpenCV\470\opencv\build</OPENCV_DIR>
+    <OPENCV_DIR>C:\Program Files\OpenCV\build</OPENCV_DIR>
     <!-- These are 3rd party libraries that are included in the project -->
     <EXTERNAL_FFTW_DIR>..\BrillouinAcquisition\external\fftw</EXTERNAL_FFTW_DIR>
     <EXTERNAL_GSL_DIR>..\BrillouinAcquisition\external\gsl</EXTERNAL_GSL_DIR>
@@ -57,7 +57,7 @@
       $(POINT_GREY_DIR)\lib64\vs2015;
       $(IDS_UEYE_DIR)\Develop\Lib;
       $(PHOTOMETRICS_PVCAM_DIR)\Lib\amd64;
-      $(OPENCV_DIR)\x64\vc16\lib;
+      $(OPENCV_DIR)\x64\vc15\lib;
       $(QTDIR)\bin;
       $(EXTERNAL_FFTW_DIR);
       $(EXTERNAL_UNWRAP2_DIR);
@@ -85,11 +85,11 @@
     </ThirdPartyIncludes>
 
     <ThirdPartyLibs>
-      $(ThirdPartyLibsCommon);
-      $(ANDOR_SDK_DIR)\atcorem.lib;
-      $(ANDOR_SDK_DIR)\atutilitym.lib;
-      <!-- OpenCV debug DLL file -->
-      opencv_world470d.lib;
+		$(ThirdPartyLibsCommon);
+		$(ANDOR_SDK_DIR)\atcorem.lib;
+		$(ANDOR_SDK_DIR)\atutilitym.lib;
+		<!-- OpenCV debug DLL file -->
+      opencv_world453d.lib;
     </ThirdPartyLibs>
   </PropertyGroup>
 
@@ -100,11 +100,11 @@
     </ThirdPartyIncludes>
 
     <ThirdPartyLibs>
-      $(ThirdPartyLibsCommon);
-      $(ANDOR_SDK_DIR)\atcore.lib;
-      $(ANDOR_SDK_DIR)\atutility.lib;
-      <!-- OpenCV normal DLL file -->
-      opencv_world470.lib;
+		$(ThirdPartyLibsCommon);
+		$(ANDOR_SDK_DIR)\atcorem.lib;
+		$(ANDOR_SDK_DIR)\atutilitym.lib;
+		<!-- OpenCV normal DLL file -->
+      opencv_world453.lib;
     </ThirdPartyLibs>
   </PropertyGroup>
 
@@ -137,9 +137,9 @@
   <PropertyGroup Condition="'$(Configuration)'=='Debug' and '$(Platform)'=='x64'">
     <!-- Additional copy commands for Debug -->
     <PostBuildCmdsDebug>
-      copy "$(ANDOR_SDK_DIR)\atcorem.dll" $(TargetDir)
-      copy "$(ANDOR_SDK_DIR)\atutilitym.dll" $(TargetDir)
-      copy "$(OPENCV_DIR)\x64\vc16\bin\opencv_world470d.dll" $(TargetDir)
+      copy "$(ANDOR_SDK_DIR)\atcore.dll" $(TargetDir)
+      copy "$(ANDOR_SDK_DIR)\atutility.dll" $(TargetDir)
+      copy "$(OPENCV_DIR)\x64\vc15\bin\opencv_world453d.dll" $(TargetDir)
     </PostBuildCmdsDebug>
   </PropertyGroup>
 
@@ -148,7 +148,7 @@
     <PostBuildCmdsRelease>
       copy "$(ANDOR_SDK_DIR)\atcore.dll" $(TargetDir)
       copy "$(ANDOR_SDK_DIR)\atutility.dll" $(TargetDir)
-      copy "$(OPENCV_DIR)\x64\vc16\bin\opencv_world470.dll" $(TargetDir)
+      copy "$(OPENCV_DIR)\x64\vc15\bin\opencv_world453.dll" $(TargetDir)
 			copy "$(IDS_UEYE_DIR)\USB driver package\ueye_api_64.dll" $(TargetDir)
 			copy "$(SystemRoot)\System32\pvcam64.dll" $(TargetDir)
 			copy "$(SystemRoot)\System32\nicaiu.dll" $(TargetDir)
