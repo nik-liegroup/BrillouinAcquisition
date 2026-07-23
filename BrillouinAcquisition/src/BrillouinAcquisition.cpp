@@ -226,6 +226,20 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		this,
 		[this](int repNumber, int timeToNext) { showRepProgress(repNumber, timeToNext); }
 	);
+	connection = QWidget::connect(
+		m_Brillouin,
+		&Brillouin::s_surfaceZSafetyWarning,
+		this,
+		[this](double plannedZ, double maxSafeZ) {
+			QMessageBox::warning(
+				this,
+				"Surface Z Safety Warning",
+				QString("Objective z exceeded max safe z during acquisition.\nPlanned z: %1 um\nMax safe z: %2 um\nAcquisition will continue.")
+					.arg(plannedZ, 0, 'f', 2)
+					.arg(maxSafeZ, 0, 'f', 2)
+			);
+		}
+	);
 
 	// slot to update the scan order
 	connection = QWidget::connect(
@@ -453,6 +467,10 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			if (m_Brillouin->settings.gridCoordinatesAbsolute) {
 				const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
 				positionInUm += POINT2{ stagePosition.x, stagePosition.y };
+				positionInUm -= POINT2{
+					m_Brillouin->settings.absoluteGridOriginUm.x,
+					m_Brillouin->settings.absoluteGridOriginUm.y
+				};
 			}
 			auto& poly = m_Brillouin->settings.roiPolygonUm;
 			if (m_draggedRoiVertexIndex >= 0 && m_draggedRoiVertexIndex < (int)poly.size()) {
@@ -488,17 +506,18 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				return;
 			}
 			event->accept(); // prevent default plot drag/zoom handling
+			if (event->button() == Qt::RightButton) {
+				m_spectralProxyDragActive = false;
+				clearSpectralProxyRois();
+				return;
+			}
 			if (event->button() != Qt::LeftButton) {
 				return;
 			}
 			m_spectralProxyDragStart = event->pos();
 			m_spectralProxyDragActive = true;
-			if (!m_spectralProxyRoiRectItem) {
-				m_spectralProxyRoiRectItem = new QCPItemRect(ui->customplot);
-				QPen pen(QColor(255, 215, 0));
-				pen.setWidth(2);
-				m_spectralProxyRoiRectItem->setPen(pen);
-			}
+			m_spectralProxyActiveRoiIndex = m_spectralProxyNextRoiIndex;
+			ensureSpectralProxyRoiRect(m_spectralProxyActiveRoiIndex);
 		}
 	);
 
@@ -510,15 +529,16 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			if (m_editSpectralProxyRoiCheckbox && m_editSpectralProxyRoiCheckbox->isChecked()) {
 				event->accept(); // block plot translation while in ROI edit mode
 			}
-			if (!m_spectralProxyDragActive || !m_spectralProxyRoiRectItem) {
+			if (!m_spectralProxyDragActive) {
 				return;
 			}
+			auto* rectItem = ensureSpectralProxyRoiRect(m_spectralProxyActiveRoiIndex);
 			const auto x0 = ui->customplot->xAxis->pixelToCoord(m_spectralProxyDragStart.x());
 			const auto y0 = ui->customplot->yAxis->pixelToCoord(m_spectralProxyDragStart.y());
 			const auto x1 = ui->customplot->xAxis->pixelToCoord(event->pos().x());
 			const auto y1 = ui->customplot->yAxis->pixelToCoord(event->pos().y());
-			m_spectralProxyRoiRectItem->topLeft->setCoords(std::min(x0, x1), std::max(y0, y1));
-			m_spectralProxyRoiRectItem->bottomRight->setCoords(std::max(x0, x1), std::min(y0, y1));
+			rectItem->topLeft->setCoords(std::min(x0, x1), std::max(y0, y1));
+			rectItem->bottomRight->setCoords(std::max(x0, x1), std::min(y0, y1));
 			ui->customplot->replot();
 		}
 	);
@@ -531,7 +551,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			if (m_editSpectralProxyRoiCheckbox && m_editSpectralProxyRoiCheckbox->isChecked()) {
 				event->accept(); // keep plot static during ROI draw
 			}
-			if (!m_spectralProxyDragActive || !m_spectralProxyRoiRectItem) {
+			if (!m_spectralProxyDragActive) {
 				return;
 			}
 			m_spectralProxyDragActive = false;
@@ -550,13 +570,20 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			const int clampedTop = std::clamp(bottom, 0, frameH - 1);
 			const int clampedRight = std::clamp(right, clampedLeft, frameW - 1);
 			const int clampedBottom = std::clamp(top, clampedTop, frameH - 1);
-			m_Brillouin->settings.surfaceProxyRoiLeft = clampedLeft;
-			m_Brillouin->settings.surfaceProxyRoiTop = clampedTop;
-			m_Brillouin->settings.surfaceProxyRoiWidth = clampedRight - clampedLeft + 1;
-			m_Brillouin->settings.surfaceProxyRoiHeight = clampedBottom - clampedTop + 1;
+			if (m_spectralProxyActiveRoiIndex == 1) {
+				m_Brillouin->settings.surfaceProxyRoi2Left = clampedLeft;
+				m_Brillouin->settings.surfaceProxyRoi2Top = clampedTop;
+				m_Brillouin->settings.surfaceProxyRoi2Width = clampedRight - clampedLeft + 1;
+				m_Brillouin->settings.surfaceProxyRoi2Height = clampedBottom - clampedTop + 1;
+			} else {
+				m_Brillouin->settings.surfaceProxyRoiLeft = clampedLeft;
+				m_Brillouin->settings.surfaceProxyRoiTop = clampedTop;
+				m_Brillouin->settings.surfaceProxyRoiWidth = clampedRight - clampedLeft + 1;
+				m_Brillouin->settings.surfaceProxyRoiHeight = clampedBottom - clampedTop + 1;
+			}
 
-			m_spectralProxyRoiRectItem->topLeft->setCoords(clampedLeft + 1, clampedBottom + 1);
-			m_spectralProxyRoiRectItem->bottomRight->setCoords(clampedRight + 1, clampedTop + 1);
+			updateSpectralProxyRoiRect(m_spectralProxyActiveRoiIndex);
+			m_spectralProxyNextRoiIndex = 1 - m_spectralProxyActiveRoiIndex;
 			ui->customplot->replot();
 		}
 	);
@@ -600,7 +627,6 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_preScanZTravelSpinBox = ui->preScanZTravelSpinBox;
 			m_useMaxSafeZCheckbox = ui->useMaxSafeZCheckbox;
 			m_maxSafeZSpinBox = ui->maxSafeZSpinBox;
-			m_safetyMarginSpinBox = ui->safetyMarginSpinBox;
 			m_surfaceDropSpinBox = ui->surfaceDropSpinBox;
 			m_useMediumReferenceCheckbox = ui->useMediumReferenceCheckbox;
 			m_mediumReferenceFrameCountSpinBox = ui->mediumReferenceFrameCountSpinBox;
@@ -663,18 +689,18 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				if (m_preScanZTravelSpinBox) m_preScanZTravelSpinBox->setEnabled(enabled);
 				const auto safetyInputsEnabled = enabled && (m_useMaxSafeZCheckbox == nullptr || m_useMaxSafeZCheckbox->isChecked());
 				if (m_maxSafeZSpinBox) m_maxSafeZSpinBox->setEnabled(safetyInputsEnabled);
-				if (m_safetyMarginSpinBox) m_safetyMarginSpinBox->setEnabled(safetyInputsEnabled);
 				if (m_surfaceDropSpinBox) m_surfaceDropSpinBox->setEnabled(enabled);
 				if (m_useMediumReferenceCheckbox) m_useMediumReferenceCheckbox->setEnabled(enabled);
 				if (m_mediumReferenceFrameCountSpinBox) m_mediumReferenceFrameCountSpinBox->setEnabled(enabled && m_Brillouin->settings.useMediumReference);
 				if (m_editSpectralProxyRoiCheckbox) m_editSpectralProxyRoiCheckbox->setEnabled(enabled);
+				updateBrillouinStartAvailability();
 				update_AOI_preview();
 			});
 			connect(m_useMaxSafeZCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
 				m_Brillouin->settings.useMaxSafeZSafety = enabled;
 				const auto safetyInputsEnabled = m_Brillouin->settings.useSurfaceFollow && enabled;
 				if (m_maxSafeZSpinBox) m_maxSafeZSpinBox->setEnabled(safetyInputsEnabled);
-				if (m_safetyMarginSpinBox) m_safetyMarginSpinBox->setEnabled(safetyInputsEnabled);
+				updateBrillouinStartAvailability();
 			});
 			connect(m_preScanXYBinSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
 				m_Brillouin->settings.preScanXYBin = std::max(1, value);
@@ -685,14 +711,12 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			});
 			connect(m_preScanZTravelSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
 				m_Brillouin->settings.preScanZTravelRangeUm = std::max(0.01, value);
+				updateBrillouinStartAvailability();
 			});
 
 			connect(m_maxSafeZSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
 				m_Brillouin->settings.maxSafeZUm = value;
-			});
-
-			connect(m_safetyMarginSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-				m_Brillouin->settings.safetyMarginUm = value;
+				updateBrillouinStartAvailability();
 			});
 
 			connect(m_surfaceDropSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
@@ -711,6 +735,24 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			});
 
 			connect(m_absoluteGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				if (enabled && m_scanControl) {
+					const auto homePosition = m_scanControl->getHomePosition();
+					if (!m_Brillouin->settings.gridCoordinatesAbsolute) {
+						const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+						for (auto& point : m_Brillouin->settings.roiPolygonUm) {
+							point.x += stagePosition.x - homePosition.x;
+							point.y += stagePosition.y - homePosition.y;
+						}
+					}
+					m_Brillouin->settings.absoluteGridOriginUm = homePosition;
+				} else if (!enabled && m_scanControl && m_Brillouin->settings.gridCoordinatesAbsolute) {
+					const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+					const auto origin = m_Brillouin->settings.absoluteGridOriginUm;
+					for (auto& point : m_Brillouin->settings.roiPolygonUm) {
+						point.x += origin.x - stagePosition.x;
+						point.y += origin.y - stagePosition.y;
+					}
+				}
 				m_Brillouin->settings.gridCoordinatesAbsolute = enabled;
 				ui->setHome->setDisabled(enabled);
 				ui->moveHome->setDisabled(enabled);
@@ -723,10 +765,12 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				if (enabled) {
 					ui->customplot->setInteractions(QCP::iNone);
 					ui->customplot->setCursor(Qt::CrossCursor);
+					ui->statusBar->showMessage("Draw spectral ROI 1, then ROI 2. Right-click clears both ROIs.");
 				} else {
 					ui->customplot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
 					ui->customplot->unsetCursor();
 					m_spectralProxyDragActive = false;
+					ui->statusBar->clearMessage();
 				}
 			});
 		}
@@ -870,6 +914,10 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 				auto pUm = poly[i];
 				if (m_Brillouin->settings.gridCoordinatesAbsolute) {
 					const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+					pUm += POINT2{
+						m_Brillouin->settings.absoluteGridOriginUm.x,
+						m_Brillouin->settings.absoluteGridOriginUm.y
+					};
 					pUm -= POINT2{ stagePosition.x, stagePosition.y };
 				}
 				const auto pPix = brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm));
@@ -906,6 +954,10 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 			if (m_Brillouin->settings.gridCoordinatesAbsolute) {
 				const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
 				positionInUm += POINT2{ stagePosition.x, stagePosition.y };
+				positionInUm -= POINT2{
+					m_Brillouin->settings.absoluteGridOriginUm.x,
+					m_Brillouin->settings.absoluteGridOriginUm.y
+				};
 			}
 			m_Brillouin->settings.roiPolygonUm.push_back(positionInUm);
 			if (m_Brillouin->settings.roiPolygonUm.size() >= 3) {
@@ -1084,6 +1136,104 @@ void BrillouinAcquisition::updateEstimatedAcquisitionTime() {
 		.arg((qlonglong)frameCount)
 		.arg(exposureSeconds, 0, 'g', 4)
 	);
+}
+
+QCPItemRect* BrillouinAcquisition::ensureSpectralProxyRoiRect(int index) {
+	auto** rectItem = index == 1 ? &m_spectralProxyRoi2RectItem : &m_spectralProxyRoiRectItem;
+	if (!*rectItem) {
+		*rectItem = new QCPItemRect(ui->customplot);
+		QPen pen(index == 1 ? QColor(0, 200, 255) : QColor(255, 215, 0));
+		pen.setWidth(2);
+		(*rectItem)->setPen(pen);
+	}
+	return *rectItem;
+}
+
+void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
+	const auto& settings = m_Brillouin->settings;
+	const auto left = index == 1 ? settings.surfaceProxyRoi2Left : settings.surfaceProxyRoiLeft;
+	const auto top = index == 1 ? settings.surfaceProxyRoi2Top : settings.surfaceProxyRoiTop;
+	const auto width = index == 1 ? settings.surfaceProxyRoi2Width : settings.surfaceProxyRoiWidth;
+	const auto height = index == 1 ? settings.surfaceProxyRoi2Height : settings.surfaceProxyRoiHeight;
+	auto** rectItem = index == 1 ? &m_spectralProxyRoi2RectItem : &m_spectralProxyRoiRectItem;
+
+	if (width <= 0 || height <= 0) {
+		if (*rectItem) {
+			ui->customplot->removeItem(*rectItem);
+			*rectItem = nullptr;
+		}
+		return;
+	}
+
+	auto* rect = ensureSpectralProxyRoiRect(index);
+	rect->topLeft->setCoords(left + 1, top + height);
+	rect->bottomRight->setCoords(left + width, top + 1);
+}
+
+void BrillouinAcquisition::clearSpectralProxyRois() {
+	m_Brillouin->settings.surfaceProxyRoiLeft = 0;
+	m_Brillouin->settings.surfaceProxyRoiTop = 0;
+	m_Brillouin->settings.surfaceProxyRoiWidth = 0;
+	m_Brillouin->settings.surfaceProxyRoiHeight = 0;
+	m_Brillouin->settings.surfaceProxyRoi2Left = 0;
+	m_Brillouin->settings.surfaceProxyRoi2Top = 0;
+	m_Brillouin->settings.surfaceProxyRoi2Width = 0;
+	m_Brillouin->settings.surfaceProxyRoi2Height = 0;
+	updateSpectralProxyRoiRect(0);
+	updateSpectralProxyRoiRect(1);
+	m_spectralProxyNextRoiIndex = 0;
+	ui->customplot->replot();
+}
+
+double BrillouinAcquisition::theoreticalMaxSurfaceFollowZ() const {
+	const auto& settings = m_Brillouin->settings;
+	const auto zOrigin = settings.gridCoordinatesAbsolute
+		? settings.absoluteGridOriginUm.z
+		: m_scanControl ? m_scanControl->getPosition().z : 0.0;
+	const auto zTravel = std::max(0.0, settings.preScanZTravelRangeUm);
+	const auto zMid = 0.5 * (settings.zMin + settings.zMax);
+	const auto halfRange = std::max(0.0, settings.surfaceFollowHalfRangeUm);
+	const auto localMaxZ = halfRange > 0.0
+		? halfRange
+		: std::max(settings.zMin, settings.zMax) - zMid;
+	return zOrigin + zTravel + localMaxZ;
+}
+
+bool BrillouinAcquisition::isSurfaceZSafetySatisfied(QString* reason) const {
+	const auto& settings = m_Brillouin->settings;
+	if (!(settings.useSurfaceFollow && settings.useMaxSafeZSafety)) {
+		return true;
+	}
+	if (!std::isfinite(settings.maxSafeZUm)) {
+		if (reason) {
+			*reason = "Surface-follow mode requires a valid max safe z-value.";
+		}
+		return false;
+	}
+	const auto theoreticalMaxZ = theoreticalMaxSurfaceFollowZ();
+	if (theoreticalMaxZ > settings.maxSafeZUm) {
+		if (reason) {
+			*reason = QString("Objective could crash into sample: worst-case z is %1 um, above max safe z %2 um.")
+				.arg(theoreticalMaxZ, 0, 'f', 2)
+				.arg(settings.maxSafeZUm, 0, 'f', 2);
+		}
+		return false;
+	}
+	return true;
+}
+
+void BrillouinAcquisition::updateBrillouinStartAvailability() {
+	const auto running = m_enabledModes != ACQUISITION_MODE::NONE;
+	const auto odtRunning = (bool)(m_enabledModes & ACQUISITION_MODE::ODT);
+	QString reason;
+	const auto surfaceSafe = isSurfaceZSafetySatisfied(&reason);
+	ui->BrillouinStart->setEnabled(!odtRunning && (running || surfaceSafe));
+	ui->BrillouinStart->setToolTip(surfaceSafe ? QString{} : reason);
+	if (!running && !surfaceSafe) {
+		ui->progressBar->setFormat(reason);
+	} else if (!running && surfaceSafe && ui->progressBar->format().startsWith("Objective could crash")) {
+		ui->progressBar->setFormat(QString{});
+	}
 }
 
 void BrillouinAcquisition::showPosition(POINT3 position) {
@@ -1383,14 +1533,10 @@ void BrillouinAcquisition::on_camera_displayMode_currentIndexChanged(const QStri
 
 void BrillouinAcquisition::on_brightfieldRotationButton_clicked() {
 	auto rotation = (int)m_brightfieldViewRotation;
-	rotation += m_brightfieldRotationCounterClockwise ? -1 : 1;
+	rotation += 1;
 	rotation = (rotation + 4) % 4;
 	m_brightfieldViewRotation = (BrightfieldViewRotation)rotation;
 	applyBrightfieldRotationChanged();
-}
-
-void BrillouinAcquisition::on_brightfieldRotationCcw_stateChanged(int state) {
-	m_brightfieldRotationCounterClockwise = state != 0;
 }
 
 void BrillouinAcquisition::applyBrightfieldRotationChanged() {
@@ -1633,13 +1779,7 @@ void BrillouinAcquisition::showEnabledModes(ACQUISITION_MODE modes) {
 	*
 	* If ODT mode is enabled, disable Brillouin and Fluorescence controls (enable otherwise).
 	*/
-	bool ODTMode = (bool)(m_enabledModes & ACQUISITION_MODE::ODT);
-
-	if (ODTMode) {
-		ui->BrillouinStart->setEnabled(false);
-	} else {
-		ui->BrillouinStart->setEnabled(true);
-	}
+	updateBrillouinStartAvailability();
 }
 
 void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
@@ -1707,6 +1847,7 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 	ui->calibrationExposureTime->setDisabled(running);
 	ui->repetitionInterval->setDisabled(running);
 	ui->repetitionCount->setDisabled(running);
+	updateBrillouinStartAvailability();
 }
 
 void BrillouinAcquisition::showBrillouinProgress(double progress, int seconds) {
@@ -4010,20 +4151,15 @@ void BrillouinAcquisition::on_BrillouinStart_clicked() {
 			return;
 		}
 
-		if (m_Brillouin->settings.useSurfaceFollow && m_Brillouin->settings.useMaxSafeZSafety) {
-			const auto maxSafeZUm = m_Brillouin->settings.maxSafeZUm;
-			const auto safetyMarginUm = m_Brillouin->settings.safetyMarginUm;
-			const auto validMaxSafeZ = std::isfinite(maxSafeZUm);
-			const auto validMargin = std::isfinite(safetyMarginUm) && safetyMarginUm >= 0.0;
-			if (!validMaxSafeZ || !validMargin || maxSafeZUm <= safetyMarginUm) {
-				QMessageBox::warning(
-					this,
-					"Invalid Surface-Follow Safety Limit",
-					"Surface-follow mode requires a valid max safe z-value and non-negative safety margin.\n"
-					"Please set maxSafeZUm > safetyMarginUm before starting the acquisition."
-				);
-				return;
-			}
+		QString surfaceSafetyReason;
+		if (!isSurfaceZSafetySatisfied(&surfaceSafetyReason)) {
+			QMessageBox::warning(
+				this,
+				"Unsafe Surface-Follow Z Range",
+				surfaceSafetyReason
+			);
+			updateBrillouinStartAvailability();
+			return;
 		}
 
 		// set camera ROI
@@ -4123,11 +4259,6 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_maxSafeZSpinBox->setValue(m_Brillouin->settings.maxSafeZUm);
 		m_maxSafeZSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow && m_Brillouin->settings.useMaxSafeZSafety);
 	}
-	if (m_safetyMarginSpinBox) {
-		const QSignalBlocker blocker(*m_safetyMarginSpinBox);
-		m_safetyMarginSpinBox->setValue(m_Brillouin->settings.safetyMarginUm);
-		m_safetyMarginSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow && m_Brillouin->settings.useMaxSafeZSafety);
-	}
 	if (m_surfaceDropSpinBox) {
 		const QSignalBlocker blocker(*m_surfaceDropSpinBox);
 		m_surfaceDropSpinBox->setValue(100.0 * m_Brillouin->settings.surfaceDropFraction);
@@ -4154,16 +4285,16 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_editSpectralProxyRoiCheckbox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
 	}
 
-	if (m_spectralProxyRoiRectItem) {
-		const auto l = m_Brillouin->settings.surfaceProxyRoiLeft;
-		const auto t = m_Brillouin->settings.surfaceProxyRoiTop;
-		const auto w = std::max(1, m_Brillouin->settings.surfaceProxyRoiWidth);
-		const auto h = std::max(1, m_Brillouin->settings.surfaceProxyRoiHeight);
-		m_spectralProxyRoiRectItem->topLeft->setCoords(l + 1, t + h);
-		m_spectralProxyRoiRectItem->bottomRight->setCoords(l + w, t + 1);
+	if (m_spectralProxyRoiRectItem || m_Brillouin->settings.surfaceProxyRoiWidth > 0) {
+		updateSpectralProxyRoiRect(0);
+		ui->customplot->replot();
+	}
+	if (m_spectralProxyRoi2RectItem || m_Brillouin->settings.surfaceProxyRoi2Width > 0) {
+		updateSpectralProxyRoiRect(1);
 		ui->customplot->replot();
 	}
 	updateEstimatedAcquisitionTime();
+	updateBrillouinStartAvailability();
 }
 
 void BrillouinAcquisition::on_startX_valueChanged(double value) {
@@ -4251,6 +4382,47 @@ void BrillouinAcquisition::update_AOI_preview() {
 		const bool colorByRoi = m_scanControl
 			&& m_Brillouin->settings.useRoiMask
 			&& m_Brillouin->settings.roiPolygonUm.size() >= 3;
+		auto positionsPixelForRoi = m_positionsPixel;
+		if (colorByRoi && m_Brillouin->settings.gridCoordinatesAbsolute) {
+			const auto& settings = m_Brillouin->settings;
+			auto scanOrderX = ui->buttonGroup->checkedId();
+			auto scanOrderY = ui->buttonGroup_2->checkedId();
+			auto scanOrderZ = ui->buttonGroup_3->checkedId();
+			if (scanOrderX < 0) scanOrderX = 0;
+			if (scanOrderY < 0) scanOrderY = 1;
+			if (scanOrderZ < 0) scanOrderZ = 2;
+
+			std::vector<std::vector<double>> directions(3);
+			directions[(size_t)scanOrderX] = simplemath::linspace(settings.xMin, settings.xMax, settings.xSteps);
+			directions[(size_t)scanOrderY] = simplemath::linspace(settings.yMin, settings.yMax, settings.ySteps);
+			directions[(size_t)scanOrderZ] = simplemath::linspace(settings.zMin, settings.zMax, settings.zSteps);
+
+			const auto stagePosition = m_scanControl->getPosition(PositionType::STAGE);
+			positionsPixelForRoi.clear();
+			positionsPixelForRoi.reserve((size_t)settings.xSteps * (size_t)settings.ySteps * (size_t)settings.zSteps);
+			std::vector<double> position(3);
+			for (size_t ii = 0; ii < directions[2].size(); ii++) {
+				for (size_t jj = 0; jj < directions[1].size(); jj++) {
+					for (size_t kk = 0; kk < directions[0].size(); kk++) {
+						position[0] = directions[0][kk];
+						position[1] = directions[1][jj];
+						position[2] = directions[2][ii];
+						const POINT3 absolutePosition{
+							position[(size_t)scanOrderX] + settings.absoluteGridOriginUm.x,
+							position[(size_t)scanOrderY] + settings.absoluteGridOriginUm.y,
+							position[(size_t)scanOrderZ] + settings.absoluteGridOriginUm.z
+						};
+						const POINT2 displayUm{
+							absolutePosition.x - stagePosition.x,
+							absolutePosition.y - stagePosition.y
+						};
+						positionsPixelForRoi.push_back(
+							brightfieldRawToDisplay(m_scanControl->microMeterToPix(displayUm))
+						);
+					}
+				}
+			}
+		}
 		std::vector<POINT2> roiPolygonPix;
 		if (colorByRoi && m_scanControl) {
 			roiPolygonPix.reserve(m_Brillouin->settings.roiPolygonUm.size());
@@ -4260,6 +4432,10 @@ void BrillouinAcquisition::update_AOI_preview() {
 			for (const auto& p : m_Brillouin->settings.roiPolygonUm) {
 				auto pUm = p;
 				if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+					pUm += POINT2{
+						m_Brillouin->settings.absoluteGridOriginUm.x,
+						m_Brillouin->settings.absoluteGridOriginUm.y
+					};
 					pUm -= POINT2{ stagePosition.x, stagePosition.y };
 				}
 				roiPolygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
@@ -4267,17 +4443,18 @@ void BrillouinAcquisition::update_AOI_preview() {
 		}
 		QVector<double> squareX;
 		QVector<double> squareY;
-		if (showSurfaceSquares && !m_positionsPixel.empty()) {
+		const auto& squarePositionsPixel = colorByRoi ? positionsPixelForRoi : m_positionsPixel;
+		if (showSurfaceSquares && !squarePositionsPixel.empty()) {
 			const auto xyBin = std::max(1, m_Brillouin->settings.preScanXYBin);
-			double minX = m_positionsPixel.front().x;
-			double maxX = m_positionsPixel.front().x;
-			double minY = m_positionsPixel.front().y;
-			double maxY = m_positionsPixel.front().y;
+			double minX = squarePositionsPixel.front().x;
+			double maxX = squarePositionsPixel.front().x;
+			double minY = squarePositionsPixel.front().y;
+			double maxY = squarePositionsPixel.front().y;
 			std::vector<double> xs;
 			std::vector<double> ys;
-			xs.reserve(m_positionsPixel.size());
-			ys.reserve(m_positionsPixel.size());
-			for (const auto& p : m_positionsPixel) {
+			xs.reserve(squarePositionsPixel.size());
+			ys.reserve(squarePositionsPixel.size());
+			for (const auto& p : squarePositionsPixel) {
 				minX = std::min(minX, p.x);
 				maxX = std::max(maxX, p.x);
 				minY = std::min(minY, p.y);
@@ -4320,13 +4497,13 @@ void BrillouinAcquisition::update_AOI_preview() {
 			QVector<double> yInside;
 			QVector<double> xOutside;
 			QVector<double> yOutside;
-			xInside.reserve((int)m_positionsPixel.size());
-			yInside.reserve((int)m_positionsPixel.size());
-			xOutside.reserve((int)m_positionsPixel.size());
-			yOutside.reserve((int)m_positionsPixel.size());
+			xInside.reserve((int)positionsPixelForRoi.size());
+			yInside.reserve((int)positionsPixelForRoi.size());
+			xOutside.reserve((int)positionsPixelForRoi.size());
+			yOutside.reserve((int)positionsPixelForRoi.size());
 
-			for (gsl::index i{ 0 }; i < (gsl::index)m_positionsPixel.size(); i++) {
-				const auto& posPix = m_positionsPixel[(size_t)i];
+			for (gsl::index i{ 0 }; i < (gsl::index)positionsPixelForRoi.size(); i++) {
+				const auto& posPix = positionsPixelForRoi[(size_t)i];
 				const bool inside = pointInPolygon(POINT2{ posPix.x, posPix.y }, roiPolygonPix);
 				if (inside) {
 					xInside.push_back(posPix.x);
@@ -4364,7 +4541,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 			}
 			if (!m_positionsMarkerOutsideRoi) {
 				m_positionsMarkerOutsideRoi = new QCPCurve(ui->customplot_brightfield->xAxis, ui->customplot_brightfield->yAxis);
-				m_positionsMarkerOutsideRoi->setLineStyle(QCPCurve::lsLine);
+				m_positionsMarkerOutsideRoi->setLineStyle(QCPCurve::lsNone);
 				QPen pen;
 				pen.setColor(Qt::red);
 				pen.setWidth(2);
@@ -4526,6 +4703,10 @@ void BrillouinAcquisition::updateRoiPolygonPreview() {
 	for (const auto& p : roiPolygon) {
 		auto pUm = p;
 		if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+			pUm += POINT2{
+				m_Brillouin->settings.absoluteGridOriginUm.x,
+				m_Brillouin->settings.absoluteGridOriginUm.y
+			};
 			pUm -= POINT2{ stagePosition.x, stagePosition.y };
 		}
 		roiPolygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
@@ -4533,6 +4714,10 @@ void BrillouinAcquisition::updateRoiPolygonPreview() {
 	if (roiPolygon.size() >= 3) {
 		auto pUm = roiPolygon[0];
 		if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+			pUm += POINT2{
+				m_Brillouin->settings.absoluteGridOriginUm.x,
+				m_Brillouin->settings.absoluteGridOriginUm.y
+			};
 			pUm -= POINT2{ stagePosition.x, stagePosition.y };
 		}
 		roiPolygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
@@ -4947,7 +5132,6 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("stage-laser-position-x", m_positionScanner.x);
 	settings.setValue("stage-laser-position-y", m_positionScanner.y);
 	settings.setValue("brightfield-view-rotation-degrees", (int)m_brightfieldViewRotation * 90);
-	settings.setValue("brightfield-view-rotation-ccw", m_brightfieldRotationCounterClockwise);
 	settings.setValue("stage-x-min", m_Brillouin->settings.xMin);
 	settings.setValue("stage-x-max", m_Brillouin->settings.xMax);
 	settings.setValue("stage-x-steps", m_Brillouin->settings.xSteps);
@@ -4979,17 +5163,23 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-surface-metric-threshold", m_Brillouin->settings.surfaceMetricThreshold);
 	settings.setValue("brillouin-surface-smooth-sigma-um", m_Brillouin->settings.surfaceSmoothSigmaUm);
 	settings.setValue("brillouin-max-safe-z-um", m_Brillouin->settings.maxSafeZUm);
-	settings.setValue("brillouin-safety-margin-um", m_Brillouin->settings.safetyMarginUm);
 	settings.setValue("brillouin-use-max-safe-z-safety", m_Brillouin->settings.useMaxSafeZSafety);
 	settings.setValue("brillouin-surface-drop-fraction", m_Brillouin->settings.surfaceDropFraction);
 	settings.setValue("brillouin-use-medium-reference", m_Brillouin->settings.useMediumReference);
 	settings.setValue("brillouin-medium-reference-value", m_Brillouin->settings.mediumReferenceValue);
 	settings.setValue("brillouin-medium-reference-frame-count", m_Brillouin->settings.mediumReferenceFrameCount);
 	settings.setValue("brillouin-grid-coordinates-absolute", m_Brillouin->settings.gridCoordinatesAbsolute);
+	settings.setValue("brillouin-absolute-grid-origin-x-um", m_Brillouin->settings.absoluteGridOriginUm.x);
+	settings.setValue("brillouin-absolute-grid-origin-y-um", m_Brillouin->settings.absoluteGridOriginUm.y);
+	settings.setValue("brillouin-absolute-grid-origin-z-um", m_Brillouin->settings.absoluteGridOriginUm.z);
 	settings.setValue("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft);
 	settings.setValue("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop);
 	settings.setValue("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth);
 	settings.setValue("brillouin-surface-proxy-roi-height", m_Brillouin->settings.surfaceProxyRoiHeight);
+	settings.setValue("brillouin-surface-proxy-roi-2-left", m_Brillouin->settings.surfaceProxyRoi2Left);
+	settings.setValue("brillouin-surface-proxy-roi-2-top", m_Brillouin->settings.surfaceProxyRoi2Top);
+	settings.setValue("brillouin-surface-proxy-roi-2-width", m_Brillouin->settings.surfaceProxyRoi2Width);
+	settings.setValue("brillouin-surface-proxy-roi-2-height", m_Brillouin->settings.surfaceProxyRoi2Height);
 	settings.setValue("brillouin-camera-roi-left", m_deviceSettings.camera.roi.left);
 	settings.setValue("brillouin-camera-roi-top", m_deviceSettings.camera.roi.top);
 	settings.setValue("brillouin-camera-roi-width-physical", m_deviceSettings.camera.roi.width_physical);
@@ -5066,14 +5256,9 @@ void BrillouinAcquisition::readSettings() {
 	settings.beginGroup("devices-settings");
 	auto posX = settings.value("stage-laser-position-x");
 	auto posY = settings.value("stage-laser-position-y");
-	m_positionScanner = POINT2(posX.toDouble(), posY.toDouble());
+	m_positionScanner = POINT2{ posX.toDouble(), posY.toDouble() };
 	const auto brightfieldRotationDegrees = settings.value("brightfield-view-rotation-degrees", (int)m_brightfieldViewRotation * 90).toInt();
 	m_brightfieldViewRotation = (BrightfieldViewRotation)std::clamp(brightfieldRotationDegrees / 90, 0, 3);
-	m_brightfieldRotationCounterClockwise = settings.value("brightfield-view-rotation-ccw", m_brightfieldRotationCounterClockwise).toBool();
-	if (ui->brightfieldRotationCcw) {
-		const QSignalBlocker blocker(ui->brightfieldRotationCcw);
-		ui->brightfieldRotationCcw->setChecked(m_brightfieldRotationCounterClockwise);
-	}
 	updateBrightfieldRotationButton();
 	m_Brillouin->settings.setXMin(settings.value("stage-x-min", m_Brillouin->settings.xMin).toInt());
 	m_Brillouin->settings.setXMax(settings.value("stage-x-max", m_Brillouin->settings.xMax).toInt());
@@ -5106,16 +5291,22 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.surfaceMetricThreshold = settings.value("brillouin-surface-metric-threshold", m_Brillouin->settings.surfaceMetricThreshold).toDouble();
 	m_Brillouin->settings.surfaceSmoothSigmaUm = settings.value("brillouin-surface-smooth-sigma-um", m_Brillouin->settings.surfaceSmoothSigmaUm).toDouble();
 	m_Brillouin->settings.maxSafeZUm = settings.value("brillouin-max-safe-z-um", m_Brillouin->settings.maxSafeZUm).toDouble();
-	m_Brillouin->settings.safetyMarginUm = settings.value("brillouin-safety-margin-um", m_Brillouin->settings.safetyMarginUm).toDouble();
 	m_Brillouin->settings.useMaxSafeZSafety = settings.value("brillouin-use-max-safe-z-safety", m_Brillouin->settings.useMaxSafeZSafety).toBool();
 	m_Brillouin->settings.surfaceDropFraction = settings.value("brillouin-surface-drop-fraction", m_Brillouin->settings.surfaceDropFraction).toDouble();
 	m_Brillouin->settings.useMediumReference = settings.value("brillouin-use-medium-reference", m_Brillouin->settings.useMediumReference).toBool();
 	m_Brillouin->settings.mediumReferenceValue = settings.value("brillouin-medium-reference-value", m_Brillouin->settings.mediumReferenceValue).toDouble();
 	m_Brillouin->settings.mediumReferenceFrameCount = settings.value("brillouin-medium-reference-frame-count", m_Brillouin->settings.mediumReferenceFrameCount).toInt();
 	m_Brillouin->settings.gridCoordinatesAbsolute = settings.value("brillouin-grid-coordinates-absolute", m_Brillouin->settings.gridCoordinatesAbsolute).toBool();
+	m_Brillouin->settings.absoluteGridOriginUm.x = settings.value("brillouin-absolute-grid-origin-x-um", m_Brillouin->settings.absoluteGridOriginUm.x).toDouble();
+	m_Brillouin->settings.absoluteGridOriginUm.y = settings.value("brillouin-absolute-grid-origin-y-um", m_Brillouin->settings.absoluteGridOriginUm.y).toDouble();
+	m_Brillouin->settings.absoluteGridOriginUm.z = settings.value("brillouin-absolute-grid-origin-z-um", m_Brillouin->settings.absoluteGridOriginUm.z).toDouble();
 	m_Brillouin->settings.surfaceProxyRoiLeft = settings.value("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft).toInt();
 	m_Brillouin->settings.surfaceProxyRoiTop = settings.value("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop).toInt();
 	m_Brillouin->settings.surfaceProxyRoiWidth = settings.value("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth).toInt();
 	m_Brillouin->settings.surfaceProxyRoiHeight = settings.value("brillouin-surface-proxy-roi-height", m_Brillouin->settings.surfaceProxyRoiHeight).toInt();
+	m_Brillouin->settings.surfaceProxyRoi2Left = settings.value("brillouin-surface-proxy-roi-2-left", m_Brillouin->settings.surfaceProxyRoi2Left).toInt();
+	m_Brillouin->settings.surfaceProxyRoi2Top = settings.value("brillouin-surface-proxy-roi-2-top", m_Brillouin->settings.surfaceProxyRoi2Top).toInt();
+	m_Brillouin->settings.surfaceProxyRoi2Width = settings.value("brillouin-surface-proxy-roi-2-width", m_Brillouin->settings.surfaceProxyRoi2Width).toInt();
+	m_Brillouin->settings.surfaceProxyRoi2Height = settings.value("brillouin-surface-proxy-roi-2-height", m_Brillouin->settings.surfaceProxyRoi2Height).toInt();
 	settings.endGroup();
 }

@@ -22,6 +22,7 @@ struct ScanPlannerInput {
 	bool useRoiMask{ false };
 	std::vector<POINT2> roiPolygonUm;
 	bool gridCoordinatesAbsolute{ false };
+	POINT3 absoluteGridOriginUm{ 0.0, 0.0, 0.0 };
 };
 
 struct ScanPlannerOutput {

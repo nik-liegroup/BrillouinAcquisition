@@ -176,6 +176,7 @@ public slots:
 	void startAnnouncingElementPosition();
 	void stopAnnouncingElementPosition();
 	void setHome();
+	POINT3 getHomePosition() const;
 	void moveHome();
 	void savePosition();
 	void moveToSavedPosition(int index);

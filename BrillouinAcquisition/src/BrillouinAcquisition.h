@@ -148,15 +148,20 @@ private:
 	QDoubleSpinBox* m_preScanZTravelSpinBox{ nullptr };
 	QCheckBox* m_useMaxSafeZCheckbox{ nullptr };
 	QDoubleSpinBox* m_maxSafeZSpinBox{ nullptr };
-	QDoubleSpinBox* m_safetyMarginSpinBox{ nullptr };
 	QDoubleSpinBox* m_surfaceDropSpinBox{ nullptr };
 	QCheckBox* m_useMediumReferenceCheckbox{ nullptr };
 	QSpinBox* m_mediumReferenceFrameCountSpinBox{ nullptr };
 	QCheckBox* m_absoluteGridCheckbox{ nullptr };
 	QAbstractButton* m_editSpectralProxyRoiCheckbox{ nullptr };
 	QCPItemRect* m_spectralProxyRoiRectItem{ nullptr };
+	QCPItemRect* m_spectralProxyRoi2RectItem{ nullptr };
 	QPoint m_spectralProxyDragStart;
+	int m_spectralProxyActiveRoiIndex{ 0 };
+	int m_spectralProxyNextRoiIndex{ 0 };
 	bool m_spectralProxyDragActive{ false };
+	QCPItemRect* ensureSpectralProxyRoiRect(int index);
+	void updateSpectralProxyRoiRect(int index);
+	void clearSpectralProxyRois();
 	ScanControl::SCAN_DEVICE m_scanControllerType = ScanControl::SCAN_DEVICE::ZEISSECU;
 	ScanControl::SCAN_DEVICE m_scanControllerTypeTemporary = m_scanControllerType;
 
@@ -196,7 +201,6 @@ private:
 	POINT2 m_positionScanner{ -1, -1 };
 	bool m_locatePositionScanner{ false };
 	BrightfieldViewRotation m_brightfieldViewRotation{ BrightfieldViewRotation::Rot0 };
-	bool m_brightfieldRotationCounterClockwise{ false };
 	int m_brightfieldRawWidth{ 1 };
 	int m_brightfieldRawHeight{ 1 };
 
@@ -435,6 +439,9 @@ private slots:
 	void showAcqPosition(POINT3, int);
 	void showPosition(POINT3);
 	void updateEstimatedAcquisitionTime();
+	double theoreticalMaxSurfaceFollowZ() const;
+	bool isSurfaceZSafetySatisfied(QString* reason = nullptr) const;
+	void updateBrillouinStartAvailability();
 	void setHomePositionBounds(BOUNDS);
 	void setCurrentPositionBounds(BOUNDS bounds);
 	void showCalibrationInterval(int);
@@ -468,7 +475,6 @@ private slots:
 
 	void on_camera_displayMode_currentIndexChanged(const QString& text);
 	void on_brightfieldRotationButton_clicked();
-	void on_brightfieldRotationCcw_stateChanged(int state);
 	void on_setBackground_clicked();
 
 	void applyGradient(const PLOT_SETTINGS& plotSettings);
