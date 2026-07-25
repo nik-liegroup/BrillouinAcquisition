@@ -173,6 +173,15 @@ void ScanControl::setPreset(ScanPreset presetType) {
 	getElements();
 
 	for (gsl::index ii{ 0 }; ii < m_deviceElements.size(); ii++) {
+		// "RL Shutter" is deliberately excluded from this automatic per-preset forcing -
+		// switching optical presets (e.g. for a brightfield preview, calibration, or scale
+		// calibration) used to silently clobber whatever the user had it manually set to,
+		// even outside of an actual acquisition. It's either left exactly as the user set
+		// it (manual beampath button), or explicitly driven by acquisition code that
+		// actually needs a specific state - see setRLShutterOpen().
+		if (m_deviceElements[ii].name == "RL Shutter") {
+			continue;
+		}
 		// check if element position needs to be changed
 		if (!preset.elementPositions[ii].empty() && !simplemath::contains(preset.elementPositions[ii], m_elementPositions[ii])) {
 			setElement(m_deviceElements[ii], preset.elementPositions[ii][0]);
@@ -183,6 +192,20 @@ void ScanControl::setPreset(ScanPreset presetType) {
 	emit(elementPositionsChanged(m_elementPositions));
 
 	setPresetAfter(presetType);
+}
+
+void ScanControl::setRLShutterOpen(bool open) {
+	for (gsl::index ii{ 0 }; ii < m_deviceElements.size(); ii++) {
+		if (m_deviceElements[ii].name == "RL Shutter") {
+			// Position convention is consistent across every backend that has this
+			// element: optionNames = { "Close", "Open" }, i.e. position 1 = Close, 2 = Open.
+			const double position = open ? 2.0 : 1.0;
+			setElement(m_deviceElements[ii], position);
+			m_elementPositions[ii] = position;
+			emit(elementPositionsChanged(m_elementPositions));
+			return;
+		}
+	}
 }
 
 Preset ScanControl::getPreset(ScanPreset presetType) {

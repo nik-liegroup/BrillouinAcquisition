@@ -362,6 +362,11 @@ void Fluorescence::__acquire(std::unique_ptr <StorageWrapper>& storage, std::vec
 		// the datetime has to be set here, otherwise it would be determined by the time the queue is processed
 		std::string date = QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc())
 			.toString(Qt::ISODateWithMs).toStdString();
+		// Fluorescence mode has no grid/origin concept (single-point capture, not a scan) -
+		// the raw absolute stage position at capture time is both "the position the scanner
+		// would normally image at" and the actual position, so no separate stage-position
+		// attribute is needed (unlike the Brillouin BF overview, which moves away and back).
+		const auto targetPosition = m_scanControl ? m_scanControl->getPosition() : POINT3{ 0, 0, 0 };
 		auto img = new FLUOIMAGE<T>(
 			imageNumber,
 			rank_data,
@@ -371,7 +376,8 @@ void Fluorescence::__acquire(std::unique_ptr <StorageWrapper>& storage, std::vec
 			*images_,
 			m_settings.camera.exposureTime,
 			m_settings.camera.gain,
-			m_settings.camera.roi
+			m_settings.camera.roi,
+			targetPosition
 		);
 
 		QMetaObject::invokeMethod(

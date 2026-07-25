@@ -71,8 +71,10 @@ template <typename T>
 struct FLUOIMAGE {
 public:
 	FLUOIMAGE(int ind, int rank, hsize_t *dims, const std::string& date, const std::string& channel, const std::vector<T>& data,
-		double exposure = 0, double gain = 1, const CAMERA_ROI& roi = CAMERA_ROI{}) :
-		ind(ind), rank(rank), dims(dims), date(date), channel(channel), data(data), exposure(exposure), gain(gain), roi(roi) {};
+		double exposure = 0, double gain = 1, const CAMERA_ROI& roi = CAMERA_ROI{},
+		POINT3 targetPosition = POINT3{ 0, 0, 0 }, bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 }) :
+		ind(ind), rank(rank), dims(dims), date(date), channel(channel), data(data), exposure(exposure), gain(gain), roi(roi),
+		targetPosition(targetPosition), hasStagePosition(hasStagePosition), stagePosition(stagePosition) {};
 
 	const int ind;
 	const int rank;
@@ -83,6 +85,14 @@ public:
 	const double exposure;
 	const double gain;
 	const CAMERA_ROI roi;
+	// The position the scanner would normally image at ("target"), and - only when
+	// hasStagePosition is set - the actual current stage position read back at capture
+	// time (which can differ slightly due to hysteresis compensation/backlash). Both use
+	// whatever coordinate convention the caller already normalized to (see
+	// Brillouin::captureOverviewBrightfield()'s toStoredConvention()).
+	const POINT3 targetPosition;
+	const bool hasStagePosition;
+	const POINT3 stagePosition;
 };
 
 struct ScaleCalibrationDataExtended : ScaleCalibrationData {
@@ -351,7 +361,9 @@ private:
 	template <typename T>
 	void setData(const std::vector<T>& data, const std::string& name, hid_t parent, const int rank, const hsize_t* dims,
 		std::string date, const std::string& sample = "", double shift = NULL, const std::string& channel = "",
-		double exposure = 0, double gain = 1, CAMERA_ROI roi = CAMERA_ROI{});
+		double exposure = 0, double gain = 1, CAMERA_ROI roi = CAMERA_ROI{},
+		bool hasPosition = false, POINT3 position = POINT3{ 0, 0, 0 },
+		bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 });
 
 	std::vector<double> getData(const std::string& name, hid_t parent);
 	std::string getDate(std::string name, hid_t parent);
@@ -383,7 +395,8 @@ hid_t H5BM::setDataset(hid_t parent, std::vector<T> data, std::string name, cons
 
 template <typename T>
 void H5BM::setData(const std::vector<T>& data, const std::string& name, hid_t parent, const int rank, const hsize_t *dims,
-	std::string date, const std::string& sample, double shift, const std::string& channel, double exposure, double gain, CAMERA_ROI roi) {
+	std::string date, const std::string& sample, double shift, const std::string& channel, double exposure, double gain, CAMERA_ROI roi,
+	bool hasPosition, POINT3 position, bool hasStagePosition, POINT3 stagePosition) {
 	if (!m_fileWritable) {
 		return;
 	}
@@ -416,6 +429,20 @@ void H5BM::setData(const std::vector<T>& data, const std::string& name, hid_t pa
 	// write channel name
 	if (channel != "") {
 		setAttribute("channel", channel, dset_id);
+	}
+
+	// write the xyz position this image targeted ("the position the scanner would
+	// normally image at"), and - only when supplied - the actual current stage position
+	// read back at capture time
+	if (hasPosition) {
+		setAttribute("position_x_um", position.x, dset_id);
+		setAttribute("position_y_um", position.y, dset_id);
+		setAttribute("position_z_um", position.z, dset_id);
+	}
+	if (hasStagePosition) {
+		setAttribute("stage_position_x_um", stagePosition.x, dset_id);
+		setAttribute("stage_position_y_um", stagePosition.y, dset_id);
+		setAttribute("stage_position_z_um", stagePosition.z, dset_id);
 	}
 
 	// set camera meta data
@@ -493,7 +520,8 @@ void H5BM::setPayloadData(FLUOIMAGE<T>* image) {
 	auto name = std::to_string(image->ind);
 
 	setData(image->data, name, m_Fluorescence.groups->payloadData, image->rank, image->dims, image->date, "", NULL, image->channel,
-		image->exposure, image->gain, image->roi);
+		image->exposure, image->gain, image->roi,
+		true, image->targetPosition, image->hasStagePosition, image->stagePosition);
 }
 
 #endif // H5BM_H

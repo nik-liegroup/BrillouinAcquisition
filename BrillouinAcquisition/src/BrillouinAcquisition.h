@@ -153,8 +153,13 @@ private:
 	QSpinBox* m_surfaceVerificationFrameAverageSpinBox{ nullptr };
 	QDoubleSpinBox* m_surfaceVerificationToleranceSpinBox{ nullptr };
 	QCheckBox* m_absoluteGridCheckbox{ nullptr };
+	QCheckBox* m_gridHysteresisCompensationCheckbox{ nullptr };
 	QCheckBox* m_saveOverviewBrightfieldPerZCheckbox{ nullptr };
-	QCheckBox* m_overviewFullGridCheckbox{ nullptr };
+	QRadioButton* m_overviewSingleImageRadio{ nullptr };
+	QRadioButton* m_overviewFullGridRadio{ nullptr };
+	QCheckBox* m_overviewSampledGridCheckbox{ nullptr };
+	QSpinBox* m_overviewBinSpinBox{ nullptr };
+	QCheckBox* m_overviewFullStackCheckbox{ nullptr };
 	QAbstractButton* m_editSpectralProxyRoiCheckbox{ nullptr };
 	QCPItemRect* m_spectralProxyRoiRectItem{ nullptr };
 	QCPItemRect* m_spectralProxyRoi2RectItem{ nullptr };
@@ -250,6 +255,11 @@ private:
 	// (one per disjoint group of active points, not one per tile), shown in the live
 	// view while the "Full grid (mosaic)" overview option is active.
 	std::vector<QCPItemRect*> m_overviewTileRects;
+	// Point marker(s) showing exactly where the BF overview will be captured for the
+	// "single image" (1 point, the grid center) and "sampled grid points" (coarse-binned
+	// real grid points) coverage modes - the mosaic mode already shows its own coverage
+	// via m_overviewTileRects above, so this stays hidden then.
+	QCPCurve* m_overviewPointMarker{ nullptr };
 	void updateOverviewTileOutlines();
 
 	CAMERA_DEVICE m_cameraType{ CAMERA_DEVICE::UEYE };
@@ -303,6 +313,16 @@ private:
 	// review pause, so leaving that state can stop it again without also stopping a live
 	// view the user had already started manually for an unrelated reason.
 	bool m_brightfieldPreviewStartedForSurfaceReview{ false };
+	// Auto-continues a WAITFORSURFACEREVIEW pause (as if "Continue" was clicked) if the
+	// user doesn't respond within kSurfaceReviewTimeoutS - ticks m_surfaceReviewSecondsRemaining
+	// down once a second, showing the countdown on the existing acquisition-progress bar
+	// (ui->progressBar) rather than adding a dedicated widget. Stopped/reset whenever the
+	// status leaves WAITFORSURFACEREVIEW, from whichever path caused that (manual Continue/
+	// Full grid click, or this same timeout).
+	static constexpr int kSurfaceReviewTimeoutS{ 15 };
+	QTimer* m_surfaceReviewTimer{ nullptr };
+	int m_surfaceReviewSecondsRemaining{ 0 };
+	void onSurfaceReviewTimerTick();
 	ACQUISITION_MODE m_enabledModes{ ACQUISITION_MODE::NONE };
 
 	bool m_hasFluorescence{ false };

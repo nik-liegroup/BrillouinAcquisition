@@ -73,25 +73,6 @@ namespace {
 		return false;
 	}
 
-	bool pointInPolygon(const POINT2& p, const std::vector<POINT2>& poly) {
-		if (poly.size() < 3) {
-			return false;
-		}
-		bool inside = false;
-		size_t j = poly.size() - 1;
-		for (size_t i = 0; i < poly.size(); ++i) {
-			const auto& pi = poly[i];
-			const auto& pj = poly[j];
-			const bool crosses = ((pi.y > p.y) != (pj.y > p.y))
-				&& (p.x < (pj.x - pi.x) * (p.y - pi.y) / ((pj.y - pi.y) + 1e-12) + pi.x);
-			if (crosses) {
-				inside = !inside;
-			}
-			j = i;
-		}
-		return inside;
-	}
-
 	QString serializeRoiPolygon(const std::vector<POINT2>& polygon) {
 		QStringList parts;
 		for (const auto& p : polygon) {
@@ -124,6 +105,10 @@ namespace {
 BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 	QMainWindow(parent), ui(new Ui::BrillouinAcquisitionClass) {
 	ui->setupUi(this);
+
+	m_surfaceReviewTimer = new QTimer(this);
+	m_surfaceReviewTimer->setInterval(1000);
+	connect(m_surfaceReviewTimer, &QTimer::timeout, this, &BrillouinAcquisition::onSurfaceReviewTimerTick);
 
 	// Set window title
 	auto title = QString{ "BrillouinAcquisition v%1.%2.%3" }.arg(Version::MAJOR).arg(Version::MINOR).arg(Version::PATCH);
@@ -442,6 +427,11 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 	// set up the camera image plot
 	BrillouinAcquisition::initializePlot(m_BrillouinPlot);
 	BrillouinAcquisition::initializePlot(m_ODTPlot);
+	// Lock the brightfield view to a 1:1 axis-unit-to-pixel ratio so the image never gets
+	// stretched/squashed to whatever rectangle the surrounding layout happens to hand the
+	// widget (e.g. when other panels show/hide and the horizontal split changes) - without
+	// this, a rectangular camera frame (e.g. 1024x1280) can visibly render as square.
+	m_ODTPlot.plotHandle->yAxis->setScaleRatio(m_ODTPlot.plotHandle->xAxis, 1.0);
 
 	connection = QWidget::connect(
 		m_ODTPlot.plotHandle,
@@ -642,8 +632,13 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_surfaceVerificationFrameAverageSpinBox = ui->surfaceVerificationFrameAverageSpinBox;
 			m_surfaceVerificationToleranceSpinBox = ui->surfaceVerificationToleranceSpinBox;
 			m_absoluteGridCheckbox = ui->absoluteGridCheckbox;
+			m_gridHysteresisCompensationCheckbox = ui->gridHysteresisCompensationCheckbox;
 			m_saveOverviewBrightfieldPerZCheckbox = ui->saveOverviewBrightfieldPerZCheckbox;
-			m_overviewFullGridCheckbox = ui->overviewFullGridCheckbox;
+			m_overviewSingleImageRadio = ui->overviewSingleImageRadio;
+			m_overviewFullGridRadio = ui->overviewFullGridRadio;
+			m_overviewSampledGridCheckbox = ui->overviewSampledGridCheckbox;
+			m_overviewBinSpinBox = ui->overviewBinSpinBox;
+			m_overviewFullStackCheckbox = ui->overviewFullStackCheckbox;
 			m_editSpectralProxyRoiCheckbox = ui->editSpectralProxyRoiCheckbox;
 
 			connect(m_useRoiMaskCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
@@ -756,16 +751,55 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				update_AOI_preview();
 			});
 
+			connect(m_gridHysteresisCompensationCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				m_Brillouin->settings.useGridHysteresisCompensation = enabled;
+			});
+
 			connect(m_saveOverviewBrightfieldPerZCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
 				m_Brillouin->settings.saveOverviewBrightfieldPerZ = enabled;
 				updateEstimatedAcquisitionTime();
 				updateBrillouinSettings();
+				updateOverviewTileOutlines();
 			});
 
-			connect(m_overviewFullGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
-				m_Brillouin->settings.overviewBrightfieldFullGrid = enabled;
+			connect(m_overviewSingleImageRadio, &QRadioButton::toggled, this, [this](bool checked) {
+				if (!checked) {
+					return;
+				}
+				m_Brillouin->settings.overviewBrightfieldFullGrid = false;
 				updateEstimatedAcquisitionTime();
 				updateOverviewTileOutlines();
+			});
+
+			connect(m_overviewFullGridRadio, &QRadioButton::toggled, this, [this](bool checked) {
+				if (!checked) {
+					return;
+				}
+				m_Brillouin->settings.overviewBrightfieldFullGrid = true;
+				updateEstimatedAcquisitionTime();
+				updateOverviewTileOutlines();
+			});
+
+			connect(m_overviewSampledGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				// Independent of, and combinable with, the single-image/full-grid overview
+				// image above - see Brillouin::overviewCapturePoints().
+				m_Brillouin->settings.overviewBrightfieldSampledGrid = enabled;
+				if (m_overviewBinSpinBox) {
+					m_overviewBinSpinBox->setEnabled(m_Brillouin->settings.saveOverviewBrightfieldPerZ && enabled);
+				}
+				updateEstimatedAcquisitionTime();
+				updateOverviewTileOutlines();
+			});
+
+			connect(m_overviewBinSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+				m_Brillouin->settings.overviewBrightfieldBin = std::max(1, value);
+				updateEstimatedAcquisitionTime();
+				updateOverviewTileOutlines();
+			});
+
+			connect(m_overviewFullStackCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				m_Brillouin->settings.overviewBrightfieldFullStack = enabled;
+				updateEstimatedAcquisitionTime();
 			});
 
 			connect(m_editSpectralProxyRoiCheckbox, &QAbstractButton::toggled, this, [this](bool enabled) {
@@ -1120,13 +1154,50 @@ void BrillouinAcquisition::updateEstimatedAcquisitionTime() {
 		: m_positionsMicrometer.size();
 	const auto frameCount = std::max<int64_t>(1, m_Brillouin->settings.camera.frameCount);
 	const auto exposureSeconds = std::max(0.0, m_Brillouin->settings.camera.exposureTime);
-	const auto totalSeconds = (int)std::ceil(exposureSeconds * frameCount * (double)pointCount);
+	const auto exposureOnlySeconds = exposureSeconds * frameCount * (double)pointCount;
+
+	// Movement estimate: total travel distance along the actual planned path (only known
+	// once m_positionsMicrometer is populated - falls back to 0 extra time before that,
+	// same as the exposure-only estimate already did) divided by an assumed stage speed,
+	// since no hardware-reported speed exists anywhere in ScanControl to query instead.
+	// kAssumedStageSpeedUmPerS is a rough approximation, not a calibrated value - adjust it
+	// here if it's consistently far off for your hardware.
+	constexpr double kAssumedStageSpeedUmPerS = 1000.0;
+	double totalTravelUm = 0.0;
+	for (size_t i = 1; i < m_positionsMicrometer.size(); i++) {
+		const auto delta = m_positionsMicrometer[i] - m_positionsMicrometer[i - 1];
+		totalTravelUm += std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+	}
+	const size_t moveCount = pointCount > 0 ? pointCount - 1 : 0;
+	double moveSeconds = totalTravelUm / kAssumedStageSpeedUmPerS;
+	// Compensated moves add an extra pre-approach move and a settle delay whenever xy
+	// changes (see Brillouin::approachGridPosition()/ScanControl::setPositionCompensated())
+	// - approximated here as a fixed overhead per move rather than tracking which moves
+	// actually change xy, since this is an estimate, not an exact replay of the scan.
+	if (m_Brillouin->settings.useGridHysteresisCompensation) {
+		moveSeconds += 0.1 * (double)moveCount;
+	}
+
+	// BF overview estimate: one exposure per captured image, plus a fixed per-image
+	// overhead for the preset switch/settle moves captureOverviewBrightfield() actually
+	// does (see its own 100 ms post-move sleep).
+	const auto overviewImageCount = m_Brillouin->overviewImageCountTotal();
+	const auto overviewExposureSeconds = 1e-3 * std::max(1, m_Brillouin->settings.overviewBrightfieldExposureMs);
+	constexpr double kOverviewPerImageOverheadS = 0.1;
+	const double overviewSeconds = (double)overviewImageCount * (overviewExposureSeconds + kOverviewPerImageOverheadS);
+
+	const auto totalSeconds = (int)std::ceil(exposureOnlySeconds + moveSeconds + overviewSeconds);
 	ui->estimatedAcquisitionTime->setText(formatSeconds(totalSeconds));
 	ui->estimatedAcquisitionTime->setToolTip(
-		QString("Exposure-only estimate: %1 points x %2 frames x %3 s.")
+		QString("%1 points x %2 frames x %3 s exposure (%4) + ~%5 stage movement (assumes %6 um/s) + %7 BF overview images (%8).")
 		.arg((qulonglong)pointCount)
 		.arg((qlonglong)frameCount)
 		.arg(exposureSeconds, 0, 'g', 4)
+		.arg(formatSeconds((int)std::ceil(exposureOnlySeconds)))
+		.arg(formatSeconds((int)std::ceil(moveSeconds)))
+		.arg(kAssumedStageSpeedUmPerS, 0, 'g', 4)
+		.arg(overviewImageCount)
+		.arg(formatSeconds((int)std::ceil(overviewSeconds)))
 	);
 }
 
@@ -1953,6 +2024,12 @@ void BrillouinAcquisition::showEnabledModes(ACQUISITION_MODE modes) {
 void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 	QString string;
 	bool running{ false };
+	// Only the WAITFORSURFACEREVIEW case (below) (re)starts this - any other status means
+	// the pause ended (manual Continue/Full grid, or the timeout itself), so stop it here
+	// unconditionally rather than duplicating that in every other case.
+	if (status != ACQUISITION_STATUS::WAITFORSURFACEREVIEW) {
+		m_surfaceReviewTimer->stop();
+	}
 	switch (status) {
 		case ACQUISITION_STATUS::ABORTED:
 			string = "Acquisition aborted.";
@@ -1988,7 +2065,10 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 			running = true;
 			break;
 		case ACQUISITION_STATUS::WAITFORSURFACEREVIEW:
-			string = "Surface scan finished - review the grid, then Continue or Full grid.";
+			m_surfaceReviewSecondsRemaining = kSurfaceReviewTimeoutS;
+			string = QString("Surface scan finished - review the grid, then Continue or Full grid. "
+				"Auto-continuing in %1 s...").arg(m_surfaceReviewSecondsRemaining);
+			ui->progressBar->setValue(100);
 			ui->BrillouinStart->setText("Continue");
 			running = true;
 			// Live view at the pre-acquisition position/preset already set up by
@@ -2000,6 +2080,7 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 				showBrightfieldPreviewRunning(true);
 			}
 			update_AOI_preview();
+			m_surfaceReviewTimer->start();
 			break;
 		case ACQUISITION_STATUS::STOPPED:
 			ui->BrillouinStart->setText("Start");
@@ -2042,6 +2123,38 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 	ui->repetitionInterval->setDisabled(running);
 	ui->repetitionCount->setDisabled(running);
 	updateBrillouinStartAvailability();
+}
+
+/*
+ * Ticks m_surfaceReviewSecondsRemaining down once a second while paused at
+ * WAITFORSURFACEREVIEW (see showBrillouinStatus()), showing the countdown on the same
+ * acquisition-progress bar the pause message already uses. Auto-continues (as if
+ * "Continue" was clicked) once it reaches zero, so the acquisition doesn't sit paused
+ * indefinitely if the user doesn't respond.
+ */
+void BrillouinAcquisition::onSurfaceReviewTimerTick() {
+	if (m_Brillouin->getStatus() != ACQUISITION_STATUS::WAITFORSURFACEREVIEW) {
+		// Stale tick racing a status change that already stopped the timer - ignore.
+		m_surfaceReviewTimer->stop();
+		return;
+	}
+
+	m_surfaceReviewSecondsRemaining--;
+	if (m_surfaceReviewSecondsRemaining <= 0) {
+		m_surfaceReviewTimer->stop();
+		ui->progressBar->setValue(0);
+		ui->progressBar->setFormat("Surface scan review timed out - continuing automatically.");
+		QMetaObject::invokeMethod(
+			m_Brillouin,
+			[brillouin = m_Brillouin]() { brillouin->continueAfterSurfaceReview(false); },
+			Qt::AutoConnection
+		);
+		return;
+	}
+
+	ui->progressBar->setValue((int)(100.0 * m_surfaceReviewSecondsRemaining / kSurfaceReviewTimeoutS));
+	ui->progressBar->setFormat(QString("Surface scan finished - review the grid, then Continue or Full grid. "
+		"Auto-continuing in %1 s...").arg(m_surfaceReviewSecondsRemaining));
 }
 
 void BrillouinAcquisition::showBrillouinProgress(double progress, int seconds) {
@@ -2873,6 +2986,16 @@ void BrillouinAcquisition::plotting(PLOT_SETTINGS* plotSettings, long long dim_x
 		if (transformBrightfield) {
 			plotSettings->colorMap->data()->setSize(brightfieldDisplayWidth(), brightfieldDisplayHeight());
 			plotSettings->colorMap->data()->setRange(QCPRange(1, brightfieldDisplayWidth()), QCPRange(1, brightfieldDisplayHeight()));
+		} else if (plotSettings->colorMap->data()->keySize() != dim_x || plotSettings->colorMap->data()->valueSize() != dim_y) {
+			// Keep the color map's size/axis-range in sync with the frame that's actually
+			// arriving, rather than relying solely on the separate, signal-driven
+			// updatePlotLimits() (Camera::s_previewBufferSettingsChanged) - that signal and
+			// this per-frame delivery are independent, so a preset/ROI switch (e.g. entering
+			// WAITFORSURFACEREVIEW's SCAN_BRIGHTFIELD preset) could otherwise deliver
+			// differently-shaped frames before/without the size ever being refreshed, leaving
+			// the display's aspect ratio and pixel bounds stale relative to the real frame.
+			plotSettings->colorMap->data()->setSize((int)dim_x, (int)dim_y);
+			plotSettings->colorMap->data()->setRange(QCPRange(1, (double)dim_x), QCPRange(1, (double)dim_y));
 		}
 	}
 	int tIndex{ 0 };
@@ -3913,7 +4036,12 @@ void BrillouinAcquisition::initODT() {
 		}
 	} else {
 		m_ODT = new ODT(nullptr, m_acquisition, m_brightfieldCamera, (ODTControl*&)m_scanControl);
-		ui->acquisitionModeTabs->insertTab(1, ui->ODT, "ODT");
+		// Index 2, not 1: the static "Surface scanning" tab always occupies index 1
+		// (right after "Grid"), so ODT's home position - when re-inserted after an
+		// earlier removeTab() - is 2, keeping the intended Grid/Surface scanning/ODT/
+		// Fluorescence order. insertTab() clamps out-of-range indices to "append", so
+		// this stays correct even if Surface scanning were ever removed too.
+		ui->acquisitionModeTabs->insertTab(2, ui->ODT, "ODT");
 
 		static QMetaObject::Connection connection;
 		connection = QWidget::connect(
@@ -4056,7 +4184,11 @@ void BrillouinAcquisition::initFluorescence() {
 		}
 	} else {
 		m_Fluorescence = new Fluorescence(nullptr, m_acquisition, m_brightfieldCamera, m_scanControl);
-		ui->acquisitionModeTabs->insertTab(2, ui->Fluorescence, "Fluorescence");
+		// Index 3, not 2: see the matching comment in initODT() - "Surface scanning" (1)
+		// and, when present, ODT (2) both come before Fluorescence now. insertTab()
+		// clamps out-of-range indices to "append", so this still lands right after
+		// whichever of those tabs actually exist.
+		ui->acquisitionModeTabs->insertTab(3, ui->Fluorescence, "Fluorescence");
 
 		static QMetaObject::Connection connection;
 		connection = QWidget::connect(
@@ -4617,6 +4749,10 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		const QSignalBlocker blocker(*m_absoluteGridCheckbox);
 		m_absoluteGridCheckbox->setChecked(m_Brillouin->settings.gridCoordinatesAbsolute);
 	}
+	if (m_gridHysteresisCompensationCheckbox) {
+		const QSignalBlocker blocker(*m_gridHysteresisCompensationCheckbox);
+		m_gridHysteresisCompensationCheckbox->setChecked(m_Brillouin->settings.useGridHysteresisCompensation);
+	}
 	if (m_saveOverviewBrightfieldPerZCheckbox) {
 		const QSignalBlocker blocker(*m_saveOverviewBrightfieldPerZCheckbox);
 		m_saveOverviewBrightfieldPerZCheckbox->setChecked(m_Brillouin->settings.saveOverviewBrightfieldPerZ);
@@ -4624,17 +4760,41 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 			m_hasFluorescence && m_brightfieldCamera != nullptr && m_brightfieldCamera->getConnectionStatus()
 		);
 	}
-	if (m_overviewFullGridCheckbox) {
-		// Works in both absolute and relative grid mode (see
-		// Brillouin::overviewBrightfieldPositionsForZ()) - only actually needs per-Z overview
-		// capture to be enabled at all, or it'd be a setting that silently does nothing.
-		const auto fullGridPossible = m_Brillouin->settings.saveOverviewBrightfieldPerZ;
-		if (!fullGridPossible && m_Brillouin->settings.overviewBrightfieldFullGrid) {
-			m_Brillouin->settings.overviewBrightfieldFullGrid = false;
+	// Coverage-mode controls work in both absolute and relative grid mode (see
+	// Brillouin::overviewImageXY()/overviewSampledGridXY()) - they only actually need
+	// per-Z overview capture to be enabled at all, or they'd be settings that silently do
+	// nothing. "Sampled grid points" is independent of, and combinable with, the
+	// single-image/full-grid choice - see Brillouin::overviewCapturePoints().
+	{
+		const auto overviewPossible = m_Brillouin->settings.saveOverviewBrightfieldPerZ;
+		if (m_overviewSingleImageRadio) {
+			const QSignalBlocker blocker(*m_overviewSingleImageRadio);
+			m_overviewSingleImageRadio->setChecked(!m_Brillouin->settings.overviewBrightfieldFullGrid);
+			m_overviewSingleImageRadio->setEnabled(overviewPossible);
 		}
-		const QSignalBlocker blocker(*m_overviewFullGridCheckbox);
-		m_overviewFullGridCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldFullGrid);
-		m_overviewFullGridCheckbox->setEnabled(fullGridPossible);
+		if (m_overviewFullGridRadio) {
+			const QSignalBlocker blocker(*m_overviewFullGridRadio);
+			m_overviewFullGridRadio->setChecked(m_Brillouin->settings.overviewBrightfieldFullGrid);
+			m_overviewFullGridRadio->setEnabled(overviewPossible);
+		}
+		if (m_overviewSampledGridCheckbox) {
+			const QSignalBlocker blocker(*m_overviewSampledGridCheckbox);
+			m_overviewSampledGridCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldSampledGrid);
+			m_overviewSampledGridCheckbox->setEnabled(overviewPossible);
+		}
+		if (m_overviewBinSpinBox) {
+			const QSignalBlocker blocker(*m_overviewBinSpinBox);
+			m_overviewBinSpinBox->setValue(m_Brillouin->settings.overviewBrightfieldBin);
+			m_overviewBinSpinBox->setEnabled(overviewPossible && m_Brillouin->settings.overviewBrightfieldSampledGrid);
+		}
+		if (m_overviewFullStackCheckbox) {
+			const QSignalBlocker blocker(*m_overviewFullStackCheckbox);
+			m_overviewFullStackCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldFullStack);
+			// Only ever applies to the overview image itself (single-image/full-grid),
+			// regardless of whether "sampled grid points" is additionally on - see
+			// Brillouin::overviewCapturePoints().
+			m_overviewFullStackCheckbox->setEnabled(overviewPossible);
+		}
 		updateOverviewTileOutlines();
 	}
 	const auto homeControlsDisabled = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
@@ -4773,10 +4933,9 @@ void BrillouinAcquisition::update_AOI_preview() {
 		// something that needed a more elaborate replacement.
 		auto positionsPixelForRoi = m_positionsPixel;
 		std::vector<POINT2> excludedPixelForRoi;
-		std::vector<POINT2> roiPolygonPix;
 		if (colorByRoi && m_scanControl) {
-			// Project every overlay (markers, excluded points, ROI polygon outline) from the
-			// same cached offset snapshot (see m_currentGridOffsetUm) instead of
+			// Project every overlay (markers, excluded points) from the same cached offset
+			// snapshot (see m_currentGridOffsetUm) instead of
 			// ScanControl::getPositionsPix()/getPositionPix(), which each re-derive the offset
 			// with their own live ScanControl::getPositionOffset() call. ScanControl lives on
 			// another thread, so those live calls could each observe a different offset if
@@ -4795,11 +4954,6 @@ void BrillouinAcquisition::update_AOI_preview() {
 			for (const auto& p : m_excludedPositionsMicrometer) {
 				const auto pix = m_scanControl->microMeterToPix(POINT2{ p.x, p.y } + offset);
 				excludedPixelForRoi.push_back(brightfieldRawToDisplay(pix));
-			}
-			roiPolygonPix.reserve(m_Brillouin->settings.roiPolygonUm.size());
-			for (const auto& p : m_Brillouin->settings.roiPolygonUm) {
-				auto pUm = gridOffsetToImagePlaneUm(p);
-				roiPolygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
 			}
 		}
 		QVector<double> squareX;
@@ -4821,52 +4975,28 @@ void BrillouinAcquisition::update_AOI_preview() {
 				squareX.push_back(squarePositionsPixel[i].x);
 				squareY.push_back(squarePositionsPixel[i].y);
 			}
-		} else if (showSurfaceSquares && !squarePositionsPixel.empty()) {
-			const auto xyBin = std::max(1, m_Brillouin->settings.preScanXYBin);
-			double minX = squarePositionsPixel.front().x;
-			double maxX = squarePositionsPixel.front().x;
-			double minY = squarePositionsPixel.front().y;
-			double maxY = squarePositionsPixel.front().y;
-			std::vector<double> xs;
-			std::vector<double> ys;
-			xs.reserve(squarePositionsPixel.size());
-			ys.reserve(squarePositionsPixel.size());
-			for (const auto& p : squarePositionsPixel) {
-				minX = std::min(minX, p.x);
-				maxX = std::max(maxX, p.x);
-				minY = std::min(minY, p.y);
-				maxY = std::max(maxY, p.y);
-				xs.push_back(p.x);
-				ys.push_back(p.y);
-			}
-			auto countUniqueWithTol = [](std::vector<double>& values) -> int {
-				if (values.empty()) return 1;
-				std::sort(values.begin(), values.end());
-				int count = 1;
-				for (size_t i = 1; i < values.size(); i++) {
-					if (std::abs(values[i] - values[i - 1]) > 1e-6) {
-						count++;
-					}
-				}
-				return std::max(1, count);
-			};
-			const int xStepsDense = countUniqueWithTol(xs);
-			const int yStepsDense = countUniqueWithTol(ys);
-			const auto xStepsCoarse = std::max(1, (xStepsDense + xyBin - 1) / xyBin);
-			const auto yStepsCoarse = std::max(1, (yStepsDense + xyBin - 1) / xyBin);
-			const auto xSamples = simplemath::linspace(minX, maxX, xStepsCoarse);
-			const auto ySamples = simplemath::linspace(minY, maxY, yStepsCoarse);
-			squareX.reserve((int)(xSamples.size() * ySamples.size()));
-			squareY.reserve((int)(xSamples.size() * ySamples.size()));
-			for (gsl::index yi{ 0 }; yi < (gsl::index)ySamples.size(); yi++) {
-				for (gsl::index xi{ 0 }; xi < (gsl::index)xSamples.size(); xi++) {
-					const POINT2 coarsePointPix{ xSamples[xi], ySamples[yi] };
-					if (colorByRoi && !pointInPolygon(coarsePointPix, roiPolygonPix)) {
-						continue;
-					}
-					squareX.push_back(coarsePointPix.x);
-					squareY.push_back(coarsePointPix.y);
-				}
+		} else if (showSurfaceSquares && !squarePositionsPixel.empty() && m_scanControl) {
+			// Reuse the exact same µm-space coarse grid runSurfacePreScan() will actually
+			// measure (Brillouin::surfacePreScanGridXY(), built from preScanXYBin the same
+			// way the pre-scan itself does), instead of independently reconstructing an
+			// approximation from the dense grid's pixel-space bounding box - that
+			// reconstruction disagreed with where the pre-scan really goes whenever ROI
+			// masking shrank the dense pixel bounding box (or the calibration wasn't a
+			// simple uniform scale), which is what made the preview squares look "a bit
+			// off" from the actual measured positions.
+			// surfacePreScanGridXY() already applies the authoritative µm-space ROI test
+			// (the same one runSurfacePreScan() itself uses) internally when useRoiMask is
+			// on, which colorByRoi implies - no need for a second, pixel-space ROI test
+			// here that could disagree with it.
+			const auto gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
+			const auto offset = currentGridOffset(gridAbsolute);
+			const auto coarsePoints = m_Brillouin->surfacePreScanGridXY();
+			squareX.reserve((int)coarsePoints.size());
+			squareY.reserve((int)coarsePoints.size());
+			for (const auto& p : coarsePoints) {
+				const auto pix = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ p.x + offset.x, p.y + offset.y }));
+				squareX.push_back(pix.x);
+				squareY.push_back(pix.y);
 			}
 		}
 		if (colorByRoi) {
@@ -4874,8 +5004,8 @@ void BrillouinAcquisition::update_AOI_preview() {
 			// excludedPixelForRoi is exactly what it excluded (see
 			// ScanPlannerOutput::excludedPositionsAbsolute/Relative) - both already reflect
 			// the real in/out decision the actual scan will use, so there is nothing left to
-			// re-test here. Re-testing them against roiPolygonPix (a second, independent
-			// pixel-space classification) is what let the on-screen coloring disagree with
+			// re-test here. Re-testing them against the ROI polygon in pixel space (a second,
+			// independent classification) is what let the on-screen coloring disagree with
 			// what ScanPlanner would really include, whenever the two tests' notions of the
 			// current scanner/stage offset drifted apart even slightly.
 			QVector<double> xInside;
@@ -5059,7 +5189,19 @@ void BrillouinAcquisition::update_AOI_preview() {
  * disjoint group of active points, not one rectangle per individual tile.
  */
 void BrillouinAcquisition::updateOverviewTileOutlines() {
-	const bool showTiles = m_showPositions && m_scanControl && m_Brillouin->settings.overviewBrightfieldFullGrid;
+	const bool overviewActive = m_showPositions && m_scanControl && m_Brillouin->settings.saveOverviewBrightfieldPerZ;
+	const bool showTiles = overviewActive && m_Brillouin->settings.overviewBrightfieldFullGrid;
+	// The single-image marker and "sampled grid points" markers are independent and
+	// combinable (see Brillouin::overviewCapturePoints()): the former shows whenever the
+	// overview image isn't the mosaic, the latter whenever that option is additionally on.
+	const bool showSingleImageMarker = overviewActive && !m_Brillouin->settings.overviewBrightfieldFullGrid;
+	const bool showSampledGridMarkers = overviewActive && m_Brillouin->settings.overviewBrightfieldSampledGrid;
+	const bool showPoints = showSingleImageMarker || showSampledGridMarkers;
+	const bool gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
+	// See the comment below on offset/frame conventions - both the mosaic outlines and the
+	// point markers below live in the same frame and need the same conversion.
+	const auto offset = currentGridOffset(gridAbsolute);
+
 	if (!showTiles) {
 		if (!m_overviewTileRects.empty()) {
 			for (auto* rect : m_overviewTileRects) {
@@ -5068,43 +5210,80 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 			m_overviewTileRects.clear();
 			ui->customplot_brightfield->replot();
 		}
-		return;
+	} else {
+		const auto outlines = m_Brillouin->overviewTileOutlinesUm();
+
+		while (m_overviewTileRects.size() > outlines.size()) {
+			ui->customplot_brightfield->removeItem(m_overviewTileRects.back());
+			m_overviewTileRects.pop_back();
+		}
+		while (m_overviewTileRects.size() < outlines.size()) {
+			auto* rect = new QCPItemRect(ui->customplot_brightfield);
+			QPen pen(Qt::yellow);
+			pen.setStyle(Qt::DashLine);
+			pen.setWidth(2);
+			rect->setPen(pen);
+			rect->setBrush(Qt::NoBrush);
+			m_overviewTileRects.push_back(rect);
+		}
+
+		// corner.first/second come from overviewTileOutlinesUm(), which - like m_orderedPositions/
+		// m_orderedPositionsRelative it's built from - is already origin-inclusive in absolute
+		// mode and origin-excluded (pure offset) in relative mode; NOT the pre-origin frame
+		// roiPolygonUm uses. So this must mirror ScanControl::convertPositionsToPix()'s own
+		// "point + offset" formula directly rather than going through gridOffsetToImagePlaneUm()
+		// (which adds absoluteGridOriginUm again - correct for roiPolygonUm, a double-count here).
+		// The offset itself still comes from the cached snapshot (see m_currentGridOffsetUm)
+		// rather than a live getPositionOffset() call, for the same cross-thread-race reason the
+		// ROI polygon overlay was fixed for.
+		for (size_t i = 0; i < outlines.size(); i++) {
+			const auto& corner = outlines[i];
+			const auto topLeft = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ corner.first.x + offset.x, corner.first.y + offset.y }));
+			const auto bottomRight = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ corner.second.x + offset.x, corner.second.y + offset.y }));
+			m_overviewTileRects[i]->topLeft->setCoords(topLeft.x, topLeft.y);
+			m_overviewTileRects[i]->bottomRight->setCoords(bottomRight.x, bottomRight.y);
+		}
 	}
 
-	const auto outlines = m_Brillouin->overviewTileOutlinesUm();
-	const bool gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
+	// Single-image center and/or "sampled grid points" markers: show exactly where the BF
+	// overview will be captured, in the same frame/offset convention as the mosaic
+	// outlines above.
+	if (!showPoints) {
+		if (m_overviewPointMarker && ui->customplot_brightfield->removePlottable(m_overviewPointMarker)) {
+			m_overviewPointMarker = nullptr;
+		}
+	} else {
+		std::vector<POINT2> points;
+		if (showSingleImageMarker) {
+			points.push_back(m_Brillouin->overviewGridCenterXY());
+		}
+		if (showSampledGridMarkers) {
+			const auto sampled = m_Brillouin->overviewSampledGridXY();
+			points.insert(points.end(), sampled.begin(), sampled.end());
+		}
 
-	while (m_overviewTileRects.size() > outlines.size()) {
-		ui->customplot_brightfield->removeItem(m_overviewTileRects.back());
-		m_overviewTileRects.pop_back();
-	}
-	while (m_overviewTileRects.size() < outlines.size()) {
-		auto* rect = new QCPItemRect(ui->customplot_brightfield);
-		QPen pen(Qt::yellow);
-		pen.setStyle(Qt::DashLine);
-		pen.setWidth(2);
-		rect->setPen(pen);
-		rect->setBrush(Qt::NoBrush);
-		m_overviewTileRects.push_back(rect);
+		if (!m_overviewPointMarker) {
+			m_overviewPointMarker = new QCPCurve(ui->customplot_brightfield->xAxis, ui->customplot_brightfield->yAxis);
+			m_overviewPointMarker->setLineStyle(QCPCurve::lsNone);
+			QPen pen;
+			pen.setColor(Qt::cyan);
+			pen.setWidth(2);
+			QCPScatterStyle scatterStyle;
+			scatterStyle.setShape(QCPScatterStyle::ssDisc);
+			scatterStyle.setPen(pen);
+			scatterStyle.setSize(8);
+			m_overviewPointMarker->setScatterStyle(scatterStyle);
+		}
+		QVector<double> xPix(static_cast<int>(points.size()));
+		QVector<double> yPix(static_cast<int>(points.size()));
+		for (size_t i = 0; i < points.size(); i++) {
+			const auto pix = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ points[i].x + offset.x, points[i].y + offset.y }));
+			xPix[static_cast<int>(i)] = pix.x;
+			yPix[static_cast<int>(i)] = pix.y;
+		}
+		m_overviewPointMarker->setData(xPix, yPix);
 	}
 
-	// corner.first/second come from overviewTileOutlinesUm(), which - like m_orderedPositions/
-	// m_orderedPositionsRelative it's built from - is already origin-inclusive in absolute
-	// mode and origin-excluded (pure offset) in relative mode; NOT the pre-origin frame
-	// roiPolygonUm uses. So this must mirror ScanControl::convertPositionsToPix()'s own
-	// "point + offset" formula directly rather than going through gridOffsetToImagePlaneUm()
-	// (which adds absoluteGridOriginUm again - correct for roiPolygonUm, a double-count here).
-	// The offset itself still comes from the cached snapshot (see m_currentGridOffsetUm)
-	// rather than a live getPositionOffset() call, for the same cross-thread-race reason the
-	// ROI polygon overlay was fixed for.
-	const auto offset = currentGridOffset(gridAbsolute);
-	for (size_t i = 0; i < outlines.size(); i++) {
-		const auto& corner = outlines[i];
-		const auto topLeft = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ corner.first.x + offset.x, corner.first.y + offset.y }));
-		const auto bottomRight = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ corner.second.x + offset.x, corner.second.y + offset.y }));
-		m_overviewTileRects[i]->topLeft->setCoords(topLeft.x, topLeft.y);
-		m_overviewTileRects[i]->bottomRight->setCoords(bottomRight.x, bottomRight.y);
-	}
 	ui->customplot_brightfield->replot();
 }
 
@@ -5619,10 +5798,14 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-absolute-grid-origin-x-um", m_Brillouin->settings.absoluteGridOriginUm.x);
 	settings.setValue("brillouin-absolute-grid-origin-y-um", m_Brillouin->settings.absoluteGridOriginUm.y);
 	settings.setValue("brillouin-absolute-grid-origin-z-um", m_Brillouin->settings.absoluteGridOriginUm.z);
+	settings.setValue("brillouin-use-grid-hysteresis-compensation", m_Brillouin->settings.useGridHysteresisCompensation);
 	settings.setValue("brillouin-save-overview-brightfield-per-z", m_Brillouin->settings.saveOverviewBrightfieldPerZ);
 	settings.setValue("brillouin-overview-brightfield-exposure-ms", m_Brillouin->settings.overviewBrightfieldExposureMs);
 	settings.setValue("brillouin-overview-brightfield-gain", m_Brillouin->settings.overviewBrightfieldGain);
 	settings.setValue("brillouin-overview-brightfield-full-grid", m_Brillouin->settings.overviewBrightfieldFullGrid);
+	settings.setValue("brillouin-overview-brightfield-sampled-grid", m_Brillouin->settings.overviewBrightfieldSampledGrid);
+	settings.setValue("brillouin-overview-brightfield-bin", m_Brillouin->settings.overviewBrightfieldBin);
+	settings.setValue("brillouin-overview-brightfield-full-stack", m_Brillouin->settings.overviewBrightfieldFullStack);
 	settings.setValue("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft);
 	settings.setValue("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop);
 	settings.setValue("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth);
@@ -5758,10 +5941,14 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.absoluteGridOriginUm.x = settings.value("brillouin-absolute-grid-origin-x-um", m_Brillouin->settings.absoluteGridOriginUm.x).toDouble();
 	m_Brillouin->settings.absoluteGridOriginUm.y = settings.value("brillouin-absolute-grid-origin-y-um", m_Brillouin->settings.absoluteGridOriginUm.y).toDouble();
 	m_Brillouin->settings.absoluteGridOriginUm.z = settings.value("brillouin-absolute-grid-origin-z-um", m_Brillouin->settings.absoluteGridOriginUm.z).toDouble();
+	m_Brillouin->settings.useGridHysteresisCompensation = settings.value("brillouin-use-grid-hysteresis-compensation", m_Brillouin->settings.useGridHysteresisCompensation).toBool();
 	m_Brillouin->settings.saveOverviewBrightfieldPerZ = settings.value("brillouin-save-overview-brightfield-per-z", m_Brillouin->settings.saveOverviewBrightfieldPerZ).toBool();
 	m_Brillouin->settings.overviewBrightfieldExposureMs = settings.value("brillouin-overview-brightfield-exposure-ms", m_Brillouin->settings.overviewBrightfieldExposureMs).toInt();
 	m_Brillouin->settings.overviewBrightfieldGain = settings.value("brillouin-overview-brightfield-gain", m_Brillouin->settings.overviewBrightfieldGain).toDouble();
 	m_Brillouin->settings.overviewBrightfieldFullGrid = settings.value("brillouin-overview-brightfield-full-grid", m_Brillouin->settings.overviewBrightfieldFullGrid).toBool();
+	m_Brillouin->settings.overviewBrightfieldSampledGrid = settings.value("brillouin-overview-brightfield-sampled-grid", m_Brillouin->settings.overviewBrightfieldSampledGrid).toBool();
+	m_Brillouin->settings.overviewBrightfieldBin = settings.value("brillouin-overview-brightfield-bin", m_Brillouin->settings.overviewBrightfieldBin).toInt();
+	m_Brillouin->settings.overviewBrightfieldFullStack = settings.value("brillouin-overview-brightfield-full-stack", m_Brillouin->settings.overviewBrightfieldFullStack).toBool();
 	m_Brillouin->settings.surfaceProxyRoiLeft = settings.value("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft).toInt();
 	m_Brillouin->settings.surfaceProxyRoiTop = settings.value("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop).toInt();
 	m_Brillouin->settings.surfaceProxyRoiWidth = settings.value("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth).toInt();

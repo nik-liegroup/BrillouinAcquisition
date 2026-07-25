@@ -362,6 +362,8 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 
 	if (m_scanControl) {
 		m_scanControl->setPreset(ScanPreset::SCAN_LASEROFF);
+		// Acquisition is aborting - don't leave the RL shutter forced open.
+		m_scanControl->setRLShutterOpen(false);
 		m_scanControl->setPositionCompensated(m_startPosition);
 		m_scanControl->enableMeasurementMode(false);
 		QMetaObject::invokeMethod(
@@ -413,6 +415,9 @@ void Brillouin::calibrate(std::unique_ptr <StorageWrapper>& storage) {
 	// move optical elements to position for calibration
 	if (m_scanControl) {
 		m_scanControl->setPreset(ScanPreset::SCAN_CALIBRATION);
+		// Calibration is part of the acquisition, same as the actual measurement - keep
+		// the RL shutter open for it too.
+		m_scanControl->setRLShutterOpen(true);
 	}
 	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
@@ -435,6 +440,7 @@ void Brillouin::calibrate(std::unique_ptr <StorageWrapper>& storage) {
 			// silently affecting every measurement after this one.
 			if (m_scanControl) {
 				m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
+				m_scanControl->setRLShutterOpen(true);
 			}
 			if (m_andor) {
 				m_andor->setCalibrationExposureTime(originalExposureTime);
@@ -524,6 +530,7 @@ void Brillouin::calibrate(std::unique_ptr <StorageWrapper>& storage) {
 	// revert optical elements to position for brightfield/Brillouin imaging
 	if (m_scanControl) {
 		m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
+		m_scanControl->setRLShutterOpen(true);
 	}
 
 	// reset exposure time
@@ -677,30 +684,36 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 	return metrics.empty() ? 0.0 : metricSum / metrics.size();
 }
 
+std::pair<std::vector<double>, std::vector<double>> Brillouin::coarseXYSamples(int bin) const {
+	const auto xyBin = std::max(1, bin);
+	const auto xStepsCoarse = std::max(1, (m_settings.xSteps + xyBin - 1) / xyBin);
+	const auto yStepsCoarse = std::max(1, (m_settings.ySteps + xyBin - 1) / xyBin);
+	auto xSamples = simplemath::linspace(m_settings.xMin, m_settings.xMax, xStepsCoarse);
+	auto ySamples = simplemath::linspace(m_settings.yMin, m_settings.yMax, yStepsCoarse);
+	return { std::move(xSamples), std::move(ySamples) };
+}
+
 Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	// Cleared up front so every exit path - including the early-out ones below and an
 	// abort partway through - leaves these reflecting only a scan that actually completed,
 	// never stale found/interpolated data from an earlier, unrelated run.
 	m_surfaceFoundXYIndices.clear();
 	m_surfaceInterpolatedXYIndices.clear();
+	m_surfaceZRangeValid = false;
 
 	if (!m_scanControl || !m_andor) {
 		return {};
 	}
 
-	const auto xyBin = std::max(1, m_settings.preScanXYBin);
-	const auto xStepsCoarse = std::max(1, (m_settings.xSteps + xyBin - 1) / xyBin);
-	const auto yStepsCoarse = std::max(1, (m_settings.ySteps + xyBin - 1) / xyBin);
 	const auto zTravel = std::max(0.0, m_settings.preScanZTravelRangeUm);
 	const auto zStep = std::max(1e-6, m_settings.preScanZStepUm);
 	const auto zStepsCoarse = std::max(2, (int)std::floor(zTravel / zStep) + 1);
 
-	if (xStepsCoarse < 1 || yStepsCoarse < 1 || zStepsCoarse < 2) {
+	const auto [xSamples, ySamples] = coarseXYSamples(m_settings.preScanXYBin);
+
+	if (xSamples.empty() || ySamples.empty() || zStepsCoarse < 2) {
 		return {};
 	}
-
-	const auto xSamples = simplemath::linspace(m_settings.xMin, m_settings.xMax, xStepsCoarse);
-	const auto ySamples = simplemath::linspace(m_settings.yMin, m_settings.yMax, yStepsCoarse);
 
 	std::vector<std::vector<double>> zSurface(ySamples.size(), std::vector<double>(xSamples.size(), 0.0));
 	std::vector<std::vector<bool>> zSurfaceValid(ySamples.size(), std::vector<bool>(xSamples.size(), false));
@@ -740,8 +753,12 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		}
 	}
 	if (referencePositionFound) {
-		m_scanControl->setPositionCompensated(referencePosition);
-		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		// Mirrors runMeasurementPhase()'s approach to its own first position exactly
+		// (Brillouin.cpp: "move stage to first position, wait 50 ms for it to finish") -
+		// this is the equivalent one-time first move here, before the per-column loop
+		// below settles into the same move-with-no-extra-wait pattern that loop uses too.
+		approachGridPosition(referencePosition);
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	}
 	const int refFrames = std::max(1, m_settings.mediumReferenceFrameCount);
 	double refSum = 0.0;
@@ -776,9 +793,12 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	// Measures the surface-drop metric at coarse column (xi, yi) and relative z `zRel`,
 	// averaging `frameAverage` frames at that position to reduce noise (1 = single frame,
 	// used for the fast initial walk; > 1 used during verification). Moves the stage there
-	// first - setPositionCompensated() only pre-approaches x/y when they actually change,
-	// so repeated calls within a column (z-only steps) add no extra motion. Returns
-	// std::nullopt if the acquisition was aborted mid-measurement.
+	// first, via the exact same approachGridPosition() runMeasurementPhase()'s own
+	// point-to-point moves use (Brillouin.cpp's "move stage to next position", which adds
+	// no extra wait after the move either - see its comments) - setPositionCompensated()
+	// only pre-approaches x/y when they actually change, so repeated calls within a column
+	// (z-only steps) add no extra motion. Returns std::nullopt if the acquisition was
+	// aborted mid-measurement.
 	auto measureAt = [&](gsl::index xi, gsl::index yi, double zRel, int frameAverage) -> std::optional<double> {
 		if (m_abort) {
 			return std::nullopt;
@@ -790,8 +810,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			? m_settings.absoluteGridOriginUm.z
 			: m_startPosition.z;
 		const auto target = POINT3{ xyPosition.x, xyPosition.y, zOrigin + zRel };
-		m_scanControl->setPositionCompensated(target);
-		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		approachGridPosition(target);
 		const auto frames = std::max(1, frameAverage);
 		double sum = 0.0;
 		for (int f = 0; f < frames; f++) {
@@ -1169,6 +1188,19 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	// getSurfaceInterpolatedXYIndices().
 	m_surfaceInterpolatedXYIndices = std::move(interpolatedXYIndices);
 
+	// Global min/max of the found surface (same absolute convention as centerZAbs above) -
+	// used by overviewStackZAbs() to build a full-stack z range that covers every xy
+	// tile's surface, not just whichever neighbor happens to be closest.
+	m_surfaceZRangeValid = !zCenterByXYIndex.empty();
+	if (m_surfaceZRangeValid) {
+		auto minMax = std::minmax_element(
+			zCenterByXYIndex.begin(), zCenterByXYIndex.end(),
+			[](const auto& a, const auto& b) { return a.second < b.second; }
+		);
+		m_surfaceZMinAbs = minMax.first->second;
+		m_surfaceZMaxAbs = minMax.second->second;
+	}
+
 	// zOrigin here must match the one used above to compute centerZAbs (zOrigin + zInterp +
 	// surfaceZOffsetUm) - it's also exactly what m_orderedPositions[ll].z was built from
 	// before this loop touches it (zOrigin + the grid's own zMin..zMax offset for this
@@ -1206,6 +1238,7 @@ void Brillouin::applySurfaceFollowPlan() {
 		// where surface follow was on, misleadingly surviving into a run where it's off.
 		m_surfaceFoundXYIndices.clear();
 		m_surfaceInterpolatedXYIndices.clear();
+		m_surfaceZRangeValid = false;
 		return;
 	}
 	const auto result = runSurfacePreScan();
@@ -1228,64 +1261,112 @@ void Brillouin::applySurfaceFollowPlan() {
 	}
 }
 
-POINT3 Brillouin::overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ, const POINT2& xy) const {
+/*
+ * Flat plan z for this z-index - origin.z + directionsZ[zIndex], always, regardless of
+ * surface-follow state or grid coordinate mode. This used to be overridden by whichever
+ * already-measured neighbor was closest in xy when surface-follow was on, using that
+ * neighbor's surface-corrected z - which is exactly why the overview z looked "random":
+ * it tracked one arbitrary neighbor instead of the plane. Surface-tracking for the
+ * overview image is now expressed exclusively through overviewStackZAbs()'s full-stack
+ * mode; "sampled grid points" always uses this flat value directly, never a stack.
+ */
+double Brillouin::overviewFlatZAbs(int zIndex, const std::vector<double>& directionsZ) const {
 	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : m_startPosition;
 	const auto clampedZIndex = std::clamp(zIndex, 0, (int)directionsZ.size() - 1);
-
-	auto position = POINT3{
-		xy.x,
-		xy.y,
-		origin.z + directionsZ[clampedZIndex]
-	};
-
-	if (m_settings.useSurfaceFollow) {
-		auto bestDistance2 = std::numeric_limits<double>::infinity();
-		for (gsl::index ii{ 0 }; ii < (gsl::index)m_orderedIndices.size(); ii++) {
-			if (m_orderedIndices[ii].z == clampedZIndex) {
-				const auto dx = m_orderedPositions[ii].x - position.x;
-				const auto dy = m_orderedPositions[ii].y - position.y;
-				const auto distance2 = dx * dx + dy * dy;
-				if (distance2 < bestDistance2) {
-					bestDistance2 = distance2;
-					position.z = m_orderedPositions[ii].z;
-				}
-			}
-		}
-	}
-
-	return position;
+	return origin.z + directionsZ[clampedZIndex];
 }
 
 /*
- * One position per z slice by default (at the current start position, matching the
- * legacy behaviour), or one position per mosaic tile when overviewBrightfieldFullGrid
- * is enabled, so the whole grid extent gets covered - works in both absolute and relative
- * grid mode, since overviewTileCentersXY() already computes tile centers correctly for
- * either (see its own comments for why relative mode needs m_orderedPositionsRelative
- * instead of m_orderedPositions).
+ * xy point(s) for the overview image itself: the true grid center (single image), or one
+ * per mosaic tile when overviewBrightfieldFullGrid is enabled (covering the whole grid
+ * extent) - NOT "sampled grid points", which is an independent, additive option handled by
+ * overviewCapturePoints(). Works in both absolute and relative grid mode, since
+ * overviewTileCentersXY()/overviewGridCenterXY() both return xy in the same frame: origin-
+ * inclusive (absolute stage um) for absolute mode, a pure grid offset with no origin baked
+ * in for relative mode (see overviewTileCentersXY()'s own comments).
  */
-std::vector<POINT3> Brillouin::overviewBrightfieldPositionsForZ(int zIndex, const std::vector<double>& directionsZ) const {
-	std::vector<POINT3> positions;
+std::vector<POINT2> Brillouin::overviewImageXY() const {
 	if (m_settings.overviewBrightfieldFullGrid) {
-		const auto tileCentersXY = overviewTileCentersXY();
-		positions.reserve(tileCentersXY.size());
-		// overviewTileCentersXY() returns tile centers in the same frame m_orderedPositions/
-		// m_orderedPositionsRelative are in: origin-inclusive (absolute stage um) for
-		// absolute mode, but a pure grid offset with no origin baked in for relative mode
-		// (see its comments). overviewBrightfieldPositionForZ() below expects an absolute
-		// stage position - the single-tile branch already passes m_startPosition directly,
-		// which only works because it IS the absolute position - so relative-mode tile
-		// centers need m_startPosition added back in here to match that same convention.
-		const auto xyOrigin = m_settings.gridCoordinatesAbsolute
-			? POINT2{ 0, 0 }
-			: POINT2{ m_startPosition.x, m_startPosition.y };
-		for (const auto& xy : tileCentersXY) {
-			positions.push_back(overviewBrightfieldPositionForZ(zIndex, directionsZ, POINT2{ xy.x + xyOrigin.x, xy.y + xyOrigin.y }));
-		}
-	} else {
-		positions.push_back(overviewBrightfieldPositionForZ(zIndex, directionsZ, POINT2{ m_startPosition.x, m_startPosition.y }));
+		return overviewTileCentersXY();
 	}
-	return positions;
+	return { overviewGridCenterXY() };
+}
+
+/*
+ * z-targets to capture at the overview image's xy point(s) for this z-index. With
+ * overviewBrightfieldFullStack off, this is just the single flat plan z (legacy behaviour,
+ * 1 image per z-plane). With it on, this is zSteps values spanning either the grid's own
+ * zMin..zMax (surface-follow off), or the global lowest-to-highest found surface offset by
+ * zMin/zMax (surface-follow on) - e.g. lowest surface 100, highest 120, zMin/zMax -10/20 ->
+ * stack from 90 to 140 at zSteps points. Falls back to the non-surface-follow range if
+ * surface-follow is on but nothing was ever found, so this degrades gracefully instead of
+ * using stale/default zero bounds.
+ *
+ * Only ever applies to the overview image (see overviewImageXY()) - "sampled grid points"
+ * always captures a single flat image per point instead (see overviewCapturePoints()),
+ * independent of this setting.
+ */
+std::vector<double> Brillouin::overviewStackZAbs(int zIndex, const std::vector<double>& directionsZ) const {
+	if (!m_settings.overviewBrightfieldFullStack) {
+		return { overviewFlatZAbs(zIndex, directionsZ) };
+	}
+
+	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : m_startPosition;
+	if (m_settings.useSurfaceFollow && m_surfaceZRangeValid) {
+		return simplemath::linspace(
+			m_surfaceZMinAbs + m_settings.zMin,
+			m_surfaceZMaxAbs + m_settings.zMax,
+			m_settings.zSteps
+		);
+	}
+
+	return simplemath::linspace(origin.z + m_settings.zMin, origin.z + m_settings.zMax, m_settings.zSteps);
+}
+
+/*
+ * Every image actually captured for this z-index: the overview image's xy point(s)
+ * (overviewImageXY()) each paired with overviewStackZAbs() (a full stack, if enabled, only
+ * ever applies here), followed by - additionally, independent of the overview image's own
+ * settings - "sampled grid points" (overviewSampledGridXY()) if overviewBrightfieldSampledGrid
+ * is on, each paired with a single flat overviewFlatZAbs() (never a stack, no matter how
+ * many sampled points there are). The two groups are simply concatenated, not merged or
+ * deduplicated, even if they happen to coincide in xy.
+ */
+std::vector<Brillouin::OverviewCapturePoint> Brillouin::overviewCapturePoints(int zIndex, const std::vector<double>& directionsZ) const {
+	const auto xyOrigin = m_settings.gridCoordinatesAbsolute
+		? POINT2{ 0, 0 }
+		: POINT2{ m_startPosition.x, m_startPosition.y };
+
+	std::vector<OverviewCapturePoint> points;
+
+	const auto stackZ = overviewStackZAbs(zIndex, directionsZ);
+	for (const auto& xy : overviewImageXY()) {
+		points.push_back(OverviewCapturePoint{ POINT2{ xy.x + xyOrigin.x, xy.y + xyOrigin.y }, stackZ });
+	}
+
+	if (m_settings.overviewBrightfieldSampledGrid) {
+		const std::vector<double> flatZ{ overviewFlatZAbs(zIndex, directionsZ) };
+		for (const auto& xy : overviewSampledGridXY()) {
+			points.push_back(OverviewCapturePoint{ POINT2{ xy.x + xyOrigin.x, xy.y + xyOrigin.y }, flatZ });
+		}
+	}
+
+	return points;
+}
+
+int Brillouin::overviewImageCountTotal() const {
+	if (!m_settings.saveOverviewBrightfieldPerZ || m_settings.zSteps <= 0) {
+		return 0;
+	}
+	// Point count/stack depths are constant across z (see overviewCapturePoints()'s own
+	// comment), so a single z-index is enough to get the per-z-plane count.
+	const auto directionsZ = simplemath::linspace(m_settings.zMin, m_settings.zMax, m_settings.zSteps);
+	const auto points = overviewCapturePoints(0, directionsZ);
+	size_t perZ = 0;
+	for (const auto& point : points) {
+		perZ += point.zAbs.size();
+	}
+	return (int)(perZ * (size_t)m_settings.zSteps);
 }
 
 /*
@@ -1440,6 +1521,60 @@ std::vector<POINT2> Brillouin::overviewTileCentersXY() const {
 	return tiles;
 }
 
+/*
+ * The true center of the configured [xMin,xMax]x[yMin,yMax] grid, in the same frame
+ * overviewTileCentersXY() uses (origin-inclusive absolute um for absolute mode, a pure
+ * grid offset for relative mode) - used by the "single image" overview coverage mode.
+ */
+POINT2 Brillouin::overviewGridCenterXY() const {
+	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : POINT3{};
+	const auto gridXMin = m_settings.xMin + origin.x;
+	const auto gridXMax = m_settings.xMax + origin.x;
+	const auto gridYMin = m_settings.yMin + origin.y;
+	const auto gridYMax = m_settings.yMax + origin.y;
+	return POINT2{ 0.5 * (gridXMin + gridXMax), 0.5 * (gridYMin + gridYMax) };
+}
+
+/*
+ * Real measurement-grid (x, y) points, coarse-binned by overviewBrightfieldBin using the
+ * exact same coarse-grid reduction coarseXYSamples() shares with the surface pre-scan's
+ * "Grid bin" - i.e. these coordinates are literally "the position the scanner would
+ * normally image at", not a synthesized tile center. ROI-mask filtered the same way
+ * runSurfacePreScan()/the roi-scan-plan-mask metadata test it (raw xMin/xMax-based
+ * coordinates, before the origin below is added). Returned in the same frame
+ * overviewTileCentersXY() uses, so callers can treat all 3 coverage modes uniformly.
+ */
+std::vector<POINT2> Brillouin::coarseGridXYPoints(int bin) const {
+	const auto [xSamples, ySamples] = coarseXYSamples(bin);
+	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : POINT3{};
+
+	std::vector<POINT2> points;
+	points.reserve(xSamples.size() * ySamples.size());
+	for (const auto y : ySamples) {
+		for (const auto x : xSamples) {
+			if (m_settings.useRoiMask && !isPointInPolygonUm(POINT2{ x, y }, m_settings.roiPolygonUm)) {
+				continue;
+			}
+			points.push_back(POINT2{ x + origin.x, y + origin.y });
+		}
+	}
+	return points;
+}
+
+std::vector<POINT2> Brillouin::overviewSampledGridXY() const {
+	auto points = coarseGridXYPoints(m_settings.overviewBrightfieldBin);
+	if (points.empty()) {
+		// No point survived the ROI mask (or the grid is degenerate) - fall back to
+		// something sensible rather than capturing nothing at all.
+		points.push_back(overviewGridCenterXY());
+	}
+	return points;
+}
+
+std::vector<POINT2> Brillouin::surfacePreScanGridXY() const {
+	return coarseGridXYPoints(m_settings.preScanXYBin);
+}
+
 std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUm() const {
 	// See overviewTileCentersXY() for why relative mode must use m_orderedPositionsRelative
 	// and a zero origin here, not m_orderedPositions/m_startPosition.
@@ -1548,7 +1683,9 @@ void enqueueOverviewBrightfieldImage(
 	std::unique_ptr<StorageWrapper>& storage,
 	int imageNumber,
 	CAMERA_SETTINGS& cameraSettings,
-	const std::vector<std::byte>& image
+	const std::vector<std::byte>& image,
+	const POINT3& targetPosition,
+	const POINT3& stagePosition
 ) {
 	auto date = QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc())
 		.toString(Qt::ISODateWithMs).toStdString();
@@ -1569,7 +1706,10 @@ void enqueueOverviewBrightfieldImage(
 		typedImage,
 		cameraSettings.exposureTime,
 		cameraSettings.gain,
-		cameraSettings.roi
+		cameraSettings.roi,
+		targetPosition,
+		true,
+		stagePosition
 	);
 
 	QMetaObject::invokeMethod(
@@ -1591,8 +1731,23 @@ void Brillouin::captureOverviewBrightfield(
 	}
 
 	m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
+	// Brightfield capture must never happen with the RL shutter open.
+	m_scanControl->setRLShutterOpen(false);
 	m_scanControl->setPositionCompensated(position);
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+	// Actual stage position at capture time, read back after the compensated move and
+	// settle delay - can differ slightly from the commanded `position` (hysteresis
+	// compensation, backlash). Both are stored using the same origin-relative convention
+	// sampled-x/y/z and overview-brightfield-x/y/z already use, so all of a file's
+	// position metadata stays directly comparable.
+	const auto toStoredConvention = [this](const POINT3& raw) {
+		return m_settings.gridCoordinatesAbsolute
+			? POINT3{ raw.x - m_settings.absoluteGridOriginUm.x, raw.y - m_settings.absoluteGridOriginUm.y, raw.z - m_settings.absoluteGridOriginUm.z }
+			: raw;
+	};
+	const auto targetPosition = toStoredConvention(position);
+	const auto stagePosition = toStoredConvention(m_scanControl->getPosition());
 
 	auto brightfieldSettings = m_brightfieldCamera->getSettings();
 	brightfieldSettings.exposureTime = 1e-3 * std::max(1, m_settings.overviewBrightfieldExposureMs);
@@ -1607,6 +1762,7 @@ void Brillouin::captureOverviewBrightfield(
 	if (brightfieldSettings.roi.bytesPerFrame <= 0) {
 		m_brightfieldCamera->stopAcquisition();
 		m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
+		m_scanControl->setRLShutterOpen(true);
 		emit(s_surfaceScanProgress(
 			100.0 * (double)(zIndex + 1) / std::max(1, m_settings.zSteps),
 			QString("Skipped brightfield overview for z slice %1/%2: invalid frame size")
@@ -1622,10 +1778,10 @@ void Brillouin::captureOverviewBrightfield(
 
 	auto queuedImage = false;
 	if (brightfieldSettings.readout.dataType == "unsigned short") {
-		enqueueOverviewBrightfieldImage<unsigned short>(storage, imageNumber, brightfieldSettings, image);
+		enqueueOverviewBrightfieldImage<unsigned short>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition);
 		queuedImage = true;
 	} else if (brightfieldSettings.readout.dataType == "unsigned char") {
-		enqueueOverviewBrightfieldImage<unsigned char>(storage, imageNumber, brightfieldSettings, image);
+		enqueueOverviewBrightfieldImage<unsigned char>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition);
 		queuedImage = true;
 	}
 
@@ -1637,6 +1793,7 @@ void Brillouin::captureOverviewBrightfield(
 	}
 
 	m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
+	m_scanControl->setRLShutterOpen(true);
 }
 
 std::string Brillouin::getRepetitionFilename() {
@@ -1679,6 +1836,10 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		);
 		// set optical elements for brightfield/Brillouin imaging
 		m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
+		// Force the RL shutter open for the whole acquisition, regardless of whatever
+		// manual state the user left it in beforehand - see ScanControl::setPreset()'s
+		// comment on why this isn't handled by the preset table itself.
+		m_scanControl->setRLShutterOpen(true);
 	} else {
 		m_abort = true;
 		return;
@@ -1737,6 +1898,9 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 			// touched anything, not wherever the surface pre-scan's last column left it.
 			m_scanControl->setPositionCompensated(m_startPosition);
 			m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
+			// The surface-review pause shows a live brightfield view - shutter must be
+			// closed for it, same as any other brightfield capture.
+			m_scanControl->setRLShutterOpen(false);
 			// The grid/ROI overlay itself is fixed (see ScanControl::getPositionOffset())
 			// and doesn't need refreshing here. The laser-position marker does, though: the
 			// periodic announcer is stopped for the whole acquisition (see stopAnnouncing()
@@ -1792,6 +1956,9 @@ void Brillouin::continueAfterSurfaceReview(bool fullGrid) {
 
 	if (m_scanControl) {
 		m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
+		// Resuming actual measurement after the surface-review pause - shutter must be
+		// open again.
+		m_scanControl->setRLShutterOpen(true);
 	}
 	setAcquisitionStatus(ACQUISITION_STATUS::STARTED);
 	runMeasurementPhase(m_acquisition->m_storage);
@@ -1804,6 +1971,17 @@ void Brillouin::continueAfterSurfaceReview(bool fullGrid) {
 		return;
 	}
 	finishRepetition();
+}
+
+void Brillouin::approachGridPosition(const POINT3& position) {
+	if (!m_scanControl) {
+		return;
+	}
+	if (m_settings.useGridHysteresisCompensation) {
+		m_scanControl->setPositionCompensated(position);
+	} else {
+		m_scanControl->setPosition(position);
+	}
 }
 
 void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
@@ -1891,6 +2069,73 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	storage->setPositions("surface-verification-steps-used", std::vector<double>{ (double)m_settings.surfaceVerificationSteps }, 1, originDims);
 	storage->setPositions("surface-verification-frame-average-used", std::vector<double>{ (double)m_settings.surfaceVerificationFrameAverage }, 1, originDims);
 	storage->setPositions("surface-verification-tolerance-fraction-used", std::vector<double>{ m_settings.surfaceVerificationToleranceFraction }, 1, originDims);
+	storage->setPositions("surface-pre-scan-xy-bin-used", std::vector<double>{ (double)m_settings.preScanXYBin }, 1, originDims);
+	storage->setPositions("surface-pre-scan-z-step-um-used", std::vector<double>{ m_settings.preScanZStepUm }, 1, originDims);
+	storage->setPositions("surface-pre-scan-z-travel-range-um-used", std::vector<double>{ m_settings.preScanZTravelRangeUm }, 1, originDims);
+	storage->setPositions("surface-metric-threshold-used", std::vector<double>{ m_settings.surfaceMetricThreshold }, 1, originDims);
+	storage->setPositions("surface-smooth-sigma-um-used", std::vector<double>{ m_settings.surfaceSmoothSigmaUm }, 1, originDims);
+	storage->setPositions("surface-scan-direction-used", std::vector<double>{ (double)m_settings.surfaceScanDirection }, 1, originDims);
+	storage->setPositions("surface-medium-reference-frame-count-used", std::vector<double>{ (double)m_settings.mediumReferenceFrameCount }, 1, originDims);
+	const hsize_t proxyRoiDims[1] = { 4 };
+	storage->setPositions("surface-proxy-roi-1-used", std::vector<double>{
+		(double)m_settings.surfaceProxyRoiLeft, (double)m_settings.surfaceProxyRoiTop,
+		(double)m_settings.surfaceProxyRoiWidth, (double)m_settings.surfaceProxyRoiHeight
+	}, 1, proxyRoiDims);
+	storage->setPositions("surface-proxy-roi-2-used", std::vector<double>{
+		(double)m_settings.surfaceProxyRoi2Left, (double)m_settings.surfaceProxyRoi2Top,
+		(double)m_settings.surfaceProxyRoi2Width, (double)m_settings.surfaceProxyRoi2Height
+	}, 1, proxyRoiDims);
+
+	// Grid extent as configured (redundant with the "x"/"y"/"z" position arrays above, but
+	// explicit scalars are easier for a reader to check at a glance than reconstructing
+	// min/max from those arrays).
+	const hsize_t gridExtentDims[1] = { 2 };
+	storage->setPositions("grid-x-range-um-used", std::vector<double>{ m_settings.xMin, m_settings.xMax }, 1, gridExtentDims);
+	storage->setPositions("grid-y-range-um-used", std::vector<double>{ m_settings.yMin, m_settings.yMax }, 1, gridExtentDims);
+	storage->setPositions("grid-z-range-um-used", std::vector<double>{ m_settings.zMin, m_settings.zMax }, 1, gridExtentDims);
+
+	// Calibration schedule actually used for this repetition.
+	storage->setPositions("pre-calibration-used", std::vector<double>{ m_settings.preCalibration ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("post-calibration-used", std::vector<double>{ m_settings.postCalibration ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("con-calibration-used", std::vector<double>{ m_settings.conCalibration ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("con-calibration-interval-min-used", std::vector<double>{ m_settings.conCalibrationInterval }, 1, originDims);
+	storage->setPositions("nr-calibration-images-used", std::vector<double>{ (double)m_settings.nrCalibrationImages }, 1, originDims);
+	storage->setPositions("calibration-exposure-time-s-used", std::vector<double>{ m_settings.calibrationExposureTime }, 1, originDims);
+
+	// Repetition schedule.
+	storage->setPositions("repetitions-count-used", std::vector<double>{ (double)m_settings.repetitions.count }, 1, originDims);
+	storage->setPositions("repetitions-interval-min-used", std::vector<double>{ m_settings.repetitions.interval }, 1, originDims);
+	storage->setPositions("repetitions-file-per-repetition-used", std::vector<double>{ m_settings.repetitions.filePerRepetition ? 1.0 : 0.0 }, 1, originDims);
+
+	// ROI polygon vertices (its effect on the plan is already in roi-scan-plan-mask below,
+	// but the raw polygon itself wasn't recorded anywhere).
+	if (!m_settings.roiPolygonUm.empty()) {
+		const hsize_t roiPolyDims[1] = { (hsize_t)m_settings.roiPolygonUm.size() };
+		std::vector<double> roiPolyX(m_settings.roiPolygonUm.size());
+		std::vector<double> roiPolyY(m_settings.roiPolygonUm.size());
+		for (size_t i = 0; i < m_settings.roiPolygonUm.size(); i++) {
+			roiPolyX[i] = m_settings.roiPolygonUm[i].x;
+			roiPolyY[i] = m_settings.roiPolygonUm[i].y;
+		}
+		storage->setPositions("roi-polygon-x-um", roiPolyX, 1, roiPolyDims);
+		storage->setPositions("roi-polygon-y-um", roiPolyY, 1, roiPolyDims);
+	}
+
+	// BF overview coverage settings actually used (their effect on shape is already visible
+	// in overview-brightfield-x/y/z + point-count/point-stack-counts, but the flags
+	// themselves weren't recorded, unlike useSurfaceFollow/useRoiMask above).
+	storage->setPositions("overview-brightfield-save-per-z-used", std::vector<double>{ m_settings.saveOverviewBrightfieldPerZ ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("overview-brightfield-full-grid-used", std::vector<double>{ m_settings.overviewBrightfieldFullGrid ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("overview-brightfield-sampled-grid-used", std::vector<double>{ m_settings.overviewBrightfieldSampledGrid ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("overview-brightfield-bin-used", std::vector<double>{ (double)m_settings.overviewBrightfieldBin }, 1, originDims);
+	storage->setPositions("overview-brightfield-full-stack-used", std::vector<double>{ m_settings.overviewBrightfieldFullStack ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("overview-brightfield-exposure-ms-used", std::vector<double>{ (double)m_settings.overviewBrightfieldExposureMs }, 1, originDims);
+	storage->setPositions("overview-brightfield-gain-used", std::vector<double>{ m_settings.overviewBrightfieldGain }, 1, originDims);
+
+	// Grid-stepping/camera settings not otherwise recorded per-image.
+	storage->setPositions("use-grid-hysteresis-compensation-used", std::vector<double>{ m_settings.useGridHysteresisCompensation ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("camera-frame-count-used", std::vector<double>{ (double)m_settings.camera.frameCount }, 1, originDims);
+	storage->setPositions("camera-spurious-noise-filter-used", std::vector<double>{ m_settings.camera.spuriousNoiseFilter ? 1.0 : 0.0 }, 1, originDims);
 
 	// Which (x, y) columns were geometrically inside the ROI mask (or every column, if no
 	// ROI mask is active) - without this, a 0 in surface-found-mask or sampled-mask is
@@ -1933,40 +2178,57 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	storage->setPositions("sampled-z", sampledZ, sampledRank, sampledDims);
 
 	if (m_settings.saveOverviewBrightfieldPerZ) {
-		// Flattened as [z0_tile0, z0_tile1, ..., z1_tile0, ...]; tileCount is constant
-		// across z since the tile layout only depends on the (z-independent) grid
-		// extent. overview-brightfield-tile-count lets a reader reshape this back into
-		// [zSteps, tileCount] and is 1 for the legacy single-image-per-z behaviour.
-		const auto tileCount = overviewBrightfieldPositionsForZ(0, directionsZ).size();
-		const auto totalOverviewCount = (size_t)m_settings.zSteps * tileCount;
+		// Flattened as [z0_point0_stack0, z0_point0_stack1, ..., z0_point1_stack0, ...,
+		// z1_point0_stack0, ...]; both the number of capture points (the overview image's
+		// xy point(s), plus "sampled grid points" if that's additionally on) and each
+		// point's own stack depth are constant across z (each only depends on
+		// z-independent settings), so the shape can be read once from z-index 0.
+		// overview-brightfield-point-count/-point-stack-counts let a reader reshape this
+		// back into each point's own stack - stack depth is 1 for every point except the
+		// overview image's own when overviewBrightfieldFullStack is on (see
+		// overviewCapturePoints()).
+		const auto shape = overviewCapturePoints(0, directionsZ);
+		const auto pointCount = shape.size();
+		auto pointStackCounts = std::vector<double>(pointCount);
+		size_t totalPerZ = 0;
+		for (size_t p = 0; p < pointCount; p++) {
+			pointStackCounts[p] = (double)shape[p].zAbs.size();
+			totalPerZ += shape[p].zAbs.size();
+		}
+		const auto totalOverviewCount = (size_t)m_settings.zSteps * totalPerZ;
 		hsize_t overviewDims[1] = { (hsize_t)totalOverviewCount };
 		auto overviewX = std::vector<double>(totalOverviewCount);
 		auto overviewY = std::vector<double>(totalOverviewCount);
 		auto overviewZ = std::vector<double>(totalOverviewCount);
 		for (gsl::index ii{ 0 }; ii < m_settings.zSteps; ii++) {
-			const auto positions = overviewBrightfieldPositionsForZ((int)ii, directionsZ);
-			for (size_t tt = 0; tt < positions.size() && tt < tileCount; tt++) {
-				const auto flatIndex = (size_t)ii * tileCount + tt;
-				const auto& position = positions[tt];
-				// Use the same convention as sampled-x/y/z above, so overview and
-				// Brillouin positions can be compared/overlaid directly without the
-				// caller having to know which fields are absolute vs. origin-relative.
-				overviewX[flatIndex] = m_settings.gridCoordinatesAbsolute
-					? position.x - m_settings.absoluteGridOriginUm.x
-					: position.x;
-				overviewY[flatIndex] = m_settings.gridCoordinatesAbsolute
-					? position.y - m_settings.absoluteGridOriginUm.y
-					: position.y;
-				overviewZ[flatIndex] = m_settings.gridCoordinatesAbsolute
-					? position.z - m_settings.absoluteGridOriginUm.z
-					: position.z;
+			const auto capturePoints = overviewCapturePoints((int)ii, directionsZ);
+			auto flatIndex = (size_t)ii * totalPerZ;
+			for (size_t p = 0; p < capturePoints.size() && p < pointCount; p++) {
+				const auto& point = capturePoints[p];
+				for (size_t ss = 0; ss < point.zAbs.size(); ss++) {
+					// Use the same convention as sampled-x/y/z above, so overview and
+					// Brillouin positions can be compared/overlaid directly without the
+					// caller having to know which fields are absolute vs. origin-relative.
+					overviewX[flatIndex] = m_settings.gridCoordinatesAbsolute
+						? point.xy.x - m_settings.absoluteGridOriginUm.x
+						: point.xy.x;
+					overviewY[flatIndex] = m_settings.gridCoordinatesAbsolute
+						? point.xy.y - m_settings.absoluteGridOriginUm.y
+						: point.xy.y;
+					overviewZ[flatIndex] = m_settings.gridCoordinatesAbsolute
+						? point.zAbs[ss] - m_settings.absoluteGridOriginUm.z
+						: point.zAbs[ss];
+					flatIndex++;
+				}
 			}
 		}
 		storage->setPositions("overview-brightfield-x", overviewX, sampledRank, overviewDims);
 		storage->setPositions("overview-brightfield-y", overviewY, sampledRank, overviewDims);
 		storage->setPositions("overview-brightfield-z", overviewZ, sampledRank, overviewDims);
-		const hsize_t tileCountDims[1] = { 1 };
-		storage->setPositions("overview-brightfield-tile-count", std::vector<double>{ (double)tileCount }, 1, tileCountDims);
+		const hsize_t pointCountDims[1] = { 1 };
+		storage->setPositions("overview-brightfield-point-count", std::vector<double>{ (double)pointCount }, 1, pointCountDims);
+		const hsize_t pointStackDims[1] = { (hsize_t)pointCount };
+		storage->setPositions("overview-brightfield-point-stack-counts", pointStackCounts, 1, pointStackDims);
 	}
 	delete[] dims;
 
@@ -2010,9 +2272,10 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 
 	// move stage to first position, wait 50 ms for it to finish
 	if (m_scanControl) {
-		// Approach from a consistent direction to compensate for stage hysteresis,
-		// so the grid is reached reproducibly regardless of where the stage was before.
-		m_scanControl->setPositionCompensated(m_orderedPositions[0]);
+		// Approach from a consistent direction to compensate for stage hysteresis (unless
+		// useGridHysteresisCompensation is off), so the grid is reached reproducibly
+		// regardless of where the stage was before.
+		approachGridPosition(m_orderedPositions[0]);
 		// The periodic position-announcer is stopped for the whole acquisition (see
 		// stopAnnouncing() in acquire()), and a translation stage's setPosition() doesn't
 		// announce as a side effect the way the galvo's does - so without this, the laser-
@@ -2035,7 +2298,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				// The calibration preset can move the stage away (e.g. to a reference sample),
 				// so approach the grid point from a consistent direction to avoid hysteresis error.
 				if (m_scanControl) {
-					m_scanControl->setPositionCompensated(m_orderedPositions[ll]);
+					approachGridPosition(m_orderedPositions[ll]);
 				} else {
 					m_abort = true;
 					return;
@@ -2146,21 +2409,34 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		// overview, not before any of it was (see lastIndexForZ above for why "last
 		// occurrence" rather than "first" is what makes this robust to scan order).
 		if (m_settings.saveOverviewBrightfieldPerZ && ll == lastIndexForZ[zIndex]) {
-			// One position (legacy behaviour) or one per mosaic tile covering the full
-			// grid extent, depending on overviewBrightfieldFullGrid; imageNumber stays
-			// unique per (z, tile) pair since tileCount is constant across z slices.
-			const auto overviewPositions = overviewBrightfieldPositionsForZ(zIndex, directionsZ);
-			for (size_t tt = 0; tt < overviewPositions.size(); tt++) {
-				const auto imageNumber = zIndex * (int)overviewPositions.size() + (int)tt;
-				captureOverviewBrightfield(storage, imageNumber, zIndex, overviewPositions[tt]);
-				if (m_abort) {
-					return;
+			// The overview image's xy point(s) each get their own stack (1 for the legacy
+			// single-image-per-z behaviour, zSteps for a full stack), followed by "sampled
+			// grid points" (if on) which always get a single flat image each - see
+			// overviewCapturePoints(). imageNumber stays unique per (z, point, stack-slice)
+			// triple since the point count and each point's stack depth are constant across
+			// z slices (must match the flat-index scheme the "overview-brightfield-x/y/z"
+			// metadata above uses).
+			const auto capturePoints = overviewCapturePoints(zIndex, directionsZ);
+			size_t totalPerZ = 0;
+			for (const auto& point : capturePoints) {
+				totalPerZ += point.zAbs.size();
+			}
+			auto flatIndexWithinZ = size_t{ 0 };
+			for (const auto& point : capturePoints) {
+				for (const auto z : point.zAbs) {
+					const auto imageNumber = (int)((size_t)zIndex * totalPerZ + flatIndexWithinZ);
+					const auto position = POINT3{ point.xy.x, point.xy.y, z };
+					captureOverviewBrightfield(storage, imageNumber, zIndex, position);
+					flatIndexWithinZ++;
+					if (m_abort) {
+						return;
+					}
 				}
 			}
 			if (m_scanControl) {
 				// The overview brightfield capture moves the stage away from the grid point,
 				// so approach it again from a consistent direction to avoid hysteresis error.
-				m_scanControl->setPositionCompensated(m_orderedPositions[ll]);
+				approachGridPosition(m_orderedPositions[ll]);
 				std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			} else {
 				m_abort = true;
@@ -2171,7 +2447,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		// move stage to next position
 		if (ll < ((gsl::index)nrPositions - 1)) {
 			if (m_scanControl) {
-				m_scanControl->setPositionCompensated(m_orderedPositions[ll + 1]);
+				approachGridPosition(m_orderedPositions[ll + 1]);
 				// See the matching comment where position 0 is approached above.
 				m_scanControl->announcePosition();
 			} else {
@@ -2199,6 +2475,8 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 
 	if (m_scanControl) {
 		m_scanControl->setPreset(ScanPreset::SCAN_LASEROFF);
+		// Acquisition has finished - don't leave the RL shutter forced open.
+		m_scanControl->setRLShutterOpen(false);
 
 		m_scanControl->setPositionCompensated(m_startPosition);
 		m_scanControl->enableMeasurementMode(false);

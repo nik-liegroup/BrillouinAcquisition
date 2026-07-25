@@ -1477,6 +1477,90 @@ border: none;</string>
               </widget>
              </item>
              <item>
+              <widget class="QWidget" name="acquisitionControlWidget" native="true">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="minimumSize">
+                <size>
+                 <width>0</width>
+                 <height>34</height>
+                </size>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>16777215</width>
+                 <height>34</height>
+                </size>
+               </property>
+               <layout class="QHBoxLayout" name="horizontalLayout_acquisitionControl">
+                <property name="leftMargin">
+                 <number>8</number>
+                </property>
+                <property name="topMargin">
+                 <number>8</number>
+                </property>
+                <property name="rightMargin">
+                 <number>8</number>
+                </property>
+                <property name="bottomMargin">
+                 <number>8</number>
+                </property>
+                <item>
+                 <spacer name="acquisitionControlSpacer">
+                  <property name="orientation">
+                   <enum>Qt::Horizontal</enum>
+                  </property>
+                  <property name="sizeHint" stdset="0">
+                   <size>
+                    <width>40</width>
+                    <height>20</height>
+                   </size>
+                  </property>
+                 </spacer>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="BrillouinStart">
+                  <property name="enabled">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>64</width>
+                    <height>18</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>Start</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="fullGridButton">
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>64</width>
+                    <height>18</height>
+                   </size>
+                  </property>
+                  <property name="toolTip">
+                   <string>Only available after a surface scan pauses for review: measure every grid point instead of just the ones with a surface z value. Points without one are measured starting at their original (pre-surface-follow) z.</string>
+                  </property>
+                  <property name="text">
+                   <string>Full grid</string>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
               <widget class="QTabWidget" name="acquisitionModeTabs">
                <property name="styleSheet">
                 <string notr="true">QTabWidget::pane {
@@ -1511,7 +1595,7 @@ QTabBar::tab:!selected {
                </property>
                <widget class="QWidget" name="Brillouin">
                 <attribute name="title">
-                 <string>Brillouin</string>
+                 <string>Grid</string>
                 </attribute>
                 <layout class="QHBoxLayout" name="horizontalLayout_6">
                  <property name="leftMargin">
@@ -1555,13 +1639,13 @@ QTabBar::tab:!selected {
                       <x>0</x>
                       <y>0</y>
                      <width>280</width>
-                     <height>1275</height>
+                     <height>663</height>
                      </rect>
                     </property>
                     <property name="minimumSize">
                      <size>
                       <width>280</width>
-                      <height>1275</height>
+                      <height>663</height>
                      </size>
                     </property>
                     <widget class="QGroupBox" name="acquisitionAOI">
@@ -1570,7 +1654,7 @@ QTabBar::tab:!selected {
                       <x>8</x>
                       <y>28</y>
                       <width>264</width>
-                       <height>825</height>
+                       <height>356</height>
                       </rect>
                      </property>
                      <property name="title">
@@ -2113,7 +2197,7 @@ QTabBar::tab:!selected {
                        <x>8</x>
                        <y>224</y>
                        <width>248</width>
-                       <height>590</height>
+                       <height>124</height>
                       </rect>
                      </property>
                      <layout class="QGridLayout" name="advancedPlanningGrid">
@@ -2143,7 +2227,7 @@ QTabBar::tab:!selected {
                         <property name="maximumSize">
                          <size>
                           <width>16777215</width>
-                          <height>136</height>
+                          <height>120</height>
                          </size>
                         </property>
                         <property name="title">
@@ -2215,22 +2299,15 @@ QTabBar::tab:!selected {
                           </widget>
                          </item>
                          <item row="3" column="0" colspan="2">
-                          <widget class="QCheckBox" name="saveOverviewBrightfieldPerZCheckbox">
+                          <widget class="QCheckBox" name="gridHysteresisCompensationCheckbox">
                            <property name="toolTip">
-                            <string>Save one brightfield overview image for each z slice, centered on the scan-grid center.</string>
+                            <string>Approach each grid point from a consistent direction to cancel stage backlash (extra move + settle per point). Uncheck for faster stepping if your stage doesn't need it.</string>
                            </property>
                            <property name="text">
-                            <string>Save BF overview per z slice</string>
+                            <string>Compensate stage hysteresis</string>
                            </property>
-                          </widget>
-                         </item>
-                         <item row="4" column="0" colspan="2">
-                          <widget class="QCheckBox" name="overviewFullGridCheckbox">
-                           <property name="toolTip">
-                            <string>Tile enough brightfield images (20% overlap) to cover the whole grid extent, instead of a single image. Only available in absolute grid mode.</string>
-                           </property>
-                           <property name="text">
-                            <string>Full grid (mosaic)</string>
+                           <property name="checked">
+                            <bool>true</bool>
                            </property>
                           </widget>
                          </item>
@@ -2238,306 +2315,6 @@ QTabBar::tab:!selected {
                        </widget>
                       </item>
                       <item row="1" column="0">
-                       <widget class="QGroupBox" name="surfaceScanningGroupBox">
-                        <property name="sizePolicy">
-                         <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
-                          <horstretch>0</horstretch>
-                          <verstretch>0</verstretch>
-                         </sizepolicy>
-                        </property>
-                        <property name="minimumSize">
-                         <size>
-                          <width>0</width>
-                          <height>440</height>
-                         </size>
-                        </property>
-                        <property name="maximumSize">
-                         <size>
-                          <width>16777215</width>
-                          <height>440</height>
-                         </size>
-                        </property>
-                        <property name="title">
-                         <string>Surface scanning</string>
-                        </property>
-                        <layout class="QGridLayout" name="surfaceScanningGrid">
-                         <property name="horizontalSpacing">
-                          <number>4</number>
-                         </property>
-                         <property name="verticalSpacing">
-                          <number>2</number>
-                         </property>
-                         <property name="leftMargin">
-                          <number>4</number>
-                         </property>
-                         <property name="topMargin">
-                          <number>4</number>
-                         </property>
-                         <property name="rightMargin">
-                          <number>4</number>
-                         </property>
-                         <property name="bottomMargin">
-                          <number>4</number>
-                         </property>
-                         <item row="0" column="0" colspan="2">
-                          <widget class="QCheckBox" name="useSurfaceFollowCheckbox">
-                           <property name="text">
-                            <string>Surface mapping</string>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="1" column="0">
-                          <widget class="QLabel" name="preScanXYBinLabel">
-                           <property name="text">
-                            <string>Grid bin</string>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="1" column="1">
-                          <widget class="QSpinBox" name="preScanXYBinSpinBox">
-                           <property name="minimum">
-                            <number>1</number>
-                           </property>
-                           <property name="maximum">
-                            <number>1000</number>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="2" column="0">
-                          <widget class="QLabel" name="preScanZStepLabel">
-                           <property name="text">
-                            <string>Z step [um]</string>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="2" column="1">
-                          <widget class="QDoubleSpinBox" name="preScanZStepSpinBox">
-                           <property name="decimals">
-                            <number>2</number>
-                           </property>
-                           <property name="minimum">
-                            <double>0.010000000000000</double>
-                           </property>
-                           <property name="maximum">
-                            <double>1000000.000000000000000</double>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="3" column="0">
-                          <widget class="QLabel" name="preScanZTravelLabel">
-                           <property name="text">
-                            <string>Z travel [um]</string>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="3" column="1">
-                          <widget class="QDoubleSpinBox" name="preScanZTravelSpinBox">
-                           <property name="decimals">
-                            <number>2</number>
-                           </property>
-                           <property name="minimum">
-                            <double>0.010000000000000</double>
-                           </property>
-                           <property name="maximum">
-                            <double>1000000.000000000000000</double>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="4" column="0">
-                          <widget class="QLabel" name="surfaceDropLabel">
-                           <property name="text">
-                            <string>Signal drop [%]</string>
-                           </property>
-                           <property name="toolTip">
-                            <string>Surface is detected when spectral metric falls by this percent from medium reference.</string>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="4" column="1">
-                          <widget class="QDoubleSpinBox" name="surfaceDropSpinBox">
-                           <property name="toolTip">
-                            <string>Surface is detected when spectral metric falls by this percent from medium reference.</string>
-                           </property>
-                           <property name="decimals">
-                            <number>1</number>
-                           </property>
-                           <property name="minimum">
-                            <double>1.000000000000000</double>
-                           </property>
-                           <property name="maximum">
-                            <double>99.000000000000000</double>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="5" column="0">
-                          <widget class="QLabel" name="mediumReferenceLabel">
-                           <property name="text">
-                            <string>Medium reference</string>
-                           </property>
-                           <property name="toolTip">
-                            <string>Always measured before a surface scan - it's the only threshold source for surface detection.</string>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="5" column="1">
-                          <widget class="QSpinBox" name="mediumReferenceFrameCountSpinBox">
-                           <property name="toolTip">
-                            <string>Number of medium-reference frames measured automatically before the surface scan.</string>
-                           </property>
-                           <property name="suffix">
-                            <string> frames</string>
-                           </property>
-                           <property name="minimum">
-                            <number>1</number>
-                           </property>
-                           <property name="maximum">
-                            <number>1000</number>
-                           </property>
-                           <property name="value">
-                            <number>5</number>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="6" column="0">
-                          <widget class="QLabel" name="surfaceMaxRewindLabel">
-                           <property name="text">
-                            <string>Rewind cap [um]</string>
-                           </property>
-                           <property name="toolTip">
-                            <string>Neighbor-seeded search: max distance allowed stepping back towards water when the neighboring column's z estimate is already past the surface here. If exceeded without recovering above threshold, this point is marked as no surface found.</string>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="6" column="1">
-                          <widget class="QDoubleSpinBox" name="surfaceMaxRewindSpinBox">
-                           <property name="toolTip">
-                            <string>Neighbor-seeded search: max distance allowed stepping back towards water when the neighboring column's z estimate is already past the surface here. If exceeded without recovering above threshold, this point is marked as no surface found.</string>
-                           </property>
-                           <property name="decimals">
-                            <number>1</number>
-                           </property>
-                           <property name="minimum">
-                            <double>0.000000000000000</double>
-                           </property>
-                           <property name="maximum">
-                            <double>1000000.000000000000000</double>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="7" column="0">
-                          <widget class="QLabel" name="surfaceVerificationStepsLabel">
-                           <property name="text">
-                            <string>Verify steps [K]</string>
-                           </property>
-                           <property name="toolTip">
-                            <string>Number of extra z-steps measured after a candidate surface crossing before accepting it, to confirm the signal keeps behaving like a real interface (see verify tolerance) rather than a noise dip. 0 disables verification.</string>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="7" column="1">
-                          <widget class="QSpinBox" name="surfaceVerificationStepsSpinBox">
-                           <property name="toolTip">
-                            <string>Number of extra z-steps measured after a candidate surface crossing before accepting it, to confirm the signal keeps behaving like a real interface (see verify tolerance) rather than a noise dip. 0 disables verification.</string>
-                           </property>
-                           <property name="minimum">
-                            <number>0</number>
-                           </property>
-                           <property name="maximum">
-                            <number>100</number>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="8" column="0">
-                          <widget class="QLabel" name="surfaceVerificationFrameAverageLabel">
-                           <property name="text">
-                            <string>Verify frames [M]</string>
-                           </property>
-                           <property name="toolTip">
-                            <string>Number of frames averaged at the candidate crossing and at each of the K verification steps, to reduce noise. 1 = single frame (fastest, default).</string>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="8" column="1">
-                          <widget class="QSpinBox" name="surfaceVerificationFrameAverageSpinBox">
-                           <property name="toolTip">
-                            <string>Number of frames averaged at the candidate crossing and at each of the K verification steps, to reduce noise. 1 = single frame (fastest, default).</string>
-                           </property>
-                           <property name="suffix">
-                            <string> frames</string>
-                           </property>
-                           <property name="minimum">
-                            <number>1</number>
-                           </property>
-                           <property name="maximum">
-                            <number>1000</number>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="9" column="0">
-                          <widget class="QLabel" name="surfaceVerificationToleranceLabel">
-                           <property name="text">
-                            <string>Verify tolerance [%]</string>
-                           </property>
-                           <property name="toolTip">
-                            <string>How much the mean of the (frame-averaged) second half of the K-step verification window may rise above the first half's mean before a candidate crossing is rejected as a noise dip rather than a real, monotonically dropping surface.</string>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="9" column="1">
-                          <widget class="QDoubleSpinBox" name="surfaceVerificationToleranceSpinBox">
-                           <property name="toolTip">
-                            <string>How much the mean of the (frame-averaged) second half of the K-step verification window may rise above the first half's mean before a candidate crossing is rejected as a noise dip rather than a real, monotonically dropping surface.</string>
-                           </property>
-                           <property name="decimals">
-                            <number>1</number>
-                           </property>
-                           <property name="minimum">
-                            <double>0.000000000000000</double>
-                           </property>
-                           <property name="maximum">
-                            <double>100.000000000000000</double>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="10" column="0" colspan="2">
-                          <widget class="QPushButton" name="editSpectralProxyRoiCheckbox">
-                           <property name="minimumSize">
-                            <size>
-                             <width>0</width>
-                             <height>26</height>
-                            </size>
-                           </property>
-                           <property name="text">
-                            <string>Draw spectral ROIs</string>
-                           </property>
-                           <property name="toolTip">
-                            <string>Draw one or two spectral rectangles used for surface-drop detection. If two are drawn, their metrics are averaged.</string>
-                           </property>
-                           <property name="checkable">
-                            <bool>true</bool>
-                           </property>
-                          </widget>
-                         </item>
-                         <item row="11" column="0" colspan="2">
-                          <widget class="QPushButton" name="measureSpectralProxyRoiButton">
-                           <property name="minimumSize">
-                            <size>
-                             <width>0</width>
-                             <height>26</height>
-                            </size>
-                           </property>
-                           <property name="text">
-                            <string>Measure spectral ROIs</string>
-                           </property>
-                           <property name="toolTip">
-                            <string>Measure maximum intensity in the currently drawn spectral ROI rectangles and show the result in the status bar.</string>
-                           </property>
-                          </widget>
-                         </item>
-                        </layout>
-                       </widget>
-                      </item>
-                      <item row="2" column="0">
                        <spacer name="advancedPlanningSpacer">
                         <property name="orientation">
                          <enum>Qt::Vertical</enum>
@@ -2557,7 +2334,7 @@ QTabBar::tab:!selected {
                      <property name="geometry">
                        <rect>
                         <x>8</x>
-                       <y>967</y>
+                       <y>498</y>
                         <width>264</width>
                         <height>137</height>
                       </rect>
@@ -2796,197 +2573,6 @@ QTabBar::tab:!selected {
                       </property>
                      </widget>
                     </widget>
-                    <widget class="QGroupBox" name="acquisitionProgress">
-                    <property name="geometry">
-                      <rect>
-                       <x>8</x>
-                       <y>1110</y>
-                       <width>264</width>
-                       <height>137</height>
-                      </rect>
-                     </property>
-                     <property name="title">
-                      <string>Current position &amp;&amp; acquisition progress</string>
-                     </property>
-                     <widget class="QProgressBar" name="progressBar">
-                      <property name="geometry">
-                       <rect>
-                        <x>8</x>
-                        <y>112</y>
-                        <width>248</width>
-                        <height>18</height>
-                       </rect>
-                      </property>
-                      <property name="value">
-                       <number>100</number>
-                      </property>
-                      <property name="alignment">
-                       <set>Qt::AlignCenter</set>
-                      </property>
-                      <property name="format">
-                       <string extracomment="Test">Acquisition stopped</string>
-                      </property>
-                     </widget>
-                     <widget class="QWidget" name="layoutWidget4">
-                      <property name="geometry">
-                       <rect>
-                        <x>8</x>
-                        <y>15</y>
-                        <width>248</width>
-                        <height>89</height>
-                       </rect>
-                      </property>
-                      <layout class="QGridLayout" name="gridLayout_2">
-                       <property name="verticalSpacing">
-                        <number>6</number>
-                       </property>
-                       <item row="0" column="0">
-                        <widget class="QLabel" name="positionX_label">
-                         <property name="text">
-                          <string>x [µm]</string>
-                         </property>
-                         <property name="alignment">
-                          <set>Qt::AlignCenter</set>
-                         </property>
-                        </widget>
-                       </item>
-                       <item row="0" column="1">
-                        <widget class="QLabel" name="positionY_label">
-                         <property name="text">
-                          <string>y [µm]</string>
-                         </property>
-                         <property name="alignment">
-                          <set>Qt::AlignCenter</set>
-                         </property>
-                        </widget>
-                       </item>
-                       <item row="0" column="2">
-                        <widget class="QLabel" name="positionZ_label">
-                         <property name="text">
-                          <string>z [µm]</string>
-                         </property>
-                         <property name="alignment">
-                          <set>Qt::AlignCenter</set>
-                         </property>
-                        </widget>
-                       </item>
-                       <item row="1" column="0">
-                        <widget class="QLineEdit" name="positionX">
-                         <property name="styleSheet">
-                          <string notr="true">background: #E4E4E4;
-border: none;</string>
-                         </property>
-                         <property name="locale">
-                          <locale language="English" country="UnitedStates"/>
-                         </property>
-                         <property name="text">
-                          <string>0</string>
-                         </property>
-                         <property name="alignment">
-                          <set>Qt::AlignCenter</set>
-                         </property>
-                         <property name="readOnly">
-                          <bool>true</bool>
-                         </property>
-                        </widget>
-                       </item>
-                       <item row="1" column="1">
-                        <widget class="QLineEdit" name="positionY">
-                         <property name="styleSheet">
-                          <string notr="true">background: #E4E4E4;
-border: none;</string>
-                         </property>
-                         <property name="locale">
-                          <locale language="English" country="UnitedStates"/>
-                         </property>
-                         <property name="text">
-                          <string>0</string>
-                         </property>
-                         <property name="alignment">
-                          <set>Qt::AlignCenter</set>
-                         </property>
-                         <property name="readOnly">
-                          <bool>true</bool>
-                         </property>
-                        </widget>
-                       </item>
-                       <item row="1" column="2">
-                        <widget class="QLineEdit" name="positionZ">
-                         <property name="styleSheet">
-                          <string notr="true">background: #E4E4E4;
-border: none;</string>
-                         </property>
-                         <property name="locale">
-                          <locale language="English" country="UnitedStates"/>
-                         </property>
-                         <property name="text">
-                          <string>0</string>
-                         </property>
-                         <property name="alignment">
-                          <set>Qt::AlignCenter</set>
-                         </property>
-                         <property name="readOnly">
-                          <bool>true</bool>
-                         </property>
-                        </widget>
-                       </item>
-                       <item row="2" column="0" colspan="2">
-                        <widget class="QLabel" name="imageNr_label">
-                         <property name="text">
-                          <string>Image number</string>
-                         </property>
-                        </widget>
-                       </item>
-                       <item row="2" column="2">
-                        <widget class="QLineEdit" name="imageNr">
-                         <property name="styleSheet">
-                          <string notr="true">background: #E4E4E4;
-border: none;</string>
-                         </property>
-                         <property name="text">
-                          <string>0</string>
-                         </property>
-                         <property name="alignment">
-                          <set>Qt::AlignCenter</set>
-                         </property>
-                         <property name="readOnly">
-                          <bool>true</bool>
-                         </property>
-                        </widget>
-                       </item>
-                       <item row="3" column="0">
-                        <widget class="QLabel" name="estimatedAcquisitionTime_label">
-                         <property name="toolTip">
-                          <string>Exposure-only estimate: exposure time multiplied by frame count and number of grid points.</string>
-                         </property>
-                         <property name="text">
-                          <string>Est. time</string>
-                         </property>
-                        </widget>
-                       </item>
-                       <item row="3" column="1" colspan="2">
-                        <widget class="QLineEdit" name="estimatedAcquisitionTime">
-                         <property name="toolTip">
-                          <string>Exposure-only estimate: exposure time multiplied by frame count and number of grid points.</string>
-                         </property>
-                         <property name="styleSheet">
-                          <string notr="true">background: #E4E4E4;
-border: none;</string>
-                         </property>
-                         <property name="text">
-                          <string>0 s</string>
-                         </property>
-                         <property name="alignment">
-                          <set>Qt::AlignCenter</set>
-                         </property>
-                         <property name="readOnly">
-                          <bool>true</bool>
-                         </property>
-                        </widget>
-                       </item>
-                      </layout>
-                     </widget>
-                    </widget>
                     <widget class="QGroupBox" name="repetitions">
                      <property name="enabled">
                       <bool>true</bool>
@@ -2994,7 +2580,7 @@ border: none;</string>
                      <property name="geometry">
                        <rect>
                         <x>8</x>
-                       <y>872</y>
+                       <y>403</y>
                         <width>264</width>
                         <height>89</height>
                       </rect>
@@ -3120,45 +2706,368 @@ border: none;</string>
                       </property>
                      </widget>
                     </widget>
-                    <widget class="QPushButton" name="BrillouinStart">
-                     <property name="enabled">
-                      <bool>true</bool>
-                     </property>
-                     <property name="geometry">
-                      <rect>
-                       <x>152</x>
-                       <y>8</y>
-                       <width>64</width>
-                       <height>18</height>
-                      </rect>
-                     </property>
-                     <property name="text">
-                      <string>Start</string>
-                     </property>
-                    </widget>
-                    <widget class="QPushButton" name="fullGridButton">
-                     <property name="enabled">
-                      <bool>false</bool>
-                     </property>
-                     <property name="geometry">
-                      <rect>
-                       <x>220</x>
-                       <y>8</y>
-                       <width>64</width>
-                       <height>18</height>
-                      </rect>
-                     </property>
-                     <property name="toolTip">
-                      <string>Only available after a surface scan pauses for review: measure every grid point instead of just the ones with a surface z value. Points without one are measured starting at their original (pre-surface-follow) z.</string>
-                     </property>
-                     <property name="text">
-                      <string>Full grid</string>
-                     </property>
-                    </widget>
                    </widget>
                   </widget>
                  </item>
                 </layout>
+               </widget>
+               <widget class="QWidget" name="SurfaceScanning">
+                <attribute name="title">
+                 <string>Surface scanning</string>
+                </attribute>
+                <widget class="QScrollArea" name="scrollArea_4">
+                 <property name="geometry">
+                  <rect>
+                   <x>0</x>
+                   <y>0</y>
+                   <width>280</width>
+                   <height>460</height>
+                  </rect>
+                 </property>
+                 <property name="minimumSize">
+                  <size>
+                   <width>180</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                 <property name="maximumSize">
+                  <size>
+                   <width>296</width>
+                   <height>16777215</height>
+                  </size>
+                 </property>
+                 <property name="frameShadow">
+                  <enum>QFrame::Raised</enum>
+                 </property>
+                 <property name="lineWidth">
+                  <number>0</number>
+                 </property>
+                 <property name="widgetResizable">
+                  <bool>true</bool>
+                 </property>
+                 <widget class="QWidget" name="scrollAreaWidgetContents_4">
+                  <property name="geometry">
+                   <rect>
+                    <x>0</x>
+                    <y>0</y>
+                    <width>264</width>
+                    <height>456</height>
+                   </rect>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>264</width>
+                    <height>456</height>
+                   </size>
+                  </property>
+                  <widget class="QGroupBox" name="surfaceScanningGroupBox">
+                   <property name="geometry">
+                    <rect>
+                     <x>8</x>
+                     <y>8</y>
+                     <width>248</width>
+                     <height>440</height>
+                    </rect>
+                   </property>
+                   <property name="sizePolicy">
+                    <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                     <horstretch>0</horstretch>
+                     <verstretch>0</verstretch>
+                    </sizepolicy>
+                   </property>
+                   <property name="minimumSize">
+                    <size>
+                     <width>0</width>
+                     <height>440</height>
+                    </size>
+                   </property>
+                   <property name="maximumSize">
+                    <size>
+                     <width>16777215</width>
+                     <height>440</height>
+                    </size>
+                   </property>
+                   <property name="title">
+                    <string>Surface scanning</string>
+                   </property>
+                   <layout class="QGridLayout" name="surfaceScanningGrid">
+                    <property name="horizontalSpacing">
+                     <number>4</number>
+                    </property>
+                    <property name="verticalSpacing">
+                     <number>2</number>
+                    </property>
+                    <property name="leftMargin">
+                     <number>4</number>
+                    </property>
+                    <property name="topMargin">
+                     <number>4</number>
+                    </property>
+                    <property name="rightMargin">
+                     <number>4</number>
+                    </property>
+                    <property name="bottomMargin">
+                     <number>4</number>
+                    </property>
+                    <item row="0" column="0" colspan="2">
+                     <widget class="QCheckBox" name="useSurfaceFollowCheckbox">
+                      <property name="text">
+                       <string>Surface mapping</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="1" column="0">
+                     <widget class="QLabel" name="preScanXYBinLabel">
+                      <property name="text">
+                       <string>Grid bin</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="1" column="1">
+                     <widget class="QSpinBox" name="preScanXYBinSpinBox">
+                      <property name="minimum">
+                       <number>1</number>
+                      </property>
+                      <property name="maximum">
+                       <number>1000</number>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="2" column="0">
+                     <widget class="QLabel" name="preScanZStepLabel">
+                      <property name="text">
+                       <string>Z step [um]</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="2" column="1">
+                     <widget class="QDoubleSpinBox" name="preScanZStepSpinBox">
+                      <property name="decimals">
+                       <number>2</number>
+                      </property>
+                      <property name="minimum">
+                       <double>0.010000000000000</double>
+                      </property>
+                      <property name="maximum">
+                       <double>1000000.000000000000000</double>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="3" column="0">
+                     <widget class="QLabel" name="preScanZTravelLabel">
+                      <property name="text">
+                       <string>Z travel [um]</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="3" column="1">
+                     <widget class="QDoubleSpinBox" name="preScanZTravelSpinBox">
+                      <property name="decimals">
+                       <number>2</number>
+                      </property>
+                      <property name="minimum">
+                       <double>0.010000000000000</double>
+                      </property>
+                      <property name="maximum">
+                       <double>1000000.000000000000000</double>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="4" column="0">
+                     <widget class="QLabel" name="surfaceDropLabel">
+                      <property name="text">
+                       <string>Signal drop [%]</string>
+                      </property>
+                      <property name="toolTip">
+                       <string>Surface is detected when spectral metric falls by this percent from medium reference.</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="4" column="1">
+                     <widget class="QDoubleSpinBox" name="surfaceDropSpinBox">
+                      <property name="toolTip">
+                       <string>Surface is detected when spectral metric falls by this percent from medium reference.</string>
+                      </property>
+                      <property name="decimals">
+                       <number>1</number>
+                      </property>
+                      <property name="minimum">
+                       <double>1.000000000000000</double>
+                      </property>
+                      <property name="maximum">
+                       <double>99.000000000000000</double>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="5" column="0">
+                     <widget class="QLabel" name="mediumReferenceLabel">
+                      <property name="text">
+                       <string>Medium reference</string>
+                      </property>
+                      <property name="toolTip">
+                       <string>Always measured before a surface scan - it's the only threshold source for surface detection.</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="5" column="1">
+                     <widget class="QSpinBox" name="mediumReferenceFrameCountSpinBox">
+                      <property name="toolTip">
+                       <string>Number of medium-reference frames measured automatically before the surface scan.</string>
+                      </property>
+                      <property name="suffix">
+                       <string> frames</string>
+                      </property>
+                      <property name="minimum">
+                       <number>1</number>
+                      </property>
+                      <property name="maximum">
+                       <number>1000</number>
+                      </property>
+                      <property name="value">
+                       <number>5</number>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="6" column="0">
+                     <widget class="QLabel" name="surfaceMaxRewindLabel">
+                      <property name="text">
+                       <string>Rewind cap [um]</string>
+                      </property>
+                      <property name="toolTip">
+                       <string>Neighbor-seeded search: max distance allowed stepping back towards water when the neighboring column's z estimate is already past the surface here. If exceeded without recovering above threshold, this point is marked as no surface found.</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="6" column="1">
+                     <widget class="QDoubleSpinBox" name="surfaceMaxRewindSpinBox">
+                      <property name="toolTip">
+                       <string>Neighbor-seeded search: max distance allowed stepping back towards water when the neighboring column's z estimate is already past the surface here. If exceeded without recovering above threshold, this point is marked as no surface found.</string>
+                      </property>
+                      <property name="decimals">
+                       <number>1</number>
+                      </property>
+                      <property name="minimum">
+                       <double>0.000000000000000</double>
+                      </property>
+                      <property name="maximum">
+                       <double>1000000.000000000000000</double>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="7" column="0">
+                     <widget class="QLabel" name="surfaceVerificationStepsLabel">
+                      <property name="text">
+                       <string>Verify steps [K]</string>
+                      </property>
+                      <property name="toolTip">
+                       <string>Number of extra z-steps measured after a candidate surface crossing before accepting it, to confirm the signal keeps behaving like a real interface (see verify tolerance) rather than a noise dip. 0 disables verification.</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="7" column="1">
+                     <widget class="QSpinBox" name="surfaceVerificationStepsSpinBox">
+                      <property name="toolTip">
+                       <string>Number of extra z-steps measured after a candidate surface crossing before accepting it, to confirm the signal keeps behaving like a real interface (see verify tolerance) rather than a noise dip. 0 disables verification.</string>
+                      </property>
+                      <property name="minimum">
+                       <number>0</number>
+                      </property>
+                      <property name="maximum">
+                       <number>100</number>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="8" column="0">
+                     <widget class="QLabel" name="surfaceVerificationFrameAverageLabel">
+                      <property name="text">
+                       <string>Verify frames [M]</string>
+                      </property>
+                      <property name="toolTip">
+                       <string>Number of frames averaged at the candidate crossing and at each of the K verification steps, to reduce noise. 1 = single frame (fastest, default).</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="8" column="1">
+                     <widget class="QSpinBox" name="surfaceVerificationFrameAverageSpinBox">
+                      <property name="toolTip">
+                       <string>Number of frames averaged at the candidate crossing and at each of the K verification steps, to reduce noise. 1 = single frame (fastest, default).</string>
+                      </property>
+                      <property name="suffix">
+                       <string> frames</string>
+                      </property>
+                      <property name="minimum">
+                       <number>1</number>
+                      </property>
+                      <property name="maximum">
+                       <number>1000</number>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="9" column="0">
+                     <widget class="QLabel" name="surfaceVerificationToleranceLabel">
+                      <property name="text">
+                       <string>Verify tolerance [%]</string>
+                      </property>
+                      <property name="toolTip">
+                       <string>How much the mean of the (frame-averaged) second half of the K-step verification window may rise above the first half's mean before a candidate crossing is rejected as a noise dip rather than a real, monotonically dropping surface.</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="9" column="1">
+                     <widget class="QDoubleSpinBox" name="surfaceVerificationToleranceSpinBox">
+                      <property name="toolTip">
+                       <string>How much the mean of the (frame-averaged) second half of the K-step verification window may rise above the first half's mean before a candidate crossing is rejected as a noise dip rather than a real, monotonically dropping surface.</string>
+                      </property>
+                      <property name="decimals">
+                       <number>1</number>
+                      </property>
+                      <property name="minimum">
+                       <double>0.000000000000000</double>
+                      </property>
+                      <property name="maximum">
+                       <double>100.000000000000000</double>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="10" column="0" colspan="2">
+                     <widget class="QPushButton" name="editSpectralProxyRoiCheckbox">
+                      <property name="minimumSize">
+                       <size>
+                        <width>0</width>
+                        <height>26</height>
+                       </size>
+                      </property>
+                      <property name="text">
+                       <string>Draw spectral ROIs</string>
+                      </property>
+                      <property name="toolTip">
+                       <string>Draw one or two spectral rectangles used for surface-drop detection. If two are drawn, their metrics are averaged.</string>
+                      </property>
+                      <property name="checkable">
+                       <bool>true</bool>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="11" column="0" colspan="2">
+                     <widget class="QPushButton" name="measureSpectralProxyRoiButton">
+                      <property name="minimumSize">
+                       <size>
+                        <width>0</width>
+                        <height>26</height>
+                       </size>
+                      </property>
+                      <property name="text">
+                       <string>Measure spectral ROIs</string>
+                      </property>
+                      <property name="toolTip">
+                       <string>Measure maximum intensity in the currently drawn spectral ROI rectangles and show the result in the status bar.</string>
+                      </property>
+                     </widget>
+                    </item>
+                   </layout>
+                  </widget>
+                 </widget>
+                </widget>
                </widget>
                <widget class="QWidget" name="ODT">
                 <attribute name="title">
@@ -3623,7 +3532,7 @@ border: none;</string>
                    <x>0</x>
                    <y>0</y>
                    <width>236</width>
-                   <height>249</height>
+                   <height>430</height>
                   </rect>
                  </property>
                  <property name="minimumSize">
@@ -3653,13 +3562,13 @@ border: none;</string>
                     <x>0</x>
                     <y>0</y>
                     <width>234</width>
-                    <height>247</height>
+                    <height>430</height>
                    </rect>
                   </property>
                   <property name="minimumSize">
                    <size>
                     <width>234</width>
-                    <height>120</height>
+                    <height>430</height>
                    </size>
                   </property>
                   <widget class="QPushButton" name="acquisitionStartFluorescence">
@@ -3914,6 +3823,112 @@ border: none;</string>
                    <property name="format">
                     <string extracomment="Test">Acquisition stopped</string>
                    </property>
+                  </widget>
+                  <widget class="QGroupBox" name="bfOverviewGroupBox">
+                   <property name="geometry">
+                    <rect>
+                     <x>8</x>
+                     <y>250</y>
+                     <width>218</width>
+                     <height>168</height>
+                    </rect>
+                   </property>
+                   <property name="title">
+                    <string>BF overview</string>
+                   </property>
+                   <layout class="QGridLayout" name="bfOverviewGrid">
+                    <property name="horizontalSpacing">
+                     <number>4</number>
+                    </property>
+                    <property name="verticalSpacing">
+                     <number>2</number>
+                    </property>
+                    <property name="leftMargin">
+                     <number>4</number>
+                    </property>
+                    <property name="topMargin">
+                     <number>6</number>
+                    </property>
+                    <property name="rightMargin">
+                     <number>4</number>
+                    </property>
+                    <property name="bottomMargin">
+                     <number>6</number>
+                    </property>
+                    <item row="0" column="0" colspan="2">
+                     <widget class="QCheckBox" name="saveOverviewBrightfieldPerZCheckbox">
+                      <property name="toolTip">
+                       <string>Save a brightfield overview for each finished z slice.</string>
+                      </property>
+                      <property name="text">
+                       <string>Save BF overview per z slice</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="1" column="0" colspan="2">
+                     <widget class="QRadioButton" name="overviewSingleImageRadio">
+                      <property name="toolTip">
+                       <string>One image at the true center of the x/y grid.</string>
+                      </property>
+                      <property name="text">
+                       <string>Single image (grid center)</string>
+                      </property>
+                      <property name="checked">
+                       <bool>true</bool>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="2" column="0" colspan="2">
+                     <widget class="QRadioButton" name="overviewFullGridRadio">
+                      <property name="toolTip">
+                       <string>Tile enough brightfield images (20% overlap) to cover the whole grid extent, instead of a single image.</string>
+                      </property>
+                      <property name="text">
+                       <string>Full grid (mosaic)</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="3" column="0" colspan="2">
+                     <widget class="QCheckBox" name="overviewSampledGridCheckbox">
+                      <property name="toolTip">
+                       <string>Additionally capture a single flat image at every coarse-binned real grid point in the plane (independent of, and combinable with, the overview image above), using the same coarse-binning as surface mapping's "Grid bin" (Surface scanning tab). Never affected by "Full z-stack" below.</string>
+                      </property>
+                      <property name="text">
+                       <string>Sampled grid points</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="4" column="0">
+                     <widget class="QLabel" name="overviewBinLabel">
+                      <property name="text">
+                       <string>Bin</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="4" column="1">
+                     <widget class="QSpinBox" name="overviewBinSpinBox">
+                      <property name="toolTip">
+                       <string>N: take an image every Nth grid point per plane (does not skip z planes).</string>
+                      </property>
+                      <property name="minimum">
+                       <number>1</number>
+                      </property>
+                      <property name="maximum">
+                       <number>1000</number>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="5" column="0" colspan="2">
+                     <widget class="QCheckBox" name="overviewFullStackCheckbox">
+                      <property name="toolTip">
+                       <string>Capture a full brightfield z-stack per finished z slice instead of a single image: spans zMin..zMax (surface mapping off), or the global lowest-to-highest found surface offset by zMin/zMax (surface mapping on). Off restores the flat single-image-per-z behaviour. Only applies to "Single image" and "Full grid (mosaic)" - disabled for "Sampled grid points", which always captures a single flat image per point.</string>
+                      </property>
+                      <property name="text">
+                       <string>Full z-stack</string>
+                      </property>
+                     </widget>
+                    </item>
+                   </layout>
                   </widget>
                   <widget class="QLabel" name="fluoGreenGain_Label">
                    <property name="geometry">
@@ -4202,6 +4217,209 @@ border: none;</string>
                   </widget>
                  </widget>
                 </widget>
+               </widget>
+              </widget>
+             </item>
+             <item>
+              <widget class="QGroupBox" name="acquisitionProgress">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="minimumSize">
+                <size>
+                 <width>264</width>
+                 <height>137</height>
+                </size>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>16777215</width>
+                 <height>137</height>
+                </size>
+               </property>
+               <property name="title">
+                <string>Current position &amp;&amp; acquisition progress</string>
+               </property>
+               <widget class="QProgressBar" name="progressBar">
+                <property name="geometry">
+                 <rect>
+                  <x>8</x>
+                  <y>112</y>
+                  <width>248</width>
+                  <height>18</height>
+                 </rect>
+                </property>
+                <property name="value">
+                 <number>100</number>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignCenter</set>
+                </property>
+                <property name="format">
+                 <string extracomment="Test">Acquisition stopped</string>
+                </property>
+               </widget>
+               <widget class="QWidget" name="layoutWidget4">
+                <property name="geometry">
+                 <rect>
+                  <x>8</x>
+                  <y>15</y>
+                  <width>248</width>
+                  <height>89</height>
+                 </rect>
+                </property>
+                <layout class="QGridLayout" name="gridLayout_2">
+                 <property name="verticalSpacing">
+                  <number>6</number>
+                 </property>
+                 <item row="0" column="0">
+                  <widget class="QLabel" name="positionX_label">
+                   <property name="text">
+                    <string>x [µm]</string>
+                   </property>
+                   <property name="alignment">
+                    <set>Qt::AlignCenter</set>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="0" column="1">
+                  <widget class="QLabel" name="positionY_label">
+                   <property name="text">
+                    <string>y [µm]</string>
+                   </property>
+                   <property name="alignment">
+                    <set>Qt::AlignCenter</set>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="0" column="2">
+                  <widget class="QLabel" name="positionZ_label">
+                   <property name="text">
+                    <string>z [µm]</string>
+                   </property>
+                   <property name="alignment">
+                    <set>Qt::AlignCenter</set>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="1" column="0">
+                  <widget class="QLineEdit" name="positionX">
+                   <property name="styleSheet">
+                    <string notr="true">background: #E4E4E4;
+border: none;</string>
+                   </property>
+                   <property name="locale">
+                    <locale language="English" country="UnitedStates"/>
+                   </property>
+                   <property name="text">
+                    <string>0</string>
+                   </property>
+                   <property name="alignment">
+                    <set>Qt::AlignCenter</set>
+                   </property>
+                   <property name="readOnly">
+                    <bool>true</bool>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="1" column="1">
+                  <widget class="QLineEdit" name="positionY">
+                   <property name="styleSheet">
+                    <string notr="true">background: #E4E4E4;
+border: none;</string>
+                   </property>
+                   <property name="locale">
+                    <locale language="English" country="UnitedStates"/>
+                   </property>
+                   <property name="text">
+                    <string>0</string>
+                   </property>
+                   <property name="alignment">
+                    <set>Qt::AlignCenter</set>
+                   </property>
+                   <property name="readOnly">
+                    <bool>true</bool>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="1" column="2">
+                  <widget class="QLineEdit" name="positionZ">
+                   <property name="styleSheet">
+                    <string notr="true">background: #E4E4E4;
+border: none;</string>
+                   </property>
+                   <property name="locale">
+                    <locale language="English" country="UnitedStates"/>
+                   </property>
+                   <property name="text">
+                    <string>0</string>
+                   </property>
+                   <property name="alignment">
+                    <set>Qt::AlignCenter</set>
+                   </property>
+                   <property name="readOnly">
+                    <bool>true</bool>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="2" column="0" colspan="2">
+                  <widget class="QLabel" name="imageNr_label">
+                   <property name="text">
+                    <string>Image number</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="2" column="2">
+                  <widget class="QLineEdit" name="imageNr">
+                   <property name="styleSheet">
+                    <string notr="true">background: #E4E4E4;
+border: none;</string>
+                   </property>
+                   <property name="text">
+                    <string>0</string>
+                   </property>
+                   <property name="alignment">
+                    <set>Qt::AlignCenter</set>
+                   </property>
+                   <property name="readOnly">
+                    <bool>true</bool>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="3" column="0">
+                  <widget class="QLabel" name="estimatedAcquisitionTime_label">
+                   <property name="toolTip">
+                    <string>Estimate: spectral exposure time (points x frames x exposure) + assumed stage movement time (total planned travel distance / assumed speed, plus compensated-move overhead if enabled) + BF overview capture time (image count x exposure + overhead), if enabled. Hover the value for a breakdown.</string>
+                   </property>
+                   <property name="text">
+                    <string>Est. time</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="3" column="1" colspan="2">
+                  <widget class="QLineEdit" name="estimatedAcquisitionTime">
+                   <property name="toolTip">
+                    <string>Estimate: spectral exposure time (points x frames x exposure) + assumed stage movement time (total planned travel distance / assumed speed, plus compensated-move overhead if enabled) + BF overview capture time (image count x exposure + overhead), if enabled. Hover the value for a breakdown.</string>
+                   </property>
+                   <property name="styleSheet">
+                    <string notr="true">background: #E4E4E4;
+border: none;</string>
+                   </property>
+                   <property name="text">
+                    <string>0 s</string>
+                   </property>
+                   <property name="alignment">
+                    <set>Qt::AlignCenter</set>
+                   </property>
+                   <property name="readOnly">
+                    <bool>true</bool>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
                </widget>
               </widget>
              </item>

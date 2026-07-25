@@ -103,6 +103,10 @@ struct BRILLOUIN_SETTINGS {
 			overviewBrightfieldExposureMs = settings.overviewBrightfieldExposureMs;
 			overviewBrightfieldGain = settings.overviewBrightfieldGain;
 			overviewBrightfieldFullGrid = settings.overviewBrightfieldFullGrid;
+			overviewBrightfieldSampledGrid = settings.overviewBrightfieldSampledGrid;
+			overviewBrightfieldBin = settings.overviewBrightfieldBin;
+			overviewBrightfieldFullStack = settings.overviewBrightfieldFullStack;
+			useGridHysteresisCompensation = settings.useGridHysteresisCompensation;
 			camera = settings.camera;
 			return *this;
 		}
@@ -170,10 +174,33 @@ struct BRILLOUIN_SETTINGS {
 		bool saveOverviewBrightfieldPerZ{ false };
 		int overviewBrightfieldExposureMs{ 4 };
 		double overviewBrightfieldGain{ 0.0 };
-		// Only meaningful (and only offered in the UI) when gridCoordinatesAbsolute is
-		// true: instead of one overview image per z slice at a fixed position, tile
-		// enough camera-FOV-sized images (20% overlap) to cover the whole grid extent.
+		// The overview image itself: instead of one image per z slice at the grid center
+		// (false), tile enough camera-FOV-sized images (20% overlap) to cover the whole
+		// grid extent (true). Works in both absolute and relative grid coordinate mode.
 		bool overviewBrightfieldFullGrid{ false };
+		// "Sampled grid points": an independent, additive option (not exclusive with
+		// overviewBrightfieldFullGrid above) - additionally captures one flat-z image at a
+		// coarse-binned subset of the real measurement grid (overviewBrightfieldBin, same
+		// coarse-binning logic as preScanXYBin) alongside whichever overview image is
+		// configured. A full stack (see overviewBrightfieldFullStack below) never applies
+		// to these - they always capture a single flat image per point.
+		bool overviewBrightfieldSampledGrid{ false };
+		int overviewBrightfieldBin{ 1 };
+		// If false, one flat-z overview image per finished z slice (legacy behaviour: the
+		// plane's own zMin..zMax offset from the grid origin, no surface-follow
+		// adjustment). If true, one full z-stack per finished z slice instead - spanning
+		// zMin..zMax (surface-follow off) or the global lowest-to-highest found surface,
+		// offset by zMin/zMax (surface-follow on), always sampled at zSteps points. Only
+		// ever applies to the overview image itself, never to "sampled grid points" above.
+		bool overviewBrightfieldFullStack{ false };
+		// Whether stepping from one measurement grid point to the next approaches it from
+		// a consistent direction first (ScanControl::setPositionCompensated()) to cancel
+		// out stage hysteresis/backlash - accurate but costs an extra move + 100 ms settle
+		// per grid point. Off skips straight to the target (ScanControl::setPosition()) for
+		// faster stepping, at the cost of potential backlash error. Only affects the main
+		// grid-to-grid stepping in runMeasurementPhase(); the surface pre-scan always
+		// compensates, since accuracy matters more there than speed.
+		bool useGridHysteresisCompensation{ true };
 
 		// ROI parameters
 		const double& xMin{ m_xMin };
@@ -313,6 +340,25 @@ public slots:
 	// tiled together - i.e. the outline of the area actually covered by that group's tiles,
 	// not each individual tile.
 	std::vector<std::pair<POINT2, POINT2>> overviewTileOutlinesUm() const;
+	// Coarse-binned real grid points (overviewBrightfieldBin), ROI-filtered and shifted
+	// into the same absolute frame overviewTileCentersXY() uses - the GUI live-view
+	// overlay draws these as markers for "sampled grid points", an option independent of
+	// (and additive to) the single-image/full-grid overview image - see
+	// overviewCapturePoints().
+	std::vector<POINT2> overviewSampledGridXY() const;
+	// The single grid-center point used by the "single image" coverage mode.
+	POINT2 overviewGridCenterXY() const;
+	// Coarse xy points (preScanXYBin) the surface pre-scan will actually measure, in the
+	// same frame overviewTileCentersXY() uses - the GUI live-view "proposed" preview
+	// reuses this instead of independently reconstructing an approximation of the coarse
+	// grid from the dense grid's pixel-space bounding box, which could disagree with
+	// where the pre-scan really goes (e.g. once ROI masking shrinks that bounding box).
+	std::vector<POINT2> surfacePreScanGridXY() const;
+	// Total number of BF overview images that saveOverviewBrightfieldPerZ will capture
+	// across the whole grid (all z-planes combined) - 0 if that option is off. Used by the
+	// GUI's estimated-acquisition-time calculation, which needs this count without
+	// duplicating overviewCapturePoints()'s logic.
+	int overviewImageCountTotal() const;
 
 private:
 	void abortMode(std::unique_ptr <StorageWrapper>& storage) override;
@@ -340,9 +386,43 @@ private:
 		int failedColumns{ 0 };
 	};
 	SurfaceScanResult runSurfacePreScan();
-	POINT3 overviewBrightfieldPositionForZ(int zIndex, const std::vector<double>& directionsZ, const POINT2& xy) const;
-	std::vector<POINT3> overviewBrightfieldPositionsForZ(int zIndex, const std::vector<double>& directionsZ) const;
+	// Coarse xSteps/ySteps reduced by `bin`, evenly spaced over [xMin,xMax]/[yMin,yMax] -
+	// the same logic runSurfacePreScan() uses for its coarse pre-scan columns, shared here
+	// so the "sampled grid points" overview coverage mode reuses it verbatim rather than
+	// re-implementing a different notion of "every Nth point".
+	std::pair<std::vector<double>, std::vector<double>> coarseXYSamples(int bin) const;
+	// Shared by overviewSampledGridXY()/surfacePreScanGridXY(): coarseXYSamples(bin),
+	// ROI-filtered and shifted into the frame overviewTileCentersXY() uses.
+	std::vector<POINT2> coarseGridXYPoints(int bin) const;
+	// Flat plan z for a z-index - origin.z + directionsZ[zIndex], no surface-follow
+	// adjustment. This is the sole z used for "sampled grid points" (always) and for the
+	// overview image when overviewBrightfieldFullStack is off.
+	double overviewFlatZAbs(int zIndex, const std::vector<double>& directionsZ) const;
+	// xy point(s) for the overview image itself: the true grid center (single image) or
+	// mosaic tile centers (full grid) - NOT "sampled grid points", which is an independent,
+	// additive option handled separately in overviewCapturePoints().
+	std::vector<POINT2> overviewImageXY() const;
+	// z-targets to capture at the overview image's xy point(s) for the given z-index: a
+	// single flat value (overviewFlatZAbs(), overviewBrightfieldFullStack off), or zSteps
+	// values spanning either the grid's own zMin..zMax (surface-follow off) or the global
+	// lowest-to-highest found surface offset by zMin/zMax (surface-follow on, see
+	// m_surfaceZMinAbs/m_surfaceZMaxAbs).
+	std::vector<double> overviewStackZAbs(int zIndex, const std::vector<double>& directionsZ) const;
+	// One xy/z target per image actually captured for this z-index: the overview image's
+	// xy point(s) (see overviewImageXY()) each paired with overviewStackZAbs() (so a full
+	// stack, if enabled, only ever applies here), plus - additionally, independently of the
+	// overview image's own settings - "sampled grid points" (overviewSampledGridXY()) if
+	// that option is on, each paired with a single flat overviewFlatZAbs() (a full stack
+	// never applies to sampled grid points, no matter how many of them there are).
+	struct OverviewCapturePoint {
+		POINT2 xy;
+		std::vector<double> zAbs;
+	};
+	std::vector<OverviewCapturePoint> overviewCapturePoints(int zIndex, const std::vector<double>& directionsZ) const;
 	void captureOverviewBrightfield(std::unique_ptr <StorageWrapper>& storage, int imageNumber, int zIndex, const POINT3& position);
+	// Moves to a grid point during runMeasurementPhase(), honoring
+	// useGridHysteresisCompensation (compensated approach vs. a direct move).
+	void approachGridPosition(const POINT3& position);
 
 	std::string getRepetitionFilename();
 
@@ -350,6 +430,14 @@ private:
 	std::set<std::pair<int, int>> m_surfaceFoundXYIndices;
 	// Populated at the end of runSurfacePreScan() - see getSurfaceInterpolatedXYIndices().
 	std::set<std::pair<int, int>> m_surfaceInterpolatedXYIndices;
+	// Global min/max of the found surface (absolute z, same convention as
+	// zCenterByXYIndex in runSurfacePreScan()) - used by overviewStackZAbs() to build a
+	// full-stack z range that covers every xy tile's surface, not just one neighbor's.
+	// Only valid (m_surfaceZRangeValid) after a surface pre-scan actually found at least
+	// one point.
+	double m_surfaceZMinAbs{ 0.0 };
+	double m_surfaceZMaxAbs{ 0.0 };
+	bool m_surfaceZRangeValid{ false };
 
 	BRILLOUIN_SETTINGS m_settings;
 	SCAN_ORDER m_scanOrder;

@@ -177,6 +177,13 @@ public slots:
 	Preset getPreset(ScanPreset);
 	void checkPresets();
 	bool isPresetActive(ScanPreset);
+	// The "RL Shutter" device element (if this backend has one) is deliberately excluded
+	// from setPreset()'s automatic per-element forcing (see setPreset()'s own comment) -
+	// outside of an acquisition it is purely user/manual-controlled (via the beampath
+	// buttons), and acquisition code that actually needs a specific state calls this
+	// instead of relying on whatever a preset's table happens to say. No-op if this
+	// backend has no element named "RL Shutter".
+	void setRLShutterOpen(bool open);
 	void announcePosition();
 	void startAnnouncing();
 	void stopAnnouncing();
