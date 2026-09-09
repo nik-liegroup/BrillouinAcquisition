@@ -6,6 +6,8 @@
 #include "../../lib/math/points.h"
 #include "../../Acquisition/AcquisitionModes/ScaleCalibrationHelper.h"
 
+#include <map>
+
 enum class ScanPreset {
 	SCAN_NULL			= 0x0,
 	SCAN_BRIGHTFIELD	= 0x2,
@@ -117,7 +119,7 @@ class ScanControl: public Device {
 	Q_OBJECT
 
 public:
-	ScanControl() noexcept {};
+	ScanControl() noexcept;
 	virtual ~ScanControl() {};
 
 	bool getConnectionStatus();
@@ -204,6 +206,41 @@ public slots:
 	void setScaleCalibration(const ScaleCalibrationData& scaleCalibration);
 	ScaleCalibrationData getScaleCalibration();
 
+	// Objective calibration profiles, keyed by the numeric position of the "Objective"
+	// device element (the nosepiece slot). Registering/looking these up is matched generically
+	// by DeviceElement::name == "Objective" (see onElementPositionChanged() below) rather than
+	// any backend's own DEVICE_ELEMENT::OBJECTIVE - each scan-control backend (ZeissMTB.h,
+	// ZeissECU.h, ...) defines that as a separate, backend-local enum for its own m_deviceElements
+	// indexing, so it cannot be used here. This works uniformly across all backends without
+	// touching any of their files.
+	void setObjectiveCalibration(int slot, const ObjectiveCalibrationData& calibration);
+	bool hasObjectiveCalibration(int slot) const;
+	ObjectiveCalibrationData getObjectiveCalibration(int slot) const;
+	int getActiveObjectiveSlot() const;
+	// Empty/default (hasFovOffset == false) if the active slot has no registered calibration.
+	ObjectiveCalibrationData getActiveObjectiveCalibration() const;
+	// This objective's FOV-center offset relative to the reference objective, or {0,0} if
+	// none is calibrated - always safe to add unconditionally to a grid origin (see
+	// Brillouin::resolvedGridOriginUm()), since "no calibration" and "calibrated zero
+	// offset" must resolve to the same harmless no-op.
+	POINT2 getActiveObjectiveFovOffsetUm() const;
+
+	// Whether `slot` is a physically-possible position of this backend's "Objective" device
+	// element (1..maxOptions) - false if this backend has no "Objective" element at all (e.g.
+	// plain NIDAQ). Used by the calibrations-folder auto-load (see
+	// BrillouinAcquisition::autoLoadObjectiveCalibrations()) to tell a calibration file that
+	// names a real, currently-possible slot apart from one saved on different hardware (or
+	// never actually saved against a live objective changer, objectiveSlot == -1) - the latter
+	// is flagged for the operator instead of being silently registered against a slot that may
+	// not mean what the file thinks it means.
+	bool isValidObjectiveSlot(int slot) const;
+
+	// Called by the GUI once the operator has explicitly accepted running an objective
+	// switch with no calibrated FOV-center offset (see s_objectiveSwitched()). Reset back to
+	// false on the next objective switch - acceptance does not carry over.
+	void acceptMissingObjectiveOffset();
+	bool isMissingObjectiveOffsetAccepted() const;
+
 	std::vector<POINT2> getPositionsPix(const std::vector<POINT3>& positionsMicrometer);
 	std::vector<POINT2> getPositionsPix(const std::vector<POINT3>& positionsMicrometer, bool positionsAreAbsolute);
 	// Same conversion as getPositionsPix(), but without caching the position for
@@ -265,6 +302,31 @@ private:
 
 	std::vector<POINT3> m_AOI_positions;
 
+	// -1 if no element named "Objective" exists on this backend at all (e.g. plain NIDAQ
+	// setups without a motorized changer) - callers must check for that before indexing.
+	int objectiveElementIndex() const;
+	// Shared by onElementPositionChanged() and onElementPositionsChanged() - the actual
+	// switch-detection/calibration-lookup/signal-emission logic, common to both the
+	// software-commanded and the physically-polled change path.
+	void handleObjectiveSlotObserved(int newSlot);
+
+	std::map<int, ObjectiveCalibrationData> m_objectiveCalibrations;
+	// -1 until the first "Objective" element position is observed (see
+	// onElementPositionChanged()) - that first observation is the initial hardware read on
+	// startup, not an operator-driven switch, and must not fire s_objectiveSwitched()/a warning.
+	int m_activeObjectiveSlot{ -1 };
+	bool m_objectiveOffsetWarningAccepted{ false };
+
+private slots:
+	// elementPositionChanged(DeviceElement, double) only fires for a software-commanded
+	// change (see setElement() in each backend); a change made physically at the microscope's
+	// own control panel is only ever reported through the polled, plural
+	// elementPositionsChanged(vector<double>) (see each backend's getElements(), driven by
+	// m_elementPositionTimer every 100 ms) - both must be handled, or a manual objective
+	// switch at the stand would silently skip calibration lookup/the missing-offset warning.
+	void onElementPositionChanged(DeviceElement element, double position);
+	void onElementPositionsChanged(std::vector<double> positions);
+
 signals:
 	void elementPositionsChanged(std::vector<double>);
 	void elementPositionChanged(DeviceElement, double);
@@ -282,6 +344,18 @@ signals:
 	// getPositionOffset() would return before the receiver gets around to processing the
 	// queued signal.
 	void s_gridOffsetChanged(POINT2 offsetUm, bool positionIsAbsolute);
+
+	// Emitted whenever the "Objective" device element's position changes and is recognized as
+	// an actual switch (not the initial startup read - previousSlot == -1 marks that case and
+	// no receiver should warn on it). hasCalibration false means no scale calibration at all
+	// was registered for the new slot (getScaleCalibration()/pixel<->um conversions for this
+	// objective are simply wrong until one is loaded). hasCalibration true but hasFovOffset
+	// false means a scale calibration exists but no FOV-center offset relative to the
+	// reference objective was ever measured for this specific pair - grids/ROIs/overview tiles
+	// will not be translated to compensate (see Brillouin::resolvedGridOriginUm()), and the
+	// GUI must warn and require acceptMissingObjectiveOffset() before treating the switch as
+	// resolved.
+	void s_objectiveSwitched(int previousSlot, int newSlot, bool hasCalibration, bool hasFovOffset, POINT2 offsetUm, double offsetSigmaUm);
 };
 
 #endif // SCANCONTROL_H

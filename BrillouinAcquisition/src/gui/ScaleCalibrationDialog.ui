@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>441</width>
-    <height>214</height>
+    <height>422</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -430,6 +430,164 @@
    </property>
    <property name="alignment">
     <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+   </property>
+  </widget>
+  <widget class="QGroupBox" name="objectiveGroupBox">
+   <property name="geometry">
+    <rect>
+     <x>8</x>
+     <y>216</y>
+     <width>425</width>
+     <height>136</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Objective (applies to whichever slot is currently active)</string>
+   </property>
+   <layout class="QFormLayout" name="objectiveFormLayout">
+    <item row="0" column="0">
+     <widget class="QLabel" name="objectiveName_label">
+      <property name="text">
+       <string>Objective name</string>
+      </property>
+     </widget>
+    </item>
+    <item row="0" column="1">
+     <widget class="QLineEdit" name="objectiveName"/>
+    </item>
+    <item row="1" column="0">
+     <widget class="QLabel" name="magnification_label">
+      <property name="text">
+       <string>Magnification</string>
+      </property>
+     </widget>
+    </item>
+    <item row="1" column="1">
+     <widget class="QDoubleSpinBox" name="magnification">
+      <property name="minimum">
+       <double>0.000000000000000</double>
+      </property>
+      <property name="maximum">
+       <double>1000.000000000000000</double>
+      </property>
+     </widget>
+    </item>
+    <item row="2" column="0">
+     <widget class="QLabel" name="referenceObjectiveName_label">
+      <property name="text">
+       <string>Reference objective</string>
+      </property>
+     </widget>
+    </item>
+    <item row="2" column="1">
+     <widget class="QLineEdit" name="referenceObjectiveName"/>
+    </item>
+    <item row="3" column="0">
+     <widget class="QCheckBox" name="hasFovOffsetCheckbox">
+      <property name="text">
+       <string>FOV-center offset calibrated</string>
+      </property>
+     </widget>
+    </item>
+    <item row="4" column="0">
+     <widget class="QLabel" name="fovOffsetX_label">
+      <property name="text">
+       <string>FOV offset x [µm]</string>
+      </property>
+     </widget>
+    </item>
+    <item row="4" column="1">
+     <widget class="QDoubleSpinBox" name="fovOffsetX">
+      <property name="decimals">
+       <number>3</number>
+      </property>
+      <property name="minimum">
+       <double>-100000.000000000000000</double>
+      </property>
+      <property name="maximum">
+       <double>100000.000000000000000</double>
+      </property>
+     </widget>
+    </item>
+    <item row="5" column="0">
+     <widget class="QLabel" name="fovOffsetY_label">
+      <property name="text">
+       <string>FOV offset y [µm]</string>
+      </property>
+     </widget>
+    </item>
+    <item row="5" column="1">
+     <widget class="QDoubleSpinBox" name="fovOffsetY">
+      <property name="decimals">
+       <number>3</number>
+      </property>
+      <property name="minimum">
+       <double>-100000.000000000000000</double>
+      </property>
+      <property name="maximum">
+       <double>100000.000000000000000</double>
+      </property>
+     </widget>
+    </item>
+    <item row="6" column="0">
+     <widget class="QLabel" name="fovOffsetSigma_label">
+      <property name="text">
+       <string>FOV offset sigma [µm]</string>
+      </property>
+     </widget>
+    </item>
+    <item row="6" column="1">
+     <widget class="QDoubleSpinBox" name="fovOffsetSigma">
+      <property name="decimals">
+       <number>3</number>
+      </property>
+      <property name="minimum">
+       <double>0.000000000000000</double>
+      </property>
+      <property name="maximum">
+       <double>100000.000000000000000</double>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QPushButton" name="button_save">
+   <property name="geometry">
+    <rect>
+     <x>8</x>
+     <y>360</y>
+     <width>425</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Save calibration (no acquire needed)</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="button_fovOffsetReference">
+   <property name="geometry">
+    <rect>
+     <x>8</x>
+     <y>390</y>
+     <width>210</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Set as FOV-offset reference</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="button_fovOffsetMeasure">
+   <property name="geometry">
+    <rect>
+     <x>223</x>
+     <y>390</y>
+     <width>210</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Measure FOV offset</string>
    </property>
   </widget>
  </widget>

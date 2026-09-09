@@ -275,6 +275,10 @@ private:
 	QComboBox* m_numberCameras_BrillouinDropdown;
 	std::string m_voltageCalibrationFilePath;
 	std::string m_scaleCalibrationFilePath;
+	// Folder scanned by autoLoadObjectiveCalibrations() at startup - unset (empty) means "no
+	// folder configured yet", in which case startup falls back to loading just
+	// m_scaleCalibrationFilePath as before. Persisted via writeSettings()/readSettings().
+	std::string m_calibrationsFolderPath;
 
 	QDialog* m_settingsDialog{ nullptr };
 
@@ -398,14 +402,31 @@ private slots:
 	void on_action_Scale_calibration_load_triggered();
 	void loadScaleCalibrationFile();
 
+	// Lets the operator point at a folder holding one calibration file per objective (see
+	// ScaleCalibration::autoLoadCalibrationsFromFolder()) - persisted the same way
+	// m_scaleCalibrationFilePath already is (writeSettings()/readSettings()).
+	void on_action_Scale_calibration_set_folder_triggered();
+	// Invoked at startup/connect (initBrillouin()): if a calibrations folder is configured,
+	// scans it and auto-applies whatever matches unambiguously; otherwise falls back to the
+	// pre-existing single-file loadScaleCalibrationFile() so a session that never configured
+	// a folder keeps behaving exactly as before.
+	void autoLoadObjectiveCalibrations();
+	// s_calibrationAutoLoadSummary() receiver - logs appliedText, and pops a blocking
+	// QMessageBox for warningText (ambiguous/invalid files) if it is non-empty.
+	void calibrationAutoLoadSummary(std::string appliedText, std::string warningText);
+
 	void updateScaleCalibrationTranslationValue(POINT2 translation);
 	void updateScaleCalibrationData(ScaleCalibrationData scaleCalibration);
+	void updateObjectiveCalibrationData(ObjectiveCalibrationData calibration);
 	void updateScaleCalibrationAcquisitionProgress(double progress);
 	void showScaleCalibrationStatus(std::string title, std::string message);
 
 	void closeScaleCalibrationDialog();
 	void scaleCalibrationButtonApply_clicked();
 	void scaleCalibrationButtonAcquire_clicked();
+	void scaleCalibrationButtonSave_clicked();
+	void scaleCalibrationButtonFovOffsetReference_clicked();
+	void scaleCalibrationButtonFovOffsetMeasure_clicked();
 
 	void setTranslationDistanceX(double dx);
 	void setTranslationDistanceY(double dy);
@@ -420,12 +441,27 @@ private slots:
 	void setPixToMicrometerY_x(double value);
 	void setPixToMicrometerY_y(double value);
 
+	void setObjectiveName(QString name);
+	void setMagnification(double value);
+	void setReferenceObjectiveName(QString name);
+	void setHasFovOffset(bool hasFovOffset);
+	void setFovOffsetX(double value);
+	void setFovOffsetY(double value);
+	void setFovOffsetSigma(double value);
+
 	void initBeampathButtons();
 
 	void on_BrillouinStart_clicked();
 	void on_fullGridButton_clicked();
 	void microscopeElementPositionsChanged(const std::vector<double>&);
 	void microscopeElementPositionChanged(DeviceElement element, double position);
+	// Reacts to ScanControl::s_objectiveSwitched(): warns (blocking, must be acknowledged) if
+	// the new objective has no scale calibration at all, or has one but no calibrated
+	// FOV-center offset relative to the reference objective - see the comment on that signal
+	// in ScanControl.h for what hasCalibration/hasFovOffset mean. previousSlot == -1 is the
+	// initial hardware read at startup, not an operator-driven switch, and is filtered out
+	// before this is even called (ScanControl itself does not emit for that case).
+	void objectiveSwitched(int previousSlot, int newSlot, bool hasCalibration, bool hasFovOffset, POINT2 offsetUm, double offsetSigmaUm);
 	void on_camera_playPause_clicked();
 
 	void updateImageBrillouin();

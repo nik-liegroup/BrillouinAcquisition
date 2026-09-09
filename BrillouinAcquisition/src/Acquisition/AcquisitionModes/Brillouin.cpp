@@ -109,6 +109,25 @@ void Brillouin::startRepetitions() {
 		return;
 	}
 
+	// Absolute-mode positions silently target the wrong physical location by exactly the
+	// active objective's FOV-center offset if that offset was never calibrated (see
+	// resolvedGridOriginUm()) - unlike relative mode, there is no live re-anchoring to save
+	// it. Refuse to start rather than measure at an unverified location; the operator already
+	// saw this exact condition as a blocking warning at objective-switch time (see
+	// ScanControl::s_objectiveSwitched()) and either accepted it (isMissingObjectiveOffsetAccepted())
+	// or should fix it before measuring, not have it silently ignored here.
+	if (m_settings.gridCoordinatesAbsolute && m_scanControl) {
+		const auto activeCalibration = m_scanControl->getActiveObjectiveCalibration();
+		if (!activeCalibration.hasFovOffset && !m_scanControl->isMissingObjectiveOffsetAccepted()) {
+			qWarning(logWarning()) << "Brillouin::startRepetitions: refusing to start - absolute-mode grid "
+				"has no calibrated FOV-center offset for the active objective, and the missing-offset "
+				"warning was not accepted.";
+			m_acquisition->disableMode(ACQUISITION_MODE::BRILLOUIN);
+			setAcquisitionStatus(ACQUISITION_STATUS::ABORTED);
+			return;
+		}
+	}
+
 	// If the repetition timer is running already, we stop the next repetition
 	if (m_repetitionTimer != nullptr && m_repetitionTimer->isActive()) {
 		m_repetitionTimer->stop();
@@ -565,7 +584,7 @@ void Brillouin::updatePositions() {
 	plannerInput.useRoiMask = settings.useRoiMask;
 	plannerInput.roiPolygonUm = settings.roiPolygonUm;
 	plannerInput.gridCoordinatesAbsolute = settings.gridCoordinatesAbsolute;
-	plannerInput.absoluteGridOriginUm = settings.absoluteGridOriginUm;
+	plannerInput.absoluteGridOriginUm = resolvedGridOriginUm();
 
 	auto plan = ScanPlanner::buildLegacyCartesianPlan(plannerInput);
 	m_orderedPositions = std::move(plan.orderedPositionsAbsolute);
@@ -582,6 +601,62 @@ void Brillouin::updatePositions() {
 		emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
 		emit(s_excludedPositionsChanged(m_excludedPositionsRelative));
 	}
+}
+
+bool Brillouin::remapProxyRoi(
+	int roiLeft, int roiTop, int roiWidth, int roiHeight,
+	const PROXY_ROI_FRAME& from, const PROXY_ROI_FRAME& to,
+	int& outLeft, int& outTop, int& outWidth, int& outHeight
+) {
+	if (from.width <= 0 || from.height <= 0 || to.width <= 0 || to.height <= 0) {
+		return false;
+	}
+	if (from.width == to.width && from.height == to.height
+			&& from.originLeft == to.originLeft && from.originBottom == to.originBottom
+			&& from.widthPhysical == to.widthPhysical && from.heightPhysical == to.heightPhysical) {
+		// Identical frame - use the coordinates as-is.
+		outLeft = roiLeft;
+		outTop = roiTop;
+		outWidth = roiWidth;
+		outHeight = roiHeight;
+		return true;
+	}
+	if (from.widthPhysical <= 0 || from.heightPhysical <= 0 || to.widthPhysical <= 0 || to.heightPhysical <= 0) {
+		// Missing physical geometry (e.g. a settings file saved before this existed) -
+		// fall back to the old, origin-blind proportional rescale. Still wrong whenever
+		// the two frames don't share a sensor origin, same as before this function existed.
+		const auto scaleX = (double)to.width / from.width;
+		const auto scaleY = (double)to.height / from.height;
+		outLeft = (int)std::lround(roiLeft * scaleX);
+		outTop = (int)std::lround(roiTop * scaleY);
+		outWidth = (int)std::lround(roiWidth * scaleX);
+		outHeight = (int)std::lround(roiHeight * scaleY);
+		return true;
+	}
+
+	// Physical (pre-binning) sensor pixels spanned by one binned cell, in `from` and `to`.
+	const auto fromPixelsPerCellX = (double)from.widthPhysical / from.width;
+	const auto fromPixelsPerCellY = (double)from.heightPhysical / from.height;
+	const auto toPixelsPerCellX = (double)to.widthPhysical / to.width;
+	const auto toPixelsPerCellY = (double)to.heightPhysical / to.height;
+
+	// Local (binned, `from`) -> absolute physical sensor position.
+	const auto absLeft = from.originLeft + roiLeft * fromPixelsPerCellX;
+	const auto absRight = from.originLeft + (roiLeft + roiWidth) * fromPixelsPerCellX;
+	const auto absBottom = from.originBottom + roiTop * fromPixelsPerCellY;
+	const auto absTop = from.originBottom + (roiTop + roiHeight) * fromPixelsPerCellY;
+
+	// Absolute physical sensor position -> local (binned, `to`).
+	const auto toLeft = (absLeft - to.originLeft) / toPixelsPerCellX;
+	const auto toRight = (absRight - to.originLeft) / toPixelsPerCellX;
+	const auto toBottom = (absBottom - to.originBottom) / toPixelsPerCellY;
+	const auto toTop = (absTop - to.originBottom) / toPixelsPerCellY;
+
+	outLeft = (int)std::lround(toLeft);
+	outTop = (int)std::lround(toBottom);
+	outWidth = (int)std::lround(toRight - toLeft);
+	outHeight = (int)std::lround(toTop - toBottom);
+	return true;
 }
 
 double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const {
@@ -636,42 +711,52 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 		metrics.push_back(maxSignal);
 	};
 
-	// A spectral ROI is recorded against whatever frame size was active when it was drawn
-	// (surfaceProxyRoi*FrameWidth/Height). If the camera's ROI/binning at measurement time
-	// gives a different-sized frame, applying the raw stored coordinates directly could
-	// silently clamp the ROI to nothing (falling through to measuring the whole frame,
-	// which is what "surface never found despite a visible drop" looks like) - rescale it
-	// proportionally onto the current frame instead.
-	auto appendMetricRescaled = [&](int roiLeft, int roiTop, int roiWidth, int roiHeight, int refW, int refH) {
-		if (refW <= 0 || refH <= 0 || (refW == width && refH == height)) {
-			appendMetric(roiLeft, roiTop, roiWidth, roiHeight);
-			return;
+	// A spectral ROI is recorded against whatever frame (crop + binning) was active when it
+	// was drawn. Reapplying its local pixel coordinates directly - or merely rescaling them
+	// by frame size - is only correct if the current frame shares the same sensor origin as
+	// when it was drawn. If the camera ROI was zoomed/cropped to a different region since
+	// (e.g. drawn while zoomed in, then measured against the full sensor, or vice versa),
+	// a size-only rescale silently lands the rectangle on the wrong physical location
+	// instead of raising an error - which is what "surface never found despite a visible
+	// drop", or a spectral ROI measuring somewhere other than where it was drawn, looks
+	// like. remapProxyRoi() remaps it through its absolute sensor position instead.
+	const PROXY_ROI_FRAME currentFrame{
+		width, height,
+		m_settings.camera.roi.left, m_settings.camera.roi.bottom,
+		m_settings.camera.roi.width_physical, m_settings.camera.roi.height_physical
+	};
+	auto appendProxyRoi = [&](
+		int roiLeft, int roiTop, int roiWidth, int roiHeight,
+		const PROXY_ROI_FRAME& drawnFrame
+	) {
+		int outLeft{ 0 }, outTop{ 0 }, outWidth{ 0 }, outHeight{ 0 };
+		if (remapProxyRoi(roiLeft, roiTop, roiWidth, roiHeight, drawnFrame, currentFrame,
+				outLeft, outTop, outWidth, outHeight)) {
+			appendMetric(outLeft, outTop, outWidth, outHeight);
 		}
-		const auto scaleX = (double)width / refW;
-		const auto scaleY = (double)height / refH;
-		appendMetric(
-			(int)std::lround(roiLeft * scaleX),
-			(int)std::lround(roiTop * scaleY),
-			(int)std::lround(roiWidth * scaleX),
-			(int)std::lround(roiHeight * scaleY)
-		);
 	};
 
-	appendMetricRescaled(
+	appendProxyRoi(
 		m_settings.surfaceProxyRoiLeft,
 		m_settings.surfaceProxyRoiTop,
 		m_settings.surfaceProxyRoiWidth,
 		m_settings.surfaceProxyRoiHeight,
-		m_settings.surfaceProxyRoiFrameWidth,
-		m_settings.surfaceProxyRoiFrameHeight
+		PROXY_ROI_FRAME{
+			m_settings.surfaceProxyRoiFrameWidth, m_settings.surfaceProxyRoiFrameHeight,
+			m_settings.surfaceProxyRoiFrameOriginLeft, m_settings.surfaceProxyRoiFrameOriginBottom,
+			m_settings.surfaceProxyRoiFrameWidthPhysical, m_settings.surfaceProxyRoiFrameHeightPhysical
+		}
 	);
-	appendMetricRescaled(
+	appendProxyRoi(
 		m_settings.surfaceProxyRoi2Left,
 		m_settings.surfaceProxyRoi2Top,
 		m_settings.surfaceProxyRoi2Width,
 		m_settings.surfaceProxyRoi2Height,
-		m_settings.surfaceProxyRoi2FrameWidth,
-		m_settings.surfaceProxyRoi2FrameHeight
+		PROXY_ROI_FRAME{
+			m_settings.surfaceProxyRoi2FrameWidth, m_settings.surfaceProxyRoi2FrameHeight,
+			m_settings.surfaceProxyRoi2FrameOriginLeft, m_settings.surfaceProxyRoi2FrameOriginBottom,
+			m_settings.surfaceProxyRoi2FrameWidthPhysical, m_settings.surfaceProxyRoi2FrameHeightPhysical
+		}
 	);
 	if (metrics.empty()) {
 		appendMetric(0, 0, width, height);
@@ -693,6 +778,38 @@ std::pair<std::vector<double>, std::vector<double>> Brillouin::coarseXYSamples(i
 	return { std::move(xSamples), std::move(ySamples) };
 }
 
+POINT3 Brillouin::planPositionToGridFrame(const POINT3& planPosition) const {
+	if (m_settings.gridCoordinatesAbsolute) {
+		return planPosition;
+	}
+	return POINT3{
+		planPosition.x + m_startPosition.x,
+		planPosition.y + m_startPosition.y,
+		planPosition.z + m_startPosition.z
+	};
+}
+
+POINT3 Brillouin::rawPositionToGridFrame(const POINT3& rawPosition) const {
+	if (m_settings.gridCoordinatesAbsolute) {
+		const auto origin = resolvedGridOriginUm();
+		return POINT3{
+			rawPosition.x - origin.x,
+			rawPosition.y - origin.y,
+			rawPosition.z - origin.z
+		};
+	}
+	return rawPosition;
+}
+
+POINT3 Brillouin::resolvedGridOriginUm() const {
+	const auto offsetUm = m_scanControl ? m_scanControl->getActiveObjectiveFovOffsetUm() : POINT2{ 0, 0 };
+	return POINT3{
+		m_settings.absoluteGridOriginUm.x + offsetUm.x,
+		m_settings.absoluteGridOriginUm.y + offsetUm.y,
+		m_settings.absoluteGridOriginUm.z
+	};
+}
+
 Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	// Cleared up front so every exit path - including the early-out ones below and an
 	// abort partway through - leaves these reflecting only a scan that actually completed,
@@ -700,6 +817,12 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	m_surfaceFoundXYIndices.clear();
 	m_surfaceInterpolatedXYIndices.clear();
 	m_surfaceZRangeValid = false;
+	m_surfacePreScanXUm.clear();
+	m_surfacePreScanYUm.clear();
+	m_surfacePreScanFoundMask.clear();
+	m_surfacePreScanZUm.clear();
+	m_surfacePreScanMetric.clear();
+	m_surfaceReferenceThreshold = std::numeric_limits<double>::quiet_NaN();
 
 	if (!m_scanControl || !m_andor) {
 		return {};
@@ -715,6 +838,13 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		return {};
 	}
 
+	// Recorded now (rather than only after a successful scan) so the raw sample grid is
+	// still available for diagnosing an aborted/failed pre-scan too.
+	m_surfacePreScanXUm = xSamples;
+	m_surfacePreScanYUm = ySamples;
+
+	std::vector<std::vector<double>> zMetric(ySamples.size(),
+		std::vector<double>(xSamples.size(), std::numeric_limits<double>::quiet_NaN()));
 	std::vector<std::vector<double>> zSurface(ySamples.size(), std::vector<double>(xSamples.size(), 0.0));
 	std::vector<std::vector<bool>> zSurfaceValid(ySamples.size(), std::vector<bool>(xSamples.size(), false));
 	// Order each column was found in (-1 = not found yet), used to break seed-distance ties
@@ -742,11 +872,12 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			if (m_settings.useRoiMask && !isPointInPolygonUm(coarsePoint, m_settings.roiPolygonUm)) {
 				continue;
 			}
+			const auto gridOrigin = resolvedGridOriginUm();
 			const auto zOrigin = m_settings.gridCoordinatesAbsolute
-				? m_settings.absoluteGridOriginUm.z
+				? gridOrigin.z
 				: m_startPosition.z;
 			referencePosition = m_settings.gridCoordinatesAbsolute
-				? POINT3{ xSamples[xi] + m_settings.absoluteGridOriginUm.x, ySamples[yi] + m_settings.absoluteGridOriginUm.y, zOrigin }
+				? POINT3{ xSamples[xi] + gridOrigin.x, ySamples[yi] + gridOrigin.y, zOrigin }
 				: POINT3{ m_startPosition.x + xSamples[xi], m_startPosition.y + ySamples[yi], zOrigin };
 			referencePositionFound = true;
 			break;
@@ -789,6 +920,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	const auto referenceThreshold = (m_settings.mediumReferenceValue > 1e-12)
 		? (1.0 - dropFraction) * m_settings.mediumReferenceValue
 		: std::numeric_limits<double>::quiet_NaN();
+	m_surfaceReferenceThreshold = referenceThreshold;
 
 	// Measures the surface-drop metric at coarse column (xi, yi) and relative z `zRel`,
 	// averaging `frameAverage` frames at that position to reduce noise (1 = single frame,
@@ -803,11 +935,12 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		if (m_abort) {
 			return std::nullopt;
 		}
+		const auto gridOrigin = resolvedGridOriginUm();
 		const auto xyPosition = m_settings.gridCoordinatesAbsolute
-			? POINT2{ xSamples[xi] + m_settings.absoluteGridOriginUm.x, ySamples[yi] + m_settings.absoluteGridOriginUm.y }
+			? POINT2{ xSamples[xi] + gridOrigin.x, ySamples[yi] + gridOrigin.y }
 			: POINT2{ m_startPosition.x + xSamples[xi], m_startPosition.y + ySamples[yi] };
 		const auto zOrigin = m_settings.gridCoordinatesAbsolute
-			? m_settings.absoluteGridOriginUm.z
+			? gridOrigin.z
 			: m_startPosition.z;
 		const auto target = POINT3{ xyPosition.x, xyPosition.y, zOrigin + zRel };
 		approachGridPosition(target);
@@ -881,6 +1014,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		if (!metric) {
 			return false;
 		}
+		zMetric[yi][xi] = *metric;
 		emitSurfaceProgress(QString("Surface scan: x %1/%2, y %3/%4, seeded z %5 um, metric %6, threshold %7")
 			.arg((int)xi + 1).arg((int)xSamples.size())
 			.arg((int)yi + 1).arg((int)ySamples.size())
@@ -901,6 +1035,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			if (!metric) {
 				return false;
 			}
+			zMetric[yi][xi] = *metric;
 			emitSurfaceProgress(QString("Surface scan (rewind): x %1/%2, y %3/%4, z %5 um, metric %6, threshold %7")
 				.arg((int)xi + 1).arg((int)xSamples.size())
 				.arg((int)yi + 1).arg((int)ySamples.size())
@@ -917,6 +1052,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 				if (!candidateAvg) {
 					return false;
 				}
+				zMetric[yi][xi] = *candidateAvg;
 				window.push_back(*candidateAvg);
 
 				auto verified = true;
@@ -930,6 +1066,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 					if (!mk) {
 						return false;
 					}
+					zMetric[yi][xi] = *mk;
 					emitSurfaceProgress(QString("Surface verification %1/%2 at x %3/%4, y %5/%6: metric %7, threshold %8")
 						.arg(k).arg(m_settings.surfaceVerificationSteps)
 						.arg((int)xi + 1).arg((int)xSamples.size())
@@ -957,6 +1094,9 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 						zSurface[yi][xi] = candidateZ;
 						zSurfaceValid[yi][xi] = true;
 						processOrder[yi][xi] = processCounter++;
+						// The metric at the found surface itself, not whatever the
+						// verification loop above last measured deeper into the tissue.
+						zMetric[yi][xi] = *candidateAvg;
 						emitSurfaceProgress(QString("Surface found at x %1/%2, y %3/%4, z %5 um: metric %6 <= threshold %7, verified")
 							.arg((int)xi + 1).arg((int)xSamples.size())
 							.arg((int)yi + 1).arg((int)ySamples.size())
@@ -979,6 +1119,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			if (!metric) {
 				return false;
 			}
+			zMetric[yi][xi] = *metric;
 			emitSurfaceProgress(QString("Surface scan: x %1/%2, y %3/%4, z %5 um, metric %6, threshold %7")
 				.arg((int)xi + 1).arg((int)xSamples.size())
 				.arg((int)yi + 1).arg((int)ySamples.size())
@@ -1077,6 +1218,27 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		}
 	}
 
+	// Raw coarse pre-scan results, flat-indexed xi * ySamples.size() + yi (mirroring
+	// surface-found-mask's own x-major flat indexing) - see the m_surfacePreScanFoundMask
+	// et al. declarations for what each array means. Recorded for every coarse cell, not
+	// just ones inside the ROI mask, so a reader can tell "outside the ROI" (found mask
+	// would read 0 here too, same as a genuine failure) apart by checking their own
+	// (x, y) against the ROI polygon/roi-scan-plan-mask - consistent with how the dense
+	// surface-found-mask already works.
+	m_surfacePreScanFoundMask.assign(xSamples.size() * ySamples.size(), 0.0);
+	m_surfacePreScanZUm.assign(xSamples.size() * ySamples.size(), 0.0);
+	m_surfacePreScanMetric.assign(
+		xSamples.size() * ySamples.size(), std::numeric_limits<double>::quiet_NaN());
+	for (gsl::index yi{ 0 }; yi < (gsl::index)ySamples.size(); yi++) {
+		for (gsl::index xi{ 0 }; xi < (gsl::index)xSamples.size(); xi++) {
+			const auto flat = xi * (gsl::index)ySamples.size() + yi;
+			m_surfacePreScanFoundMask[flat] = zSurfaceGenuine[yi][xi]
+				? 1.0 : (zSurfaceInterpolatedCoarse[yi][xi] ? 2.0 : 0.0);
+			m_surfacePreScanZUm[flat] = zSurface[yi][xi];
+			m_surfacePreScanMetric[flat] = zMetric[yi][xi];
+		}
+	}
+
 	// Final, authoritative "no surface" count - after gap-fill, not the running total shown
 	// live during the scan above (which counts columns that were rescued by gap-fill too).
 	auto failedColumns = 0;
@@ -1166,7 +1328,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			const auto zInterp = exactMatch ? exactZ : (weightedSum / weightNorm);
 
 			const auto zOrigin = m_settings.gridCoordinatesAbsolute
-				? m_settings.absoluteGridOriginUm.z
+				? resolvedGridOriginUm().z
 				: m_startPosition.z;
 			const auto centerZAbs = zOrigin + zInterp + m_settings.surfaceZOffsetUm;
 			zCenterByXYIndex[{ (int)xi, (int)yi }] = centerZAbs;
@@ -1213,7 +1375,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	// +/-10 um regardless of the grid's own zMin/zMax) - that silently ignored zMin/zMax
 	// whenever surface follow was on.
 	const auto zOrigin = m_settings.gridCoordinatesAbsolute
-		? m_settings.absoluteGridOriginUm.z
+		? resolvedGridOriginUm().z
 		: m_startPosition.z;
 
 	for (gsl::index ll{ 0 }; ll < (gsl::index)m_orderedPositions.size(); ll++) {
@@ -1271,7 +1433,7 @@ void Brillouin::applySurfaceFollowPlan() {
  * mode; "sampled grid points" always uses this flat value directly, never a stack.
  */
 double Brillouin::overviewFlatZAbs(int zIndex, const std::vector<double>& directionsZ) const {
-	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : m_startPosition;
+	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
 	const auto clampedZIndex = std::clamp(zIndex, 0, (int)directionsZ.size() - 1);
 	return origin.z + directionsZ[clampedZIndex];
 }
@@ -1311,7 +1473,7 @@ std::vector<double> Brillouin::overviewStackZAbs(int zIndex, const std::vector<d
 		return { overviewFlatZAbs(zIndex, directionsZ) };
 	}
 
-	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : m_startPosition;
+	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
 	if (m_settings.useSurfaceFollow && m_surfaceZRangeValid) {
 		return simplemath::linspace(
 			m_surfaceZMinAbs + m_settings.zMin,
@@ -1424,7 +1586,7 @@ std::vector<POINT2> Brillouin::overviewTileCentersXY() const {
 	// (stale, or {0,0,0} before any acquisition ever ran), which doesn't match how the
 	// crosses are actually positioned in relative/live-preview mode at all.
 	const auto& positions = m_settings.gridCoordinatesAbsolute ? m_orderedPositions : m_orderedPositionsRelative;
-	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : POINT3{};
+	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : POINT3{};
 	const auto gridXMin = m_settings.xMin + origin.x;
 	const auto gridXMax = m_settings.xMax + origin.x;
 	const auto gridYMin = m_settings.yMin + origin.y;
@@ -1527,7 +1689,7 @@ std::vector<POINT2> Brillouin::overviewTileCentersXY() const {
  * grid offset for relative mode) - used by the "single image" overview coverage mode.
  */
 POINT2 Brillouin::overviewGridCenterXY() const {
-	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : POINT3{};
+	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : POINT3{};
 	const auto gridXMin = m_settings.xMin + origin.x;
 	const auto gridXMax = m_settings.xMax + origin.x;
 	const auto gridYMin = m_settings.yMin + origin.y;
@@ -1546,7 +1708,7 @@ POINT2 Brillouin::overviewGridCenterXY() const {
  */
 std::vector<POINT2> Brillouin::coarseGridXYPoints(int bin) const {
 	const auto [xSamples, ySamples] = coarseXYSamples(bin);
-	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : POINT3{};
+	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : POINT3{};
 
 	std::vector<POINT2> points;
 	points.reserve(xSamples.size() * ySamples.size());
@@ -1579,7 +1741,7 @@ std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUm() const
 	// See overviewTileCentersXY() for why relative mode must use m_orderedPositionsRelative
 	// and a zero origin here, not m_orderedPositions/m_startPosition.
 	const auto& positions = m_settings.gridCoordinatesAbsolute ? m_orderedPositions : m_orderedPositionsRelative;
-	const auto origin = m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm : POINT3{};
+	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : POINT3{};
 	const auto gridXMin = m_settings.xMin + origin.x;
 	const auto gridXMax = m_settings.xMax + origin.x;
 	const auto gridYMin = m_settings.yMin + origin.y;
@@ -1738,18 +1900,16 @@ void Brillouin::captureOverviewBrightfield(
 
 	// Actual stage position at capture time, read back after the compensated move and
 	// settle delay - can differ slightly from the commanded `position` (hysteresis
-	// compensation, backlash). Both are stored using the same origin-relative convention
-	// sampled-x/y/z and overview-brightfield-x/y/z already use, so all of a file's
+	// compensation, backlash). Both are stored using the same grid frame sampled-x/y/z and
+	// positions-x/y/z already use (see rawPositionToGridFrame()), so all of a file's
 	// position metadata stays directly comparable.
-	const auto toStoredConvention = [this](const POINT3& raw) {
-		return m_settings.gridCoordinatesAbsolute
-			? POINT3{ raw.x - m_settings.absoluteGridOriginUm.x, raw.y - m_settings.absoluteGridOriginUm.y, raw.z - m_settings.absoluteGridOriginUm.z }
-			: raw;
-	};
-	const auto targetPosition = toStoredConvention(position);
-	const auto stagePosition = toStoredConvention(m_scanControl->getPosition());
+	const auto targetPosition = rawPositionToGridFrame(position);
+	const auto stagePosition = rawPositionToGridFrame(m_scanControl->getPosition());
 
 	auto brightfieldSettings = m_brightfieldCamera->getSettings();
+	// Deliberately no ROI override here - the overview capture always uses whatever ROI the
+	// camera is currently at (full sensor unless something else cropped it), giving it the
+	// widest field of view of any capture path on purpose.
 	brightfieldSettings.exposureTime = 1e-3 * std::max(1, m_settings.overviewBrightfieldExposureMs);
 	brightfieldSettings.gain = m_settings.overviewBrightfieldGain;
 	brightfieldSettings.frameCount = 1;
@@ -2029,6 +2189,13 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	storage->setPositions("absolute-origin-y", std::vector<double>{ m_settings.absoluteGridOriginUm.y }, 1, originDims);
 	storage->setPositions("absolute-origin-z", std::vector<double>{ m_settings.absoluteGridOriginUm.z }, 1, originDims);
 	storage->setPositions("grid-coordinates-absolute", std::vector<double>{ m_settings.gridCoordinatesAbsolute ? 1.0 : 0.0 }, 1, originDims);
+	// The objective/FOV-offset context this specific run actually resolved its absolute-mode
+	// origin against (see resolvedGridOriginUm()) - "absolute-origin-x/y/z" above is always the
+	// raw, unmodified reference-frame value the operator set. This used to also be duplicated
+	// here as "objective-*" datasets; it now lives only in writeScaleCalibration()'s
+	// scaleCalibration group (objectiveSlot, hasFovOffset, fovOffset, missingOffsetAccepted, ...),
+	// which every acquisition mode writes through, not just this one - see
+	// AcquisitionMode::writeScaleCalibration() and H5BM::setScaleCalibration().
 
 	// Explicitly store which grid points were sampled to keep metadata consistent for sparse ROI scans.
 	// Must match the [zSteps, xSteps, ySteps] row-major layout the "x"/"y"/"z" datasets above use
@@ -2085,6 +2252,76 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		(double)m_settings.surfaceProxyRoi2Left, (double)m_settings.surfaceProxyRoi2Top,
 		(double)m_settings.surfaceProxyRoi2Width, (double)m_settings.surfaceProxyRoi2Height
 	}, 1, proxyRoiDims);
+	// The frame (crop/binning + its absolute sensor origin) the two ROIs above were drawn
+	// against - see the surfaceProxyRoiFrameWidth et al. declarations in Brillouin.h for
+	// why this matters (the ROI gets remapped through this if the camera's actual frame at
+	// measurement time differs).
+	const hsize_t proxyRoiFrameDims[1] = { 6 };
+	storage->setPositions("surface-proxy-roi-1-frame-used", std::vector<double>{
+		(double)m_settings.surfaceProxyRoiFrameWidth, (double)m_settings.surfaceProxyRoiFrameHeight,
+		(double)m_settings.surfaceProxyRoiFrameOriginLeft, (double)m_settings.surfaceProxyRoiFrameOriginBottom,
+		(double)m_settings.surfaceProxyRoiFrameWidthPhysical, (double)m_settings.surfaceProxyRoiFrameHeightPhysical
+	}, 1, proxyRoiFrameDims);
+	storage->setPositions("surface-proxy-roi-2-frame-used", std::vector<double>{
+		(double)m_settings.surfaceProxyRoi2FrameWidth, (double)m_settings.surfaceProxyRoi2FrameHeight,
+		(double)m_settings.surfaceProxyRoi2FrameOriginLeft, (double)m_settings.surfaceProxyRoi2FrameOriginBottom,
+		(double)m_settings.surfaceProxyRoi2FrameWidthPhysical, (double)m_settings.surfaceProxyRoi2FrameHeightPhysical
+	}, 1, proxyRoiFrameDims);
+	// preScanXSteps/YSteps/ZSteps/ZMin/ZMax deliberately NOT saved: grep-confirmed dead -
+	// only ever round-tripped through the app's own UI settings, never read by
+	// runSurfacePreScan() (which uses preScanXYBin/preScanZStepUm/preScanZTravelRangeUm,
+	// already saved above). Recording an unused setting doesn't tell a reader anything
+	// about what actually happened during the scan, so it isn't saved here.
+	storage->setPositions("surface-reference-threshold-computed",
+		std::vector<double>{ m_surfaceReferenceThreshold }, 1, originDims);
+
+	// Raw coarse surface pre-scan data: the (binned) grid runSurfacePreScan() itself
+	// measured on, before any interpolation onto the dense scan-plan grid above - not
+	// otherwise recoverable from surface-found-mask/positions-z, which only ever show the
+	// already-interpolated, dense result. Skipped entirely (not even an empty dataset) if
+	// the pre-scan never ran (surface-follow off) or bailed out before any column was
+	// measured - "surface-follow-used" is what distinguishes that from a pre-scan that ran
+	// but found nothing anywhere.
+	if (!m_surfacePreScanXUm.empty()) {
+		const hsize_t preScanXDims[1] = { (hsize_t)m_surfacePreScanXUm.size() };
+		const hsize_t preScanYDims[1] = { (hsize_t)m_surfacePreScanYUm.size() };
+		// m_surfacePreScanXUm/YUm are built from the same xMin/xMax-based "grid-plan" frame
+		// as directionsX/Y (see coarseXYSamples()) - planPositionToGridFrame() converts that
+		// into the same frame positions-x/y/z (and roi-polygon-x/y-um below) are saved in, so
+		// a reader can overlay all of them without needing m_startPosition itself (never
+		// saved).
+		std::vector<double> preScanX(m_surfacePreScanXUm.size());
+		std::vector<double> preScanY(m_surfacePreScanYUm.size());
+		for (size_t i = 0; i < m_surfacePreScanXUm.size(); i++) {
+			preScanX[i] = planPositionToGridFrame(
+				POINT3{ m_surfacePreScanXUm[i], 0, 0 }).x;
+		}
+		for (size_t i = 0; i < m_surfacePreScanYUm.size(); i++) {
+			preScanY[i] = planPositionToGridFrame(
+				POINT3{ 0, m_surfacePreScanYUm[i], 0 }).y;
+		}
+		storage->setPositions("surface-prescan-x-um", preScanX, 1, preScanXDims);
+		storage->setPositions("surface-prescan-y-um", preScanY, 1, preScanYDims);
+
+		const hsize_t preScanGridDims[2] = {
+			(hsize_t)m_surfacePreScanXUm.size(), (hsize_t)m_surfacePreScanYUm.size()
+		};
+		// 0 = no drop found within the travel range, 1 = a genuine verified measurement,
+		// 2 = filled in from neighboring coarse cells - same meaning as the dense
+		// surface-found-mask, at the coarse pre-scan's own resolution.
+		storage->setPositions(
+			"surface-prescan-found-mask", m_surfacePreScanFoundMask, 2, preScanGridDims);
+		// z (relative to this column's own zOrigin) at which the surface was found/filled -
+		// 0.0 where surface-prescan-found-mask == 0.
+		storage->setPositions(
+			"surface-prescan-z-um", m_surfacePreScanZUm, 2, preScanGridDims);
+		// The drop metric actually measured at that column (frame-averaged where
+		// verification ran) - the verified value where found-mask == 1, whatever was last
+		// measured before giving up otherwise, so a failed column's metric can still be
+		// compared against surface-reference-threshold-computed.
+		storage->setPositions(
+			"surface-prescan-metric", m_surfacePreScanMetric, 2, preScanGridDims);
+	}
 
 	// Grid extent as configured (redundant with the "x"/"y"/"z" position arrays above, but
 	// explicit scalars are easier for a reader to check at a glance than reconstructing
@@ -2108,14 +2345,20 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	storage->setPositions("repetitions-file-per-repetition-used", std::vector<double>{ m_settings.repetitions.filePerRepetition ? 1.0 : 0.0 }, 1, originDims);
 
 	// ROI polygon vertices (its effect on the plan is already in roi-scan-plan-mask below,
-	// but the raw polygon itself wasn't recorded anywhere).
+	// but the raw polygon itself wasn't recorded anywhere). m_settings.roiPolygonUm lives in
+	// the same grid-plan frame as directionsX/Y (see isPointInPolygonUm() callers, which test
+	// it against that frame directly) - planPositionToGridFrame() converts that into the same
+	// frame positions-x/y/z is saved in, so a consumer overlaying the two can reconcile them
+	// without needing m_startPosition itself (never saved anywhere in the file).
 	if (!m_settings.roiPolygonUm.empty()) {
 		const hsize_t roiPolyDims[1] = { (hsize_t)m_settings.roiPolygonUm.size() };
 		std::vector<double> roiPolyX(m_settings.roiPolygonUm.size());
 		std::vector<double> roiPolyY(m_settings.roiPolygonUm.size());
 		for (size_t i = 0; i < m_settings.roiPolygonUm.size(); i++) {
-			roiPolyX[i] = m_settings.roiPolygonUm[i].x;
-			roiPolyY[i] = m_settings.roiPolygonUm[i].y;
+			const auto stored = planPositionToGridFrame(
+				POINT3{ m_settings.roiPolygonUm[i].x, m_settings.roiPolygonUm[i].y, 0 });
+			roiPolyX[i] = stored.x;
+			roiPolyY[i] = stored.y;
 		}
 		storage->setPositions("roi-polygon-x-um", roiPolyX, 1, roiPolyDims);
 		storage->setPositions("roi-polygon-y-um", roiPolyY, 1, roiPolyDims);
@@ -2162,15 +2405,16 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	auto sampledX = std::vector<double>(m_orderedPositions.size());
 	auto sampledY = std::vector<double>(m_orderedPositions.size());
 	auto sampledZ = std::vector<double>(m_orderedPositions.size());
+	const auto sampledOrigin = resolvedGridOriginUm();
 	for (gsl::index ll{ 0 }; ll < (gsl::index)m_orderedPositions.size(); ll++) {
 		sampledX[ll] = m_settings.gridCoordinatesAbsolute
-			? m_orderedPositions[ll].x - m_settings.absoluteGridOriginUm.x
+			? m_orderedPositions[ll].x - sampledOrigin.x
 			: m_orderedPositions[ll].x;
 		sampledY[ll] = m_settings.gridCoordinatesAbsolute
-			? m_orderedPositions[ll].y - m_settings.absoluteGridOriginUm.y
+			? m_orderedPositions[ll].y - sampledOrigin.y
 			: m_orderedPositions[ll].y;
 		sampledZ[ll] = m_settings.gridCoordinatesAbsolute
-			? m_orderedPositions[ll].z - m_settings.absoluteGridOriginUm.z
+			? m_orderedPositions[ll].z - sampledOrigin.z
 			: m_orderedPositions[ll].z;
 	}
 	storage->setPositions("sampled-x", sampledX, sampledRank, sampledDims);
@@ -2200,6 +2444,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		auto overviewX = std::vector<double>(totalOverviewCount);
 		auto overviewY = std::vector<double>(totalOverviewCount);
 		auto overviewZ = std::vector<double>(totalOverviewCount);
+		const auto overviewOrigin = resolvedGridOriginUm();
 		for (gsl::index ii{ 0 }; ii < m_settings.zSteps; ii++) {
 			const auto capturePoints = overviewCapturePoints((int)ii, directionsZ);
 			auto flatIndex = (size_t)ii * totalPerZ;
@@ -2210,13 +2455,13 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 					// Brillouin positions can be compared/overlaid directly without the
 					// caller having to know which fields are absolute vs. origin-relative.
 					overviewX[flatIndex] = m_settings.gridCoordinatesAbsolute
-						? point.xy.x - m_settings.absoluteGridOriginUm.x
+						? point.xy.x - overviewOrigin.x
 						: point.xy.x;
 					overviewY[flatIndex] = m_settings.gridCoordinatesAbsolute
-						? point.xy.y - m_settings.absoluteGridOriginUm.y
+						? point.xy.y - overviewOrigin.y
 						: point.xy.y;
 					overviewZ[flatIndex] = m_settings.gridCoordinatesAbsolute
-						? point.zAbs[ss] - m_settings.absoluteGridOriginUm.z
+						? point.zAbs[ss] - overviewOrigin.z
 						: point.zAbs[ss];
 					flatIndex++;
 				}
@@ -2320,7 +2565,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				return;
 			}
 			const auto displayedPosition = m_settings.gridCoordinatesAbsolute
-				? m_orderedPositions[ll] - m_settings.absoluteGridOriginUm
+				? m_orderedPositions[ll] - resolvedGridOriginUm()
 				: m_orderedPositions[ll] - m_startPosition;
 			emit(s_positionChanged(displayedPosition, mm + 1));
 			// acquire images

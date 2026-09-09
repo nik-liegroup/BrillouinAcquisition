@@ -5,6 +5,7 @@
 #include "../../Devices/Cameras/Camera.h"
 #include "../../helper/thread.h"
 #include "src/lib/buffer_circular.h"
+#include <limits>
 #include <set>
 #include <utility>
 
@@ -93,8 +94,16 @@ struct BRILLOUIN_SETTINGS {
 			surfaceProxyRoi2Height = settings.surfaceProxyRoi2Height;
 			surfaceProxyRoiFrameWidth = settings.surfaceProxyRoiFrameWidth;
 			surfaceProxyRoiFrameHeight = settings.surfaceProxyRoiFrameHeight;
+			surfaceProxyRoiFrameOriginLeft = settings.surfaceProxyRoiFrameOriginLeft;
+			surfaceProxyRoiFrameOriginBottom = settings.surfaceProxyRoiFrameOriginBottom;
+			surfaceProxyRoiFrameWidthPhysical = settings.surfaceProxyRoiFrameWidthPhysical;
+			surfaceProxyRoiFrameHeightPhysical = settings.surfaceProxyRoiFrameHeightPhysical;
 			surfaceProxyRoi2FrameWidth = settings.surfaceProxyRoi2FrameWidth;
 			surfaceProxyRoi2FrameHeight = settings.surfaceProxyRoi2FrameHeight;
+			surfaceProxyRoi2FrameOriginLeft = settings.surfaceProxyRoi2FrameOriginLeft;
+			surfaceProxyRoi2FrameOriginBottom = settings.surfaceProxyRoi2FrameOriginBottom;
+			surfaceProxyRoi2FrameWidthPhysical = settings.surfaceProxyRoi2FrameWidthPhysical;
+			surfaceProxyRoi2FrameHeightPhysical = settings.surfaceProxyRoi2FrameHeightPhysical;
 			mediumReferenceValue = settings.mediumReferenceValue;
 			mediumReferenceFrameCount = settings.mediumReferenceFrameCount;
 			gridCoordinatesAbsolute = settings.gridCoordinatesAbsolute;
@@ -154,17 +163,30 @@ struct BRILLOUIN_SETTINGS {
 		int surfaceProxyRoi2Top{ 0 };
 		int surfaceProxyRoi2Width{ 0 };
 		int surfaceProxyRoi2Height{ 0 };
-		// Frame size the two ROIs above were drawn against. If the camera's actual frame
-		// size at measurement time (surface pre-scan, or a live preview reconfigured since)
-		// differs - e.g. a different ROI/binning was active - the stored rectangles are
-		// rescaled proportionally against these before use, instead of being applied as raw,
-		// now-mismatched pixel coordinates (which could clamp them to nothing and silently
-		// fall back to measuring the whole frame). 0 means "never drawn yet", in which case
-		// no rescaling is attempted.
+		// Frame (crop + binning) the two ROIs above were drawn against: the binned frame
+		// size, the absolute sensor position of that frame's origin (camera.roi.left/bottom,
+		// in physical/pre-binning pixels), and that frame's physical size. If the camera's
+		// actual ROI at measurement time (surface pre-scan, or a live preview reconfigured
+		// since) differs from this - e.g. the view was zoomed/cropped differently, or
+		// binning changed - the stored rectangle is remapped through its absolute sensor
+		// position onto the current frame before use. Remapping only via a frame-size ratio
+		// (ignoring the origin) is wrong whenever the two frames don't share the same sensor
+		// origin - it silently lands the ROI on the wrong physical location instead of
+		// raising an error, which is what "surface never found despite a visible drop" or a
+		// scattered calibration fit looks like. 0 means "never drawn yet", in which case no
+		// remapping is attempted.
 		int surfaceProxyRoiFrameWidth{ 0 };
 		int surfaceProxyRoiFrameHeight{ 0 };
+		long long surfaceProxyRoiFrameOriginLeft{ 0 };
+		long long surfaceProxyRoiFrameOriginBottom{ 0 };
+		long long surfaceProxyRoiFrameWidthPhysical{ 0 };
+		long long surfaceProxyRoiFrameHeightPhysical{ 0 };
 		int surfaceProxyRoi2FrameWidth{ 0 };
 		int surfaceProxyRoi2FrameHeight{ 0 };
+		long long surfaceProxyRoi2FrameOriginLeft{ 0 };
+		long long surfaceProxyRoi2FrameOriginBottom{ 0 };
+		long long surfaceProxyRoi2FrameWidthPhysical{ 0 };
+		long long surfaceProxyRoi2FrameHeightPhysical{ 0 };
 		// Medium reference is always measured before a surface scan - there is no other
 		// threshold source, so this isn't user-optional.
 		double mediumReferenceValue{ 0.0 };
@@ -270,6 +292,23 @@ struct BRILLOUIN_SETTINGS {
 		CAMERA_SETTINGS camera;
 };
 
+// Describes the geometry of a frame a spectral proxy ROI is defined against or measured
+// on: its binned size (width/height, the array/plot cell grid it's indexed in) and the
+// absolute sensor position and physical (pre-binning) size of that same frame (left/bottom
+// matching CAMERA_ROI's convention, i.e. the sensor coordinate of the frame's own local
+// origin). Needed by Brillouin::remapProxyRoi() to correctly translate a ROI between two
+// frames that don't share a sensor origin (e.g. drawn while zoomed into a sub-region, then
+// measured against a different crop) - a naive size-only rescale is only correct when both
+// frames start at the same sensor position.
+struct PROXY_ROI_FRAME {
+	int width{ 0 };
+	int height{ 0 };
+	long long originLeft{ 0 };
+	long long originBottom{ 0 };
+	long long widthPhysical{ 0 };
+	long long heightPhysical{ 0 };
+};
+
 class Brillouin : public AcquisitionMode {
 	Q_OBJECT
 
@@ -278,6 +317,41 @@ public:
 	~Brillouin();
 
 	BRILLOUIN_SETTINGS& settings{ m_settings };
+
+	// Converts a raw absolute stage/scanner reading (e.g. m_scanControl->getPosition()) into
+	// the same frame this Brillouin measurement's own positions-x/y/z is saved in: absolute-
+	// grid mode needs the saved origin subtracted (positions-x/y/z is origin-relative there);
+	// relative-grid mode needs nothing - raw absolute is already what positions-x/y/z holds.
+	// Public so any other acquisition mode capturing images alongside a Brillouin measurement
+	// (see Fluorescence::__acquire()) can save its own per-image position through the same,
+	// single conversion instead of each re-deriving it (a previous drift between two such
+	// re-derivations is exactly what caused the ROI polygon overlay bug this was fixed for).
+	POINT3 rawPositionToGridFrame(const POINT3& rawPosition) const;
+
+	// The single source of truth for "where is the grid's absolute-mode origin, right now".
+	// m_settings.absoluteGridOriginUm is what the user typed/saved - defined once, in the
+	// reference objective's frame, and never rewritten by an objective switch. The active
+	// objective's FOV-center offset (see ScanControl::getActiveObjectiveOffset(), empty/zero
+	// when no offset calibration exists for the current objective pair - which makes this an
+	// exact no-op on any setup that hasn't configured one) is added on top of it here, fresh,
+	// every time a plan/position is resolved - never baked back into the stored setting -
+	// so switching 10x<->20x any number of times can never double-apply it. Every absolute-
+	// mode position computation in this file must go through this, not
+	// m_settings.absoluteGridOriginUm directly, for the same reason rawPositionToGridFrame()
+	// above is the one conversion everything shares.
+	POINT3 resolvedGridOriginUm() const;
+
+	// Remaps a proxy ROI rectangle (in `from`'s binned-cell coordinates) onto `to`'s
+	// binned-cell coordinates, via each frame's absolute sensor position. Falls back to a
+	// size-only proportional rescale if either frame is missing physical geometry (e.g. a
+	// settings file saved before this existed) - still wrong whenever the origin differs,
+	// same as before this function existed, but at least doesn't crash or drop the ROI.
+	// Returns false (outputs untouched) only if `from`/`to` have a non-positive size.
+	static bool remapProxyRoi(
+		int roiLeft, int roiTop, int roiWidth, int roiHeight,
+		const PROXY_ROI_FRAME& from, const PROXY_ROI_FRAME& to,
+		int& outLeft, int& outTop, int& outWidth, int& outHeight
+	);
 
 public slots:
 	void startRepetitions() override;
@@ -391,6 +465,17 @@ private:
 	// so the "sampled grid points" overview coverage mode reuses it verbatim rather than
 	// re-implementing a different notion of "every Nth point".
 	std::pair<std::vector<double>, std::vector<double>> coarseXYSamples(int bin) const;
+	// Converts a "grid-plan" position - the pre-origin frame directionsX/Y/Z,
+	// m_settings.roiPolygonUm and coarseXYSamples() are all expressed in (see
+	// isPointInPolygonUm() callers, which test roiPolygonUm directly against that frame) -
+	// into the same frame positions-x/y/z is actually saved in: already origin-relative in
+	// absolute-grid mode (nothing to add - see positionsX/Y/Z in runMeasurementPhase()), or
+	// needing +m_startPosition in relative-grid mode to become the raw-absolute value
+	// positions-x/y/z holds there. Used for roi-polygon-x/y-um and surface-prescan-x/y-um so
+	// both stay in the exact frame positions-x/y/z is in, instead of each re-deriving this
+	// (a previous drift between them here is what caused the ROI polygon overlay to land
+	// nowhere near its own roi-scan-plan-mask on relative-grid files).
+	POINT3 planPositionToGridFrame(const POINT3& planPosition) const;
 	// Shared by overviewSampledGridXY()/surfacePreScanGridXY(): coarseXYSamples(bin),
 	// ROI-filtered and shifted into the frame overviewTileCentersXY() uses.
 	std::vector<POINT2> coarseGridXYPoints(int bin) const;
@@ -438,6 +523,38 @@ private:
 	double m_surfaceZMinAbs{ 0.0 };
 	double m_surfaceZMaxAbs{ 0.0 };
 	bool m_surfaceZRangeValid{ false };
+
+	// Populated at the end of runSurfacePreScan() - the coarse (binned) grid the pre-scan
+	// itself actually measured on, before any interpolation onto the dense scan-plan grid.
+	// (x, y) in the same relative-to-start-position um convention runSurfacePreScan()
+	// already uses for xSamples/ySamples. Saved verbatim (see runMeasurementPhase()) so the
+	// genuinely sparse raw measurement locations survive into the file, distinct from the
+	// dense, already-interpolated surface-found-mask. Empty if the pre-scan never ran or
+	// bailed out before any column was even attempted.
+	std::vector<double> m_surfacePreScanXUm;
+	std::vector<double> m_surfacePreScanYUm;
+	// Per coarse-grid cell, flat-indexed xi * m_surfacePreScanYUm.size() + yi (mirroring
+	// surface-found-mask's own x-major flat indexing), before any dense-grid interpolation:
+	// - m_surfacePreScanFoundMask: 0 = no drop found within the travel range, 1 = a
+	//   genuine verified measurement, 2 = filled in from neighboring coarse cells (see the
+	//   coarse gap-fill pass in runSurfacePreScan()) - same 0/1/2 meaning as the dense
+	//   surface-found-mask, just at the coarse pre-scan's own resolution.
+	// - m_surfacePreScanZUm: the z (relative to this column's own zOrigin) at which the
+	//   surface was found/filled - 0.0 where m_surfacePreScanFoundMask == 0.
+	// - m_surfacePreScanMetric: the drop metric actually measured at that column (frame-
+	//   averaged where verification ran) - the verified value on success, otherwise
+	//   whatever was last measured before giving up on that column, so a failed column's
+	//   metric can still be inspected (e.g. "how close did it get").
+	std::vector<double> m_surfacePreScanFoundMask;
+	std::vector<double> m_surfacePreScanZUm;
+	std::vector<double> m_surfacePreScanMetric;
+	// The medium-reference-derived drop threshold actually used by runSurfacePreScan() -
+	// (1 - surfaceDropFraction) * mediumReferenceValue, or NaN if mediumReferenceValue was
+	// ~0 (see runSurfacePreScan()). Saved directly (see runMeasurementPhase()) so a reader
+	// doesn't have to reconstruct it from those two fields - and isn't misled by the
+	// separate, currently-unused settings.surfaceMetricThreshold UI preference saved
+	// elsewhere, which this scan never actually reads.
+	double m_surfaceReferenceThreshold{ std::numeric_limits<double>::quiet_NaN() };
 
 	BRILLOUIN_SETTINGS m_settings;
 	SCAN_ORDER m_scanOrder;

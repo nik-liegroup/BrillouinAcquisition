@@ -4,6 +4,18 @@
 #include <chrono>
 #include <thread>
 
+ScanControl::ScanControl() noexcept {
+	// Self-connected so objective-switch detection works uniformly for every backend
+	// (ZeissECU, ZeissMTB and its Erlangen variants, NIDAQ) without touching any of their
+	// files. Both signals are needed: elementPositionChanged is only emitted for a
+	// software-commanded change (setElement(), e.g. a GUI button click), while a change made
+	// physically at the microscope's own control panel is only ever reported through the
+	// polled, plural elementPositionsChanged (see each backend's getElements(), driven by
+	// m_elementPositionTimer every 100 ms) - relying on only one would miss the other's case.
+	connect(this, &ScanControl::elementPositionChanged, this, &ScanControl::onElementPositionChanged);
+	connect(this, &ScanControl::elementPositionsChanged, this, &ScanControl::onElementPositionsChanged);
+}
+
 /*
  * Public definitions
  */
@@ -349,6 +361,113 @@ void ScanControl::setScaleCalibration(const ScaleCalibrationData& scaleCalibrati
 
 ScaleCalibrationData ScanControl::getScaleCalibration() {
 	return m_scaleCalibration;
+}
+
+void ScanControl::setObjectiveCalibration(int slot, const ObjectiveCalibrationData& calibration) {
+	m_objectiveCalibrations[slot] = calibration;
+	// If this is the objective currently in the beam path, apply its scale calibration
+	// immediately rather than waiting for the next physical switch.
+	if (slot == m_activeObjectiveSlot) {
+		setScaleCalibration(calibration);
+	}
+}
+
+bool ScanControl::hasObjectiveCalibration(int slot) const {
+	return m_objectiveCalibrations.find(slot) != m_objectiveCalibrations.end();
+}
+
+ObjectiveCalibrationData ScanControl::getObjectiveCalibration(int slot) const {
+	auto it = m_objectiveCalibrations.find(slot);
+	if (it == m_objectiveCalibrations.end()) {
+		return ObjectiveCalibrationData{};
+	}
+	return it->second;
+}
+
+int ScanControl::getActiveObjectiveSlot() const {
+	return m_activeObjectiveSlot;
+}
+
+ObjectiveCalibrationData ScanControl::getActiveObjectiveCalibration() const {
+	return getObjectiveCalibration(m_activeObjectiveSlot);
+}
+
+POINT2 ScanControl::getActiveObjectiveFovOffsetUm() const {
+	auto calibration = getActiveObjectiveCalibration();
+	if (!calibration.hasFovOffset) {
+		return POINT2{ 0, 0 };
+	}
+	return calibration.fovOffsetUm;
+}
+
+void ScanControl::acceptMissingObjectiveOffset() {
+	m_objectiveOffsetWarningAccepted = true;
+}
+
+bool ScanControl::isMissingObjectiveOffsetAccepted() const {
+	return m_objectiveOffsetWarningAccepted;
+}
+
+bool ScanControl::isValidObjectiveSlot(int slot) const {
+	for (const auto& element : m_deviceElements) {
+		if (element.name == "Objective") {
+			return slot >= 1 && slot <= element.maxOptions;
+		}
+	}
+	return false;
+}
+
+int ScanControl::objectiveElementIndex() const {
+	for (const auto& element : m_deviceElements) {
+		if (element.name == "Objective") {
+			return element.index;
+		}
+	}
+	return -1;
+}
+
+void ScanControl::onElementPositionChanged(DeviceElement element, double position) {
+	if (element.name != "Objective") {
+		return;
+	}
+	handleObjectiveSlotObserved((int)position);
+}
+
+void ScanControl::onElementPositionsChanged(std::vector<double> positions) {
+	auto index = objectiveElementIndex();
+	if (index < 0 || (size_t)index >= positions.size()) {
+		return;
+	}
+	handleObjectiveSlotObserved((int)positions[index]);
+}
+
+void ScanControl::handleObjectiveSlotObserved(int newSlot) {
+	if (newSlot == m_activeObjectiveSlot) {
+		return;
+	}
+	auto previousSlot = m_activeObjectiveSlot;
+	m_activeObjectiveSlot = newSlot;
+	// A fresh switch always needs a fresh decision - a warning accepted for the previous
+	// switch must not silently cover this one too.
+	m_objectiveOffsetWarningAccepted = false;
+
+	auto hasCalibration = hasObjectiveCalibration(newSlot);
+	if (hasCalibration) {
+		// Reuses setScaleCalibration()'s existing re-projection of m_positionScanner from the
+		// old pixel mapping into the new one, so the laser marker stays visually correct.
+		setScaleCalibration(getObjectiveCalibration(newSlot));
+	}
+	auto calibration = getObjectiveCalibration(newSlot);
+	auto hasFovOffset = hasCalibration && calibration.hasFovOffset;
+	auto offsetUm = hasFovOffset ? calibration.fovOffsetUm : POINT2{ 0, 0 };
+	auto offsetSigmaUm = hasFovOffset ? calibration.fovOffsetSigmaUm : 0.0;
+
+	// previousSlot == -1 is the initial hardware read at startup/connect, not an
+	// operator-driven switch - do not warn about it (there is nothing to have translated
+	// grids/ROIs relative to yet).
+	if (previousSlot >= 0) {
+		emit(s_objectiveSwitched(previousSlot, newSlot, hasCalibration, hasFovOffset, offsetUm, offsetSigmaUm));
+	}
 }
 
 std::vector<POINT2> ScanControl::getPositionsPix(const std::vector<POINT3>& positionsMicrometer) {

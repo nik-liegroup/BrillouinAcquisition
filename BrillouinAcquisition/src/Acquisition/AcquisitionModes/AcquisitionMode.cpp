@@ -35,5 +35,22 @@ void AcquisitionMode::writeScaleCalibration(std::unique_ptr <StorageWrapper>& st
 	auto positionStage = m_scanControl->getPosition(PositionType::STAGE);
 	auto positionScanner = m_scanControl->getPosition(PositionType::SCANNER);
 
-	storage->setScaleCalibration(mode, { scaleCalibration, positionStage, positionScanner });
+	auto extended = ScaleCalibrationDataExtended{ scaleCalibration, positionStage, positionScanner };
+
+	// Objective identity/FOV-offset context this specific run resolved its positions against -
+	// this is the one place all four callers of writeScaleCalibration() (Brillouin's own
+	// measurement, the overview brightfield captured during a Brillouin run, standalone
+	// Fluorescence, and ODT) get it from, instead of only Brillouin's own measurement metadata
+	// carrying it.
+	auto activeCalibration = m_scanControl->getActiveObjectiveCalibration();
+	extended.objectiveSlot = m_scanControl->getActiveObjectiveSlot();
+	extended.objectiveName = activeCalibration.objectiveName;
+	extended.magnification = activeCalibration.magnification;
+	extended.referenceObjectiveName = activeCalibration.referenceObjectiveName;
+	extended.hasFovOffset = activeCalibration.hasFovOffset;
+	extended.fovOffsetUm = activeCalibration.fovOffsetUm;
+	extended.fovOffsetSigmaUm = activeCalibration.fovOffsetSigmaUm;
+	extended.missingOffsetAccepted = !activeCalibration.hasFovOffset && m_scanControl->isMissingObjectiveOffsetAccepted();
+
+	storage->setScaleCalibration(mode, extended);
 }

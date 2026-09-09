@@ -4837,6 +4837,7 @@ border: none;</string>
      </property>
      <addaction name="action_Scale_calibration_acquire"/>
      <addaction name="action_Scale_calibration_load"/>
+     <addaction name="action_Scale_calibration_set_folder"/>
     </widget>
     <widget class="QMenu" name="menu_Voltage_calibration">
      <property name="title">
@@ -4958,6 +4959,11 @@ border: none;</string>
   <action name="action_Scale_calibration_load">
    <property name="text">
     <string>Load</string>
+   </property>
+  </action>
+  <action name="action_Scale_calibration_set_folder">
+   <property name="text">
+    <string>Set calibrations folder...</string>
    </property>
   </action>
  </widget>

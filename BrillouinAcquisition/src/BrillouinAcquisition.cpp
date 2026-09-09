@@ -564,15 +564,22 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			const int clampedDisplayTop = std::clamp(std::max(cellY0, cellY1), clampedDisplayBottom, frameH - 1);
 			const int displayRoiTop = clampedDisplayBottom;
 			const int displayRoiHeight = clampedDisplayTop - clampedDisplayBottom + 1;
+			// Absolute sensor position/size of the frame this ROI is being drawn against,
+			// so estimateFrameMetric() can remap it correctly even if the camera ROI's
+			// origin (not just its size) differs at measurement time - see the comment
+			// on surfaceProxyRoiFrameWidth in Brillouin.h.
+			const auto& currentRoi = m_Brillouin->settings.camera.roi;
 			if (m_spectralProxyActiveRoiIndex == 1) {
 				m_Brillouin->settings.surfaceProxyRoi2Left = clampedLeft;
 				m_Brillouin->settings.surfaceProxyRoi2Top = displayRoiTop;
 				m_Brillouin->settings.surfaceProxyRoi2Width = clampedRight - clampedLeft + 1;
 				m_Brillouin->settings.surfaceProxyRoi2Height = displayRoiHeight;
-				// Recorded so this rectangle can be rescaled if the frame size at
-				// measurement time turns out to differ - see estimateFrameMetric().
 				m_Brillouin->settings.surfaceProxyRoi2FrameWidth = frameW;
 				m_Brillouin->settings.surfaceProxyRoi2FrameHeight = frameH;
+				m_Brillouin->settings.surfaceProxyRoi2FrameOriginLeft = currentRoi.left;
+				m_Brillouin->settings.surfaceProxyRoi2FrameOriginBottom = currentRoi.bottom;
+				m_Brillouin->settings.surfaceProxyRoi2FrameWidthPhysical = currentRoi.width_physical;
+				m_Brillouin->settings.surfaceProxyRoi2FrameHeightPhysical = currentRoi.height_physical;
 			} else {
 				m_Brillouin->settings.surfaceProxyRoiLeft = clampedLeft;
 				m_Brillouin->settings.surfaceProxyRoiTop = displayRoiTop;
@@ -580,6 +587,10 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				m_Brillouin->settings.surfaceProxyRoiHeight = displayRoiHeight;
 				m_Brillouin->settings.surfaceProxyRoiFrameWidth = frameW;
 				m_Brillouin->settings.surfaceProxyRoiFrameHeight = frameH;
+				m_Brillouin->settings.surfaceProxyRoiFrameOriginLeft = currentRoi.left;
+				m_Brillouin->settings.surfaceProxyRoiFrameOriginBottom = currentRoi.bottom;
+				m_Brillouin->settings.surfaceProxyRoiFrameWidthPhysical = currentRoi.width_physical;
+				m_Brillouin->settings.surfaceProxyRoiFrameHeightPhysical = currentRoi.height_physical;
 			}
 
 			updateSpectralProxyRoiRect(m_spectralProxyActiveRoiIndex);
@@ -745,6 +756,18 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				m_Brillouin->settings.gridCoordinatesAbsolute = enabled;
 				ui->setHome->setDisabled(enabled);
 				ui->moveHome->setDisabled(enabled);
+				// See the matching comment on this same lock in the ACQUISITION_STATUS
+				// handler - applied here too so it takes effect immediately on toggling,
+				// rather than waiting for the next status change to lock/unlock the fields.
+				ui->startX->setDisabled(enabled);
+				ui->startY->setDisabled(enabled);
+				ui->startZ->setDisabled(enabled);
+				ui->endX->setDisabled(enabled);
+				ui->endY->setDisabled(enabled);
+				ui->endZ->setDisabled(enabled);
+				ui->stepsX->setDisabled(enabled);
+				ui->stepsY->setDisabled(enabled);
+				ui->stepsZ->setDisabled(enabled);
 				QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
 				updateBrillouinSettings();
 				updateAbsoluteGridStatus();
@@ -1214,15 +1237,24 @@ QCPItemRect* BrillouinAcquisition::ensureSpectralProxyRoiRect(int index) {
 
 void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	const auto& settings = m_Brillouin->settings;
-	auto left = index == 1 ? settings.surfaceProxyRoi2Left : settings.surfaceProxyRoiLeft;
-	auto top = index == 1 ? settings.surfaceProxyRoi2Top : settings.surfaceProxyRoiTop;
-	auto width = index == 1 ? settings.surfaceProxyRoi2Width : settings.surfaceProxyRoiWidth;
-	auto height = index == 1 ? settings.surfaceProxyRoi2Height : settings.surfaceProxyRoiHeight;
-	const auto refW = index == 1 ? settings.surfaceProxyRoi2FrameWidth : settings.surfaceProxyRoiFrameWidth;
-	const auto refH = index == 1 ? settings.surfaceProxyRoi2FrameHeight : settings.surfaceProxyRoiFrameHeight;
+	const auto rawLeft = index == 1 ? settings.surfaceProxyRoi2Left : settings.surfaceProxyRoiLeft;
+	const auto rawTop = index == 1 ? settings.surfaceProxyRoi2Top : settings.surfaceProxyRoiTop;
+	const auto rawWidth = index == 1 ? settings.surfaceProxyRoi2Width : settings.surfaceProxyRoiWidth;
+	const auto rawHeight = index == 1 ? settings.surfaceProxyRoi2Height : settings.surfaceProxyRoiHeight;
+	const PROXY_ROI_FRAME drawnFrame = index == 1 ?
+		PROXY_ROI_FRAME{
+			settings.surfaceProxyRoi2FrameWidth, settings.surfaceProxyRoi2FrameHeight,
+			settings.surfaceProxyRoi2FrameOriginLeft, settings.surfaceProxyRoi2FrameOriginBottom,
+			settings.surfaceProxyRoi2FrameWidthPhysical, settings.surfaceProxyRoi2FrameHeightPhysical
+		} :
+		PROXY_ROI_FRAME{
+			settings.surfaceProxyRoiFrameWidth, settings.surfaceProxyRoiFrameHeight,
+			settings.surfaceProxyRoiFrameOriginLeft, settings.surfaceProxyRoiFrameOriginBottom,
+			settings.surfaceProxyRoiFrameWidthPhysical, settings.surfaceProxyRoiFrameHeightPhysical
+		};
 	auto** rectItem = index == 1 ? &m_spectralProxyRoi2RectItem : &m_spectralProxyRoiRectItem;
 
-	if (width <= 0 || height <= 0) {
+	if (rawWidth <= 0 || rawHeight <= 0) {
 		if (*rectItem) {
 			ui->customplot->removeItem(*rectItem);
 			*rectItem = nullptr;
@@ -1234,20 +1266,19 @@ void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	auto* mapData = m_BrillouinPlot.colorMap ? m_BrillouinPlot.colorMap->data() : nullptr;
 	const int frameW = mapData ? std::max(1, mapData->keySize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.width_binned);
 	const int frameH = mapData ? std::max(1, mapData->valueSize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.height_binned);
-	// Rescale onto the currently displayed frame if it differs from whatever frame this ROI
-	// was drawn against, so the visible rectangle never silently drifts off-screen or
-	// shrinks to nothing after a camera ROI/binning change - see estimateFrameMetric() for
-	// why the actual measurement does the same.
-	if (refW > 0 && refW != frameW) {
-		const auto scaleX = (double)frameW / refW;
-		left = (int)std::lround(left * scaleX);
-		width = (int)std::lround(width * scaleX);
-	}
-	if (refH > 0 && refH != frameH) {
-		const auto scaleY = (double)frameH / refH;
-		top = (int)std::lround(top * scaleY);
-		height = (int)std::lround(height * scaleY);
-	}
+	// Remap onto the currently displayed frame if it differs from whatever frame this ROI
+	// was drawn against, so the visible rectangle never silently drifts off-screen, shrinks
+	// to nothing, or lands on the wrong physical location after a camera ROI/binning change
+	// - see Brillouin::remapProxyRoi() for why a size-only rescale isn't enough, and
+	// estimateFrameMetric() for why the actual measurement does the same remap.
+	const PROXY_ROI_FRAME currentFrame{
+		frameW, frameH,
+		m_Brillouin->settings.camera.roi.left, m_Brillouin->settings.camera.roi.bottom,
+		m_Brillouin->settings.camera.roi.width_physical, m_Brillouin->settings.camera.roi.height_physical
+	};
+	int left{ rawLeft }, top{ rawTop }, width{ rawWidth }, height{ rawHeight };
+	Brillouin::remapProxyRoi(rawLeft, rawTop, rawWidth, rawHeight, drawnFrame, currentFrame,
+		left, top, width, height);
 	const int displayLeft = std::clamp(left, 0, frameW - 1);
 	const int displayRight = std::clamp(left + width - 1, displayLeft, frameW - 1);
 	const int displayBottom = std::clamp(top, 0, frameH - 1);
@@ -1287,8 +1318,16 @@ void BrillouinAcquisition::clearSpectralProxyRois() {
 	m_Brillouin->settings.surfaceProxyRoi2Height = 0;
 	m_Brillouin->settings.surfaceProxyRoiFrameWidth = 0;
 	m_Brillouin->settings.surfaceProxyRoiFrameHeight = 0;
+	m_Brillouin->settings.surfaceProxyRoiFrameOriginLeft = 0;
+	m_Brillouin->settings.surfaceProxyRoiFrameOriginBottom = 0;
+	m_Brillouin->settings.surfaceProxyRoiFrameWidthPhysical = 0;
+	m_Brillouin->settings.surfaceProxyRoiFrameHeightPhysical = 0;
 	m_Brillouin->settings.surfaceProxyRoi2FrameWidth = 0;
 	m_Brillouin->settings.surfaceProxyRoi2FrameHeight = 0;
+	m_Brillouin->settings.surfaceProxyRoi2FrameOriginLeft = 0;
+	m_Brillouin->settings.surfaceProxyRoi2FrameOriginBottom = 0;
+	m_Brillouin->settings.surfaceProxyRoi2FrameWidthPhysical = 0;
+	m_Brillouin->settings.surfaceProxyRoi2FrameHeightPhysical = 0;
 	updateSpectralProxyRoiRect(0);
 	updateSpectralProxyRoiRect(1);
 	m_spectralProxyNextRoiIndex = 0;
@@ -1321,8 +1360,13 @@ void BrillouinAcquisition::showPosition(POINT3 position) {
 }
 
 POINT3 BrillouinAcquisition::gridOffsetToAbsoluteTarget(const POINT3& gridOffset, const POINT3& relativeOrigin) const {
+	// Goes through Brillouin::resolvedGridOriginUm(), not settings.absoluteGridOriginUm
+	// directly, so the on-screen grid/ROI overlay stays glued to where a measurement will
+	// actually execute even when the active objective has a calibrated FOV-center offset -
+	// otherwise this would be exactly the kind of independent re-derivation that previously
+	// caused the ROI polygon overlay to drift from the AOI markers.
 	const auto origin = m_Brillouin->settings.gridCoordinatesAbsolute
-		? m_Brillouin->settings.absoluteGridOriginUm
+		? m_Brillouin->resolvedGridOriginUm()
 		: relativeOrigin;
 	return POINT3{
 		origin.x + gridOffset.x,
@@ -1333,7 +1377,7 @@ POINT3 BrillouinAcquisition::gridOffsetToAbsoluteTarget(const POINT3& gridOffset
 
 POINT3 BrillouinAcquisition::absoluteTargetToGridOffset(const POINT3& absoluteTarget, const POINT3& relativeOrigin) const {
 	const auto origin = m_Brillouin->settings.gridCoordinatesAbsolute
-		? m_Brillouin->settings.absoluteGridOriginUm
+		? m_Brillouin->resolvedGridOriginUm()
 		: relativeOrigin;
 	return POINT3{
 		absoluteTarget.x - origin.x,
@@ -1377,7 +1421,7 @@ POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm
 	// conversion, instead of re-deriving it here, is what keeps the ROI overlay glued to the
 	// markers in every grid mode (this used to be a no-op for non-absolute grids, which is
 	// why the polygon stayed put while the markers tracked the live scanner offset).
-	const auto origin = gridAbsolute ? m_Brillouin->settings.absoluteGridOriginUm : POINT3{};
+	const auto origin = gridAbsolute ? m_Brillouin->resolvedGridOriginUm() : POINT3{};
 	const auto offset = currentGridOffset(gridAbsolute);
 	return POINT2{
 		imagePlaneUm.x - offset.x - origin.x,
@@ -1394,7 +1438,7 @@ POINT2 BrillouinAcquisition::gridOffsetToImagePlaneUm(const POINT2& gridOffset, 
 		return gridOffset;
 	}
 	// See imagePlaneUmToGridOffset() for why this must match ScanControl's own convention.
-	const auto origin = gridAbsolute ? m_Brillouin->settings.absoluteGridOriginUm : POINT3{};
+	const auto origin = gridAbsolute ? m_Brillouin->resolvedGridOriginUm() : POINT3{};
 	const auto offset = currentGridOffset(gridAbsolute);
 	return POINT2{
 		origin.x + gridOffset.x + offset.x,
@@ -1453,14 +1497,43 @@ void BrillouinAcquisition::updateAbsoluteGridStatus() {
 	if (!ui->absoluteGridStatusLabel) {
 		return;
 	}
-	const auto origin = m_Brillouin->settings.absoluteGridOriginUm;
+	// Resolved (offset-applied), not the raw stored setting, so this status readout is
+	// directly comparable to the live Stage/Focus positions shown alongside it.
+	const auto origin = m_Brillouin->resolvedGridOriginUm();
 	const auto currentFocus = m_scanControl ? m_scanControl->getPosition() : POINT3{};
 	const auto currentStage = m_scanControl ? m_scanControl->getPosition(PositionType::STAGE) : POINT3{};
 	const auto mode = m_Brillouin->settings.gridCoordinatesAbsolute
 		? QString("absolute, grid relative to origin")
 		: QString("relative, grid relative to acquisition start");
-	ui->absoluteGridStatusLabel->setText(QString("Grid: %1\nOrigin: X %2, Y %3, Z %4\nStage: X %5, Y %6, Z %7 | Focus: X %8, Y %9, Z %10")
+
+	// Size/spacing from the stored xMin/xMax/xSteps etc. directly - these are already offsets
+	// from the origin in both modes (see preservePhysicalGridForAbsoluteMode()), so their
+	// difference/step is the same physical extent independent of gridCoordinatesAbsolute or
+	// where the origin happens to be. Shown here so "how big is this grid" never requires
+	// reading xMin/xMax in absolute mode and mentally subtracting - which is also why those
+	// fields are locked to read-only while in absolute mode (see the ACQUISITION_STATUS
+	// handler and the m_absoluteGridCheckbox toggle handler).
+	const auto& settings = m_Brillouin->settings;
+	auto spacing = [](double lo, double hi, int steps) {
+		return steps > 1 ? (hi - lo) / (steps - 1) : 0.0;
+	};
+	const auto sizeX = settings.xMax - settings.xMin;
+	const auto sizeY = settings.yMax - settings.yMin;
+	const auto sizeZ = settings.zMax - settings.zMin;
+	const auto spacingX = spacing(settings.xMin, settings.xMax, settings.xSteps);
+	const auto spacingY = spacing(settings.yMin, settings.yMax, settings.ySteps);
+	const auto spacingZ = spacing(settings.zMin, settings.zMax, settings.zSteps);
+
+	ui->absoluteGridStatusLabel->setText(
+		QString("Grid: %1\nSize: X %2 µm, Y %3 µm, Z %4 µm | Spacing: X %5 µm, Y %6 µm, Z %7 µm\n"
+			"Origin: X %8, Y %9, Z %10\nStage: X %11, Y %12, Z %13 | Focus: X %14, Y %15, Z %16")
 		.arg(mode)
+		.arg(sizeX, 0, 'f', 2)
+		.arg(sizeY, 0, 'f', 2)
+		.arg(sizeZ, 0, 'f', 2)
+		.arg(spacingX, 0, 'f', 2)
+		.arg(spacingY, 0, 'f', 2)
+		.arg(spacingZ, 0, 'f', 2)
 		.arg(origin.x, 0, 'f', 2)
 		.arg(origin.y, 0, 'f', 2)
 		.arg(origin.z, 0, 'f', 2)
@@ -2096,15 +2169,23 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 	ui->actionNew_Acquisition->setDisabled(running);
 	ui->actionClose_Acquisition->setDisabled(running);
 
-	ui->startX->setDisabled(running);
-	ui->startY->setDisabled(running);
-	ui->startZ->setDisabled(running);
-	ui->endX->setDisabled(running);
-	ui->endY->setDisabled(running);
-	ui->endZ->setDisabled(running);
-	ui->stepsX->setDisabled(running);
-	ui->stepsY->setDisabled(running);
-	ui->stepsZ->setDisabled(running);
+	// Grid range/steps are offsets from resolvedGridOriginUm() in both modes, but in absolute
+	// mode that origin is a fixed point set once (not the live stage position - see
+	// preservePhysicalGridForAbsoluteMode()), so editing these numbers here has no intuitive
+	// physical meaning while standing at the microscope: how big/where the grid actually is
+	// can't be read off them without also knowing the (separately displayed) origin. Locked to
+	// read-only in absolute mode for that reason, on top of (not instead of) the pre-existing
+	// running-state lock.
+	const bool gridLocked = running || m_Brillouin->settings.gridCoordinatesAbsolute;
+	ui->startX->setDisabled(gridLocked);
+	ui->startY->setDisabled(gridLocked);
+	ui->startZ->setDisabled(gridLocked);
+	ui->endX->setDisabled(gridLocked);
+	ui->endY->setDisabled(gridLocked);
+	ui->endZ->setDisabled(gridLocked);
+	ui->stepsX->setDisabled(gridLocked);
+	ui->stepsY->setDisabled(gridLocked);
+	ui->stepsZ->setDisabled(gridLocked);
 	ui->camera_playPause->setDisabled(running);
 	ui->camera_singleShot->setDisabled(running);
 	ui->setHome->setDisabled(running || m_Brillouin->settings.gridCoordinatesAbsolute);
@@ -2206,31 +2287,46 @@ void BrillouinAcquisition::on_measureSpectralProxyRoiButton_clicked() {
 	};
 
 	const auto& settings = m_Brillouin->settings;
-	// Rescale onto the currently displayed frame if it differs from whatever frame the ROI
-	// was drawn against - see Brillouin::estimateFrameMetric() for why (keeps this manual
-	// check honest about what the actual surface scan would measure).
-	auto rescaled = [](int value, int refSize, int currentSize) {
-		if (refSize <= 0 || refSize == currentSize) {
-			return value;
-		}
-		return (int)std::lround(value * (double)currentSize / refSize);
+	// Remap onto the currently displayed frame if it differs from whatever frame the ROI
+	// was drawn against - see Brillouin::remapProxyRoi() for why a size-only rescale isn't
+	// enough, and estimateFrameMetric() for why the actual surface scan does the same remap
+	// (keeps this manual check honest about what that would measure).
+	const PROXY_ROI_FRAME currentFrame{
+		frameW, frameH,
+		m_Brillouin->settings.camera.roi.left, m_Brillouin->settings.camera.roi.bottom,
+		m_Brillouin->settings.camera.roi.width_physical, m_Brillouin->settings.camera.roi.height_physical
+	};
+	auto remapped = [&currentFrame](
+		int roiLeft, int roiTop, int roiWidth, int roiHeight, const PROXY_ROI_FRAME& drawnFrame,
+		int& outLeft, int& outTop, int& outWidth, int& outHeight
+	) {
+		outLeft = roiLeft; outTop = roiTop; outWidth = roiWidth; outHeight = roiHeight;
+		Brillouin::remapProxyRoi(roiLeft, roiTop, roiWidth, roiHeight, drawnFrame, currentFrame,
+			outLeft, outTop, outWidth, outHeight);
 	};
 	double roi1Mean{ 0.0 };
 	double roi2Mean{ 0.0 };
-	const bool hasRoi1 = measureRoi(
-		rescaled(settings.surfaceProxyRoiLeft, settings.surfaceProxyRoiFrameWidth, frameW),
-		rescaled(settings.surfaceProxyRoiTop, settings.surfaceProxyRoiFrameHeight, frameH),
-		rescaled(settings.surfaceProxyRoiWidth, settings.surfaceProxyRoiFrameWidth, frameW),
-		rescaled(settings.surfaceProxyRoiHeight, settings.surfaceProxyRoiFrameHeight, frameH),
-		roi1Mean
-	);
-	const bool hasRoi2 = measureRoi(
-		rescaled(settings.surfaceProxyRoi2Left, settings.surfaceProxyRoi2FrameWidth, frameW),
-		rescaled(settings.surfaceProxyRoi2Top, settings.surfaceProxyRoi2FrameHeight, frameH),
-		rescaled(settings.surfaceProxyRoi2Width, settings.surfaceProxyRoi2FrameWidth, frameW),
-		rescaled(settings.surfaceProxyRoi2Height, settings.surfaceProxyRoi2FrameHeight, frameH),
-		roi2Mean
-	);
+	int roi1Left{ 0 }, roi1Top{ 0 }, roi1Width{ 0 }, roi1Height{ 0 };
+	remapped(settings.surfaceProxyRoiLeft, settings.surfaceProxyRoiTop,
+		settings.surfaceProxyRoiWidth, settings.surfaceProxyRoiHeight,
+		PROXY_ROI_FRAME{
+			settings.surfaceProxyRoiFrameWidth, settings.surfaceProxyRoiFrameHeight,
+			settings.surfaceProxyRoiFrameOriginLeft, settings.surfaceProxyRoiFrameOriginBottom,
+			settings.surfaceProxyRoiFrameWidthPhysical, settings.surfaceProxyRoiFrameHeightPhysical
+		},
+		roi1Left, roi1Top, roi1Width, roi1Height);
+	const bool hasRoi1 = measureRoi(roi1Left, roi1Top, roi1Width, roi1Height, roi1Mean);
+
+	int roi2Left{ 0 }, roi2Top{ 0 }, roi2Width{ 0 }, roi2Height{ 0 };
+	remapped(settings.surfaceProxyRoi2Left, settings.surfaceProxyRoi2Top,
+		settings.surfaceProxyRoi2Width, settings.surfaceProxyRoi2Height,
+		PROXY_ROI_FRAME{
+			settings.surfaceProxyRoi2FrameWidth, settings.surfaceProxyRoi2FrameHeight,
+			settings.surfaceProxyRoi2FrameOriginLeft, settings.surfaceProxyRoi2FrameOriginBottom,
+			settings.surfaceProxyRoi2FrameWidthPhysical, settings.surfaceProxyRoi2FrameHeightPhysical
+		},
+		roi2Left, roi2Top, roi2Width, roi2Height);
+	const bool hasRoi2 = measureRoi(roi2Left, roi2Top, roi2Width, roi2Height, roi2Mean);
 
 	if (!hasRoi1 && !hasRoi2) {
 		ui->statusBar->showMessage("No valid spectral ROI to measure.", 5000);
@@ -3507,6 +3603,24 @@ void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 		this,
 		[this]() { scaleCalibrationButtonAcquire_clicked(); }
 	);
+	connection = QWidget::connect(
+		m_scaleCalibrationDialogUi.button_save,
+		&QPushButton::clicked,
+		this,
+		[this]() { scaleCalibrationButtonSave_clicked(); }
+	);
+	connection = QWidget::connect(
+		m_scaleCalibrationDialogUi.button_fovOffsetReference,
+		&QPushButton::clicked,
+		this,
+		[this]() { scaleCalibrationButtonFovOffsetReference_clicked(); }
+	);
+	connection = QWidget::connect(
+		m_scaleCalibrationDialogUi.button_fovOffsetMeasure,
+		&QPushButton::clicked,
+		this,
+		[this]() { scaleCalibrationButtonFovOffsetMeasure_clicked(); }
+	);
 
 	// Connect translation distance boxes
 	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
@@ -3573,6 +3687,50 @@ void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 		[this](double value) { setPixToMicrometerY_y(value); }
 	);
 
+	// Connect objective-identity/FOV-offset boxes
+	connection = QWidget::connect(
+		m_scaleCalibrationDialogUi.objectiveName,
+		&QLineEdit::textEdited,
+		this,
+		[this](const QString& name) { setObjectiveName(name); }
+	);
+	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+		m_scaleCalibrationDialogUi.magnification,
+		&QDoubleSpinBox::valueChanged,
+		this,
+		[this](double value) { setMagnification(value); }
+	);
+	connection = QWidget::connect(
+		m_scaleCalibrationDialogUi.referenceObjectiveName,
+		&QLineEdit::textEdited,
+		this,
+		[this](const QString& name) { setReferenceObjectiveName(name); }
+	);
+	connection = QWidget::connect(
+		m_scaleCalibrationDialogUi.hasFovOffsetCheckbox,
+		&QCheckBox::toggled,
+		this,
+		[this](bool checked) { setHasFovOffset(checked); }
+	);
+	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+		m_scaleCalibrationDialogUi.fovOffsetX,
+		&QDoubleSpinBox::valueChanged,
+		this,
+		[this](double value) { setFovOffsetX(value); }
+	);
+	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+		m_scaleCalibrationDialogUi.fovOffsetY,
+		&QDoubleSpinBox::valueChanged,
+		this,
+		[this](double value) { setFovOffsetY(value); }
+	);
+	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+		m_scaleCalibrationDialogUi.fovOffsetSigma,
+		&QDoubleSpinBox::valueChanged,
+		this,
+		[this](double value) { setFovOffsetSigma(value); }
+	);
+
 	// Initialize the scaleCalibration
 	m_scaleCalibration->initialize();
 
@@ -3609,6 +3767,24 @@ void BrillouinAcquisition::updateScaleCalibrationData(ScaleCalibrationData scale
 	m_scaleCalibrationDialogUi.pixToMicrometerY_y->setValue(scaleCalibration.pixToMicrometerY.y);
 }
 
+void BrillouinAcquisition::updateObjectiveCalibrationData(ObjectiveCalibrationData calibration) {
+	const QSignalBlocker blocker1(m_scaleCalibrationDialogUi.objectiveName);
+	const QSignalBlocker blocker2(m_scaleCalibrationDialogUi.magnification);
+	const QSignalBlocker blocker3(m_scaleCalibrationDialogUi.referenceObjectiveName);
+	const QSignalBlocker blocker4(m_scaleCalibrationDialogUi.hasFovOffsetCheckbox);
+	const QSignalBlocker blocker5(m_scaleCalibrationDialogUi.fovOffsetX);
+	const QSignalBlocker blocker6(m_scaleCalibrationDialogUi.fovOffsetY);
+	const QSignalBlocker blocker7(m_scaleCalibrationDialogUi.fovOffsetSigma);
+
+	m_scaleCalibrationDialogUi.objectiveName->setText(QString::fromStdString(calibration.objectiveName));
+	m_scaleCalibrationDialogUi.magnification->setValue(calibration.magnification);
+	m_scaleCalibrationDialogUi.referenceObjectiveName->setText(QString::fromStdString(calibration.referenceObjectiveName));
+	m_scaleCalibrationDialogUi.hasFovOffsetCheckbox->setChecked(calibration.hasFovOffset);
+	m_scaleCalibrationDialogUi.fovOffsetX->setValue(calibration.fovOffsetUm.x);
+	m_scaleCalibrationDialogUi.fovOffsetY->setValue(calibration.fovOffsetUm.y);
+	m_scaleCalibrationDialogUi.fovOffsetSigma->setValue(calibration.fovOffsetSigmaUm);
+}
+
 void BrillouinAcquisition::closeScaleCalibrationDialog() {
 	if (m_scaleCalibrationDialog) {
 		m_scaleCalibrationDialog->hide();
@@ -3636,6 +3812,36 @@ void BrillouinAcquisition::scaleCalibrationButtonApply_clicked() {
 		m_scaleCalibration,
 		[&m_scaleCalibration = m_scaleCalibration]() {
 			m_scaleCalibration->apply();
+		},
+		Qt::AutoConnection
+	);
+}
+
+void BrillouinAcquisition::scaleCalibrationButtonSave_clicked() {
+	QMetaObject::invokeMethod(
+		m_scaleCalibration,
+		[&m_scaleCalibration = m_scaleCalibration]() {
+			m_scaleCalibration->saveCalibration();
+		},
+		Qt::AutoConnection
+	);
+}
+
+void BrillouinAcquisition::scaleCalibrationButtonFovOffsetReference_clicked() {
+	QMetaObject::invokeMethod(
+		m_scaleCalibration,
+		[&m_scaleCalibration = m_scaleCalibration]() {
+			m_scaleCalibration->setFovOffsetReference();
+		},
+		Qt::AutoConnection
+	);
+}
+
+void BrillouinAcquisition::scaleCalibrationButtonFovOffsetMeasure_clicked() {
+	QMetaObject::invokeMethod(
+		m_scaleCalibration,
+		[&m_scaleCalibration = m_scaleCalibration]() {
+			m_scaleCalibration->measureFovOffset();
 		},
 		Qt::AutoConnection
 	);
@@ -3691,6 +3897,34 @@ void BrillouinAcquisition::setPixToMicrometerY_y(double value) {
 	m_scaleCalibration->setPixToMicrometerY_y(value);
 }
 
+void BrillouinAcquisition::setObjectiveName(QString name) {
+	m_scaleCalibration->setObjectiveName(name);
+}
+
+void BrillouinAcquisition::setMagnification(double value) {
+	m_scaleCalibration->setMagnification(value);
+}
+
+void BrillouinAcquisition::setReferenceObjectiveName(QString name) {
+	m_scaleCalibration->setReferenceObjectiveName(name);
+}
+
+void BrillouinAcquisition::setHasFovOffset(bool hasFovOffset) {
+	m_scaleCalibration->setHasFovOffset(hasFovOffset);
+}
+
+void BrillouinAcquisition::setFovOffsetX(double value) {
+	m_scaleCalibration->setFovOffsetX(value);
+}
+
+void BrillouinAcquisition::setFovOffsetY(double value) {
+	m_scaleCalibration->setFovOffsetY(value);
+}
+
+void BrillouinAcquisition::setFovOffsetSigma(double value) {
+	m_scaleCalibration->setFovOffsetSigma(value);
+}
+
 void BrillouinAcquisition::on_action_Scale_calibration_load_triggered() {
 	m_scaleCalibrationFilePath = QFileDialog::getOpenFileName(this, tr("Select scale calibration"),
 		QString::fromStdString(m_scaleCalibrationFilePath), tr("Scale calibration (*.h5)")).toStdString();
@@ -3706,6 +3940,51 @@ void BrillouinAcquisition::loadScaleCalibrationFile() {
 		},
 		Qt::AutoConnection
 	);
+}
+
+void BrillouinAcquisition::on_action_Scale_calibration_set_folder_triggered() {
+	auto folder = QFileDialog::getExistingDirectory(this, tr("Select calibrations folder"),
+		QString::fromStdString(m_calibrationsFolderPath));
+	if (folder.isEmpty()) {
+		return;
+	}
+	m_calibrationsFolderPath = folder.toStdString();
+	writeSettings();
+	autoLoadObjectiveCalibrations();
+}
+
+void BrillouinAcquisition::autoLoadObjectiveCalibrations() {
+	if (m_calibrationsFolderPath.empty()) {
+		// No folder configured (yet) - fall back to the pre-existing single-file behaviour
+		// so a session that has never used this feature keeps working exactly as before.
+		loadScaleCalibrationFile();
+		return;
+	}
+	QMetaObject::invokeMethod(
+		m_scaleCalibration,
+		[&m_scaleCalibration = m_scaleCalibration, &m_calibrationsFolderPath = m_calibrationsFolderPath]() {
+			m_scaleCalibration->autoLoadCalibrationsFromFolder(m_calibrationsFolderPath);
+		},
+		Qt::AutoConnection
+	);
+}
+
+void BrillouinAcquisition::calibrationAutoLoadSummary(std::string appliedText, std::string warningText) {
+	if (!appliedText.empty()) {
+		qInfo(logInfo()) << "Objective calibrations auto-loaded from" << QString::fromStdString(m_calibrationsFolderPath) << ":\n" << QString::fromStdString(appliedText);
+	}
+	if (!warningText.empty()) {
+		QMessageBox::warning(
+			this,
+			"Objective calibration auto-load",
+			QString::fromStdString(
+				"Some files in the calibrations folder could not be applied automatically:\n\n" + warningText +
+				"\nThese objectives keep whatever calibration (if any) was already registered. Resolve by "
+				"keeping only one file per objective in that folder, or use Scale calibration > Load to "
+				"apply one manually."
+			)
+		);
+	}
 }
 
 void BrillouinAcquisition::initBeampathButtons() {
@@ -3955,6 +4234,14 @@ void BrillouinAcquisition::initScanControl() {
 	);
 	connection = QWidget::connect(
 		m_scanControl,
+		&ScanControl::s_objectiveSwitched,
+		this,
+		[this](int previousSlot, int newSlot, bool hasCalibration, bool hasFovOffset, POINT2 offsetUm, double offsetSigmaUm) {
+			objectiveSwitched(previousSlot, newSlot, hasCalibration, hasFovOffset, offsetUm, offsetSigmaUm);
+		}
+	);
+	connection = QWidget::connect(
+		m_scanControl,
 		&ScanControl::currentPosition,
 		this,
 		[this](POINT3 position) { showPosition(position); }
@@ -4019,7 +4306,7 @@ void BrillouinAcquisition::initScanControl() {
 		Qt::AutoConnection
 	);
 
-	loadScaleCalibrationFile();
+	autoLoadObjectiveCalibrations();
 
 	m_scanControl->locatePositionScanner(m_positionScanner);
 }
@@ -4153,6 +4440,12 @@ void BrillouinAcquisition::initScaleCalibration() {
 		);
 		connection = QWidget::connect(
 			m_scaleCalibration,
+			&ScaleCalibration::s_objectiveCalibrationChanged,
+			this,
+			[this](ObjectiveCalibrationData calibration) { updateObjectiveCalibrationData(calibration); }
+		);
+		connection = QWidget::connect(
+			m_scaleCalibration,
 			&ScaleCalibration::s_scaleCalibrationAcquisitionProgress,
 			this,
 			[this](double progress) { updateScaleCalibrationAcquisitionProgress(progress); }
@@ -4162,6 +4455,12 @@ void BrillouinAcquisition::initScaleCalibration() {
 			&ScaleCalibration::s_scaleCalibrationStatus,
 			this,
 			[this](std::string title, std::string message) { showScaleCalibrationStatus(title, message); }
+		);
+		connection = QWidget::connect(
+			m_scaleCalibration,
+			&ScaleCalibration::s_calibrationAutoLoadSummary,
+			this,
+			[this](std::string appliedText, std::string warningText) { calibrationAutoLoadSummary(appliedText, warningText); }
 		);
 		connection = QWidget::connect(
 			m_scaleCalibration,
@@ -4183,7 +4482,7 @@ void BrillouinAcquisition::initFluorescence() {
 			ui->acquisitionModeTabs->removeTab(tabIndexFluorescence);
 		}
 	} else {
-		m_Fluorescence = new Fluorescence(nullptr, m_acquisition, m_brightfieldCamera, m_scanControl);
+		m_Fluorescence = new Fluorescence(nullptr, m_acquisition, m_brightfieldCamera, m_scanControl, m_Brillouin);
 		// Index 3, not 2: see the matching comment in initODT() - "Surface scanning" (1)
 		// and, when present, ODT (2) both come before Fluorescence now. insertTab()
 		// clamps out-of-range indices to "append", so this still lands right after
@@ -4471,6 +4770,90 @@ void BrillouinAcquisition::microscopeElementPositionChanged(DeviceElement elemen
 	}
 	m_deviceElementPositions[element.index] = position;
 	checkElementButtons();
+}
+
+void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool hasCalibration, bool hasFovOffset, POINT2 offsetUm, double offsetSigmaUm) {
+	if (!hasCalibration) {
+		QMessageBox::warning(
+			this,
+			"No Scale Calibration For This Objective",
+			QString("No scale calibration is registered for the objective in slot %1.\n\n"
+				"Pixel<->micrometer conversions, grids, ROIs and overview tiles for this objective "
+				"will be wrong until a calibration is loaded for it.").arg(newSlot)
+		);
+		return;
+	}
+	if (!hasFovOffset) {
+		auto reply = QMessageBox::warning(
+			this,
+			"No FOV-Center Offset For This Objective Switch",
+			QString("No calibrated FOV-center offset is stored for this objective switch (slot %1 -> %2).\n\n"
+				"In absolute grid-coordinate mode, grids, ROIs and overview tiles will NOT be translated "
+				"to compensate for this objective's field-of-view center shift, and measurements may no "
+				"longer target the same physical sample location as before the switch. Relative-mode grids "
+				"are not affected, since they anchor to wherever the stage is when a measurement starts.\n\n"
+				"Continue anyway?").arg(previousSlot).arg(newSlot),
+			QMessageBox::Yes | QMessageBox::No,
+			QMessageBox::No
+		);
+		if (reply == QMessageBox::Yes) {
+			QMetaObject::invokeMethod(
+				m_scanControl,
+				[scanControl = m_scanControl]() { scanControl->acceptMissingObjectiveOffset(); },
+				Qt::AutoConnection
+			);
+		}
+	} else {
+		// hasCalibration && hasFovOffset: nothing needs the operator's attention beyond a log
+		// line - deliberately not a dialog, that would be a needless interruption on the
+		// common, correctly-calibrated path.
+		qInfo(logInfo()) << "Objective switch" << previousSlot << "->" << newSlot
+			<< ": applying calibrated FOV-center offset (" << offsetUm.x << "," << offsetUm.y
+			<< ") um, sigma" << offsetSigmaUm << "um.";
+	}
+
+	// Pure recomputation, no hardware motion - safe unconditionally whenever the new
+	// objective's scale calibration was actually applied (hasCalibration), regardless of
+	// hasFovOffset. This is what makes the on-screen grid/ROI/overview-tile preview snap to
+	// the corrected position immediately on switch, rather than only once something else
+	// happens to call updatePositions() next (e.g. Start). updatePositions() is a private
+	// slot, hence the string-based invoke rather than a capturing lambda - same pattern
+	// already used elsewhere in this file (see the ROI-mask checkbox handler).
+	if (m_Brillouin) {
+		QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
+	}
+
+	// Physical stage move: relative-mode grids anchor to wherever the stage physically is
+	// when a measurement starts (see Brillouin::resolvedGridOriginUm()'s doc comment and
+	// m_startPosition) - nothing recomputes that for them the way updatePositions() just did
+	// for absolute mode above, so without an actual stage move here, a relative-mode grid
+	// would silently re-anchor to the wrong physical location after this switch. Absolute
+	// mode does NOT need this - its eventual measurement target is already correct from
+	// updatePositions() alone; moving the stage there too would only be a cosmetic head start
+	// on what Start would do anyway, so it's skipped to minimize unattended motion.
+	// Only fires when both the objective being left and the one just switched to have a
+	// calibrated offset - otherwise there is no valid delta to apply.
+	if (m_Brillouin && !m_Brillouin->settings.gridCoordinatesAbsolute && hasFovOffset && m_scanControl) {
+		auto previousCalibration = m_scanControl->getObjectiveCalibration(previousSlot);
+		if (previousCalibration.hasFovOffset) {
+			auto deltaX = offsetUm.x - previousCalibration.fovOffsetUm.x;
+			auto deltaY = offsetUm.y - previousCalibration.fovOffsetUm.y;
+			qInfo(logInfo()) << "Objective switch" << previousSlot << "->" << newSlot
+				<< ": relative grid mode, moving stage by (" << deltaX << "," << deltaY
+				<< ") um to preserve FOV-offset alignment.";
+			QMetaObject::invokeMethod(
+				m_scanControl,
+				[scanControl = m_scanControl, deltaX, deltaY]() {
+					// getPosition() (stage+scanner combined) is the frame setPositionCompensated()
+					// expects - see ScanControl::setPosition(POINT2)'s "subtract the scanner
+					// position" comment for why a plain stage-only position would be wrong here.
+					auto position = scanControl->getPosition();
+					scanControl->setPositionCompensated(POINT3{ position.x + deltaX, position.y + deltaY, position.z });
+				},
+				Qt::AutoConnection
+			);
+		}
+	}
 }
 
 void BrillouinAcquisition::checkElementButtons() {
@@ -4800,6 +5183,19 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 	const auto homeControlsDisabled = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
 	ui->setHome->setDisabled(homeControlsDisabled);
 	ui->moveHome->setDisabled(homeControlsDisabled);
+	// See the comment on this same lock in the ACQUISITION_STATUS handler - repeated here so
+	// it stays correct across every path that refreshes the grid UI (e.g. an objective switch
+	// re-running updatePositions()), not just the toggle handler and the status handler.
+	const auto gridLocked = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
+	ui->startX->setDisabled(gridLocked);
+	ui->startY->setDisabled(gridLocked);
+	ui->startZ->setDisabled(gridLocked);
+	ui->endX->setDisabled(gridLocked);
+	ui->endY->setDisabled(gridLocked);
+	ui->endZ->setDisabled(gridLocked);
+	ui->stepsX->setDisabled(gridLocked);
+	ui->stepsY->setDisabled(gridLocked);
+	ui->stepsZ->setDisabled(gridLocked);
 	if (m_editSpectralProxyRoiCheckbox) {
 		m_editSpectralProxyRoiCheckbox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
 	}
@@ -5747,6 +6143,7 @@ void BrillouinAcquisition::writeSettings() {
 	settings.endGroup();
 	settings.beginGroup("scale-calibration");
 	settings.setValue("file-path", QString::fromStdString(m_scaleCalibrationFilePath));
+	settings.setValue("calibrations-folder-path", QString::fromStdString(m_calibrationsFolderPath));
 	settings.endGroup();
 	settings.beginGroup("devices-settings");
 	settings.setValue("stage-laser-position-x", m_positionScanner.x);
@@ -5816,8 +6213,16 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-surface-proxy-roi-2-height", m_Brillouin->settings.surfaceProxyRoi2Height);
 	settings.setValue("brillouin-surface-proxy-roi-frame-width", m_Brillouin->settings.surfaceProxyRoiFrameWidth);
 	settings.setValue("brillouin-surface-proxy-roi-frame-height", m_Brillouin->settings.surfaceProxyRoiFrameHeight);
+	settings.setValue("brillouin-surface-proxy-roi-frame-origin-left", (qlonglong)m_Brillouin->settings.surfaceProxyRoiFrameOriginLeft);
+	settings.setValue("brillouin-surface-proxy-roi-frame-origin-bottom", (qlonglong)m_Brillouin->settings.surfaceProxyRoiFrameOriginBottom);
+	settings.setValue("brillouin-surface-proxy-roi-frame-width-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoiFrameWidthPhysical);
+	settings.setValue("brillouin-surface-proxy-roi-frame-height-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoiFrameHeightPhysical);
 	settings.setValue("brillouin-surface-proxy-roi-2-frame-width", m_Brillouin->settings.surfaceProxyRoi2FrameWidth);
 	settings.setValue("brillouin-surface-proxy-roi-2-frame-height", m_Brillouin->settings.surfaceProxyRoi2FrameHeight);
+	settings.setValue("brillouin-surface-proxy-roi-2-frame-origin-left", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameOriginLeft);
+	settings.setValue("brillouin-surface-proxy-roi-2-frame-origin-bottom", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameOriginBottom);
+	settings.setValue("brillouin-surface-proxy-roi-2-frame-width-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameWidthPhysical);
+	settings.setValue("brillouin-surface-proxy-roi-2-frame-height-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameHeightPhysical);
 	settings.setValue("brillouin-camera-roi-left", m_deviceSettings.camera.roi.left);
 	settings.setValue("brillouin-camera-roi-top", m_deviceSettings.camera.roi.top);
 	settings.setValue("brillouin-camera-roi-width-physical", m_deviceSettings.camera.roi.width_physical);
@@ -5889,6 +6294,8 @@ void BrillouinAcquisition::readSettings() {
 	settings.beginGroup("scale-calibration");
 	QVariant filePath = settings.value("file-path");
 	m_scaleCalibrationFilePath = filePath.toString().toStdString();
+	QVariant calibrationsFolderPath = settings.value("calibrations-folder-path");
+	m_calibrationsFolderPath = calibrationsFolderPath.toString().toStdString();
 	settings.endGroup();
 
 	settings.beginGroup("devices-settings");
@@ -5959,7 +6366,15 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.surfaceProxyRoi2Height = settings.value("brillouin-surface-proxy-roi-2-height", m_Brillouin->settings.surfaceProxyRoi2Height).toInt();
 	m_Brillouin->settings.surfaceProxyRoiFrameWidth = settings.value("brillouin-surface-proxy-roi-frame-width", m_Brillouin->settings.surfaceProxyRoiFrameWidth).toInt();
 	m_Brillouin->settings.surfaceProxyRoiFrameHeight = settings.value("brillouin-surface-proxy-roi-frame-height", m_Brillouin->settings.surfaceProxyRoiFrameHeight).toInt();
+	m_Brillouin->settings.surfaceProxyRoiFrameOriginLeft = settings.value("brillouin-surface-proxy-roi-frame-origin-left", (qlonglong)m_Brillouin->settings.surfaceProxyRoiFrameOriginLeft).toLongLong();
+	m_Brillouin->settings.surfaceProxyRoiFrameOriginBottom = settings.value("brillouin-surface-proxy-roi-frame-origin-bottom", (qlonglong)m_Brillouin->settings.surfaceProxyRoiFrameOriginBottom).toLongLong();
+	m_Brillouin->settings.surfaceProxyRoiFrameWidthPhysical = settings.value("brillouin-surface-proxy-roi-frame-width-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoiFrameWidthPhysical).toLongLong();
+	m_Brillouin->settings.surfaceProxyRoiFrameHeightPhysical = settings.value("brillouin-surface-proxy-roi-frame-height-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoiFrameHeightPhysical).toLongLong();
 	m_Brillouin->settings.surfaceProxyRoi2FrameWidth = settings.value("brillouin-surface-proxy-roi-2-frame-width", m_Brillouin->settings.surfaceProxyRoi2FrameWidth).toInt();
 	m_Brillouin->settings.surfaceProxyRoi2FrameHeight = settings.value("brillouin-surface-proxy-roi-2-frame-height", m_Brillouin->settings.surfaceProxyRoi2FrameHeight).toInt();
+	m_Brillouin->settings.surfaceProxyRoi2FrameOriginLeft = settings.value("brillouin-surface-proxy-roi-2-frame-origin-left", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameOriginLeft).toLongLong();
+	m_Brillouin->settings.surfaceProxyRoi2FrameOriginBottom = settings.value("brillouin-surface-proxy-roi-2-frame-origin-bottom", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameOriginBottom).toLongLong();
+	m_Brillouin->settings.surfaceProxyRoi2FrameWidthPhysical = settings.value("brillouin-surface-proxy-roi-2-frame-width-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameWidthPhysical).toLongLong();
+	m_Brillouin->settings.surfaceProxyRoi2FrameHeightPhysical = settings.value("brillouin-surface-proxy-roi-2-frame-height-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameHeightPhysical).toLongLong();
 	settings.endGroup();
 }

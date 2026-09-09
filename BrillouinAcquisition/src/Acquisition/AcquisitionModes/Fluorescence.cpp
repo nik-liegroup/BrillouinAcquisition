@@ -1,12 +1,15 @@
 #include "stdafx.h"
 #include "Fluorescence.h"
+#include "Brillouin.h"
 
 /*
  * Public definitions
  */
 
-Fluorescence::Fluorescence(QObject* parent, Acquisition* acquisition, Camera*& camera, ScanControl*& scanControl)
-	: AcquisitionMode(parent, acquisition, scanControl), m_camera(camera) {}
+Fluorescence::Fluorescence(QObject* parent, Acquisition* acquisition, Camera*& camera,
+	ScanControl*& scanControl, Brillouin* brillouinMode)
+	: AcquisitionMode(parent, acquisition, scanControl), m_camera(camera),
+	m_brillouinMode(brillouinMode) {}
 
 Fluorescence::~Fluorescence() {
 }
@@ -221,31 +224,13 @@ void Fluorescence::configureCamera() {
 
 	m_settings.camera = m_camera->getSettings();
 
-	// configure camera for measurement
-	// This needs a proper implementation with user defined values. Probably by a configuration file.
-	m_settings.camera.roi.left = 128;
-	m_settings.camera.roi.top = 0;
-	m_settings.camera.roi.width_physical = 1024;
-	m_settings.camera.roi.height_physical = 1024;
-	if (cameraType == "class uEyeCam") {
-		m_settings.camera.roi.left = 800;
-		m_settings.camera.roi.top = 400;
-		m_settings.camera.roi.width_physical = 1800;
-		m_settings.camera.roi.height_physical = 2000;
-		m_settings.camera.readout.triggerMode = L"Software";
-	} else if (cameraType == "class PointGrey") {
-		m_settings.camera.roi.left = 128;
-		m_settings.camera.roi.top = 0;
-		m_settings.camera.roi.width_physical = 1024;
-		m_settings.camera.roi.height_physical = 1024;
+	// Deliberately no ROI override - always capture at full sensor, same as the overview
+	// brightfield path, rather than cropping to a smaller measurement region.
+	if (cameraType == "class uEyeCam" || cameraType == "class PointGrey") {
 		m_settings.camera.readout.triggerMode = L"Software";
 	}
 #ifdef _DEBUG
 	else if (cameraType == "class MockCamera") {
-		m_settings.camera.roi.left = 200;
-		m_settings.camera.roi.top = 150;
-		m_settings.camera.roi.width_physical = 600;
-		m_settings.camera.roi.height_physical = 700;
 		m_settings.camera.readout.triggerMode = L"Software";
 	}
 #endif
@@ -362,11 +347,18 @@ void Fluorescence::__acquire(std::unique_ptr <StorageWrapper>& storage, std::vec
 		// the datetime has to be set here, otherwise it would be determined by the time the queue is processed
 		std::string date = QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc())
 			.toString(Qt::ISODateWithMs).toStdString();
-		// Fluorescence mode has no grid/origin concept (single-point capture, not a scan) -
-		// the raw absolute stage position at capture time is both "the position the scanner
-		// would normally image at" and the actual position, so no separate stage-position
-		// attribute is needed (unlike the Brillouin BF overview, which moves away and back).
-		const auto targetPosition = m_scanControl ? m_scanControl->getPosition() : POINT3{ 0, 0, 0 };
+		// Fluorescence mode has no grid/origin concept of its own (single-point capture, not
+		// a scan) - the raw absolute stage position at capture time is both "the position the
+		// scanner would normally image at" and the actual position, so no separate stage-
+		// position attribute is needed (unlike the Brillouin BF overview, which moves away and
+		// back). Still converted through rawPositionToGridFrame() so this position lands in
+		// the same frame as the Brillouin measurement grid's own positions-x/y/z - in
+		// absolute-grid mode that frame is offset from raw absolute stage um by the grid's
+		// saved origin, which this position would otherwise not account for at all.
+		const auto rawPosition = m_scanControl ? m_scanControl->getPosition() : POINT3{ 0, 0, 0 };
+		const auto targetPosition = m_brillouinMode
+			? m_brillouinMode->rawPositionToGridFrame(rawPosition)
+			: rawPosition;
 		auto img = new FLUOIMAGE<T>(
 			imageNumber,
 			rank_data,

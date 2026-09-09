@@ -5,6 +5,8 @@
 #include "..\..\Devices\Cameras\Camera.h"
 #include "..\..\Devices\ScanControls\ScanControl.h"
 
+class Brillouin;
+
 enum class FLUORESCENCE_MODE {
 	NONE,
 	BLUE,
@@ -35,7 +37,14 @@ class Fluorescence : public AcquisitionMode {
 	Q_OBJECT
 
 public:
-	Fluorescence(QObject* parent, Acquisition* acquisition, Camera*& camera, ScanControl*& scanControl);
+	// `brillouinMode` is used only to convert a raw stage position into the same frame as
+	// the Brillouin measurement grid's own positions-x/y/z (see
+	// Brillouin::rawPositionToGridFrame(), used in __acquire()) - m_Brillouin is constructed
+	// once, eagerly, before any acquisition mode's own initialize() runs (see its in-class
+	// member initializer in BrillouinAcquisition.h), so this is never null in practice; the
+	// null-check in __acquire() is just defensive.
+	Fluorescence(QObject* parent, Acquisition* acquisition, Camera*& camera,
+		ScanControl*& scanControl, Brillouin* brillouinMode);
 	~Fluorescence();
 
 public slots:
@@ -59,6 +68,7 @@ private:
 	void __acquire(std::unique_ptr <StorageWrapper>& storage, std::vector<ChannelSettings*> channels);
 
 	Camera*& m_camera;
+	Brillouin* m_brillouinMode;
 
 	FLUORESCENCE_SETTINGS m_settings = FLUORESCENCE_SETTINGS{};
 	FLUORESCENCE_MODE m_currentPreviewChannel{ FLUORESCENCE_MODE::NONE };

@@ -3,6 +3,8 @@
 
 #include "../../lib/math/points.h"
 
+#include <string>
+
 struct ScaleCalibrationData {
 	POINT2 micrometerToPixX{ 0, 0 };	// [pix/micrometer]
 	POINT2 micrometerToPixY{ 0, 0 };	// [pix/micrometer]
@@ -11,6 +13,38 @@ struct ScaleCalibrationData {
 	POINT2 pixToMicrometerY{ 0, 0 };	// [micrometer/pix]
 
 	POINT2 originPix{ 0, 0 };			// [pix] origin on the camera image
+};
+
+// A per-objective calibration profile: the existing scale calibration (px<->um, unchanged),
+// plus the FOV-center translation needed to keep grids/ROIs/overview tiles pointing at the
+// same physical sample location after switching to this objective. Deliberately does NOT
+// include the laser-position marker (ScanControl::m_positionScanner / the "blue circle") -
+// that is sample/dish-dependent, not a property of the objective's optical path, and is
+// already re-set by the operator every session; folding it in here would be wrong.
+struct ObjectiveCalibrationData : public ScaleCalibrationData {
+	std::string objectiveName{ "" };
+	double magnification{ 0.0 };
+
+	// This objective's FOV center relative to a declared reference objective, measured by
+	// repeated switch-and-locate round trips (see the objective offset calibration
+	// procedure). hasFovOffset is false until a value has actually been measured - callers
+	// must treat that as "no correction available", never silently apply {0,0} as if it
+	// were a validated zero offset.
+	bool hasFovOffset{ false };
+	POINT2 fovOffsetUm{ 0, 0 };			// [um] this objective's FOV center minus the reference objective's
+	double fovOffsetSigmaUm{ 0.0 };		// [um] measured repeatability (std dev) of fovOffsetUm across calibration round trips
+	std::string referenceObjectiveName{ "" };
+	std::string calibrationDate{ "" };
+
+	// The nosepiece slot this file was written from (ScanControl::getActiveObjectiveSlot() at
+	// save time - see ScaleCalibration::writeCalibrationMetadata()). -1 if unset: either an
+	// older file saved before this field existed, or a session with no motorized objective
+	// changer at all. Only consumed by the startup calibrations-folder auto-load
+	// (BrillouinAcquisition::autoLoadObjectiveCalibrations()) to decide which slot a given
+	// file should be registered against without requiring the operator to be standing at that
+	// objective right now - the existing manual load()/apply() workflow ignores this field
+	// entirely and keeps registering against whichever slot is physically active.
+	int objectiveSlot{ -1 };
 };
 
 struct Matrix2{

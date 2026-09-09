@@ -98,6 +98,26 @@ public:
 struct ScaleCalibrationDataExtended : ScaleCalibrationData {
 	POINT3 positionStage{ 0, 0, 0 };	// [micrometer] position of the stage
 	POINT3 positionScanner{ 0, 0, 0 };	// [micrometer] position of the scanner
+
+	// Objective identity/FOV-offset context this specific run actually resolved its positions
+	// against (see Brillouin::resolvedGridOriginUm(), ScanControl::getActiveObjectiveCalibration()) -
+	// declared directly here rather than by inheriting from ObjectiveCalibrationData, so the
+	// existing { scaleCalibration, positionStage, positionScanner } aggregate-initialization
+	// call site (AcquisitionMode::writeScaleCalibration()) does not need to change shape.
+	// Populated by writeScaleCalibration() for every mode that calls it (Brillouin, the
+	// overview brightfield captured during a Brillouin run, standalone Fluorescence, and ODT) -
+	// previously only Brillouin's own measurement metadata carried this.
+	int objectiveSlot{ -1 };
+	std::string objectiveName;
+	double magnification{ 0.0 };
+	std::string referenceObjectiveName;
+	bool hasFovOffset{ false };
+	POINT2 fovOffsetUm{ 0, 0 };
+	double fovOffsetSigmaUm{ 0.0 };
+	// True if this run went ahead despite a missing FOV-center offset because the operator
+	// explicitly accepted the switch warning (see ScanControl::isMissingObjectiveOffsetAccepted()) -
+	// always false when hasFovOffset is true (nothing to accept).
+	bool missingOffsetAccepted{ false };
 };
 
 enum class ACQUISITION_MODE {

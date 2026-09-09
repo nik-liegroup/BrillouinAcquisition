@@ -253,6 +253,15 @@ void H5BM::setScaleCalibration(ACQUISITION_MODE mode, ScaleCalibrationDataExtend
 	writePoint(scaleCalibrationGroup, "positionStage", { scaleCalibration.positionStage.x, scaleCalibration.positionStage.y });
 	writePoint(scaleCalibrationGroup, "positionScanner", { scaleCalibration.positionScanner.x, scaleCalibration.positionScanner.y });
 
+	setAttribute("objectiveSlot", scaleCalibration.objectiveSlot, scaleCalibrationGroup);
+	setAttribute("objectiveName", scaleCalibration.objectiveName, scaleCalibrationGroup);
+	setAttribute("magnification", scaleCalibration.magnification, scaleCalibrationGroup);
+	setAttribute("referenceObjectiveName", scaleCalibration.referenceObjectiveName, scaleCalibrationGroup);
+	setAttribute("hasFovOffset", scaleCalibration.hasFovOffset ? 1 : 0, scaleCalibrationGroup);
+	writePoint(scaleCalibrationGroup, "fovOffset", scaleCalibration.fovOffsetUm);
+	setAttribute("fovOffsetSigma", scaleCalibration.fovOffsetSigmaUm, scaleCalibrationGroup);
+	setAttribute("missingOffsetAccepted", scaleCalibration.missingOffsetAccepted ? 1 : 0, scaleCalibrationGroup);
+
 	closeGroup(scaleCalibrationGroup);
 }
 
