@@ -74,6 +74,132 @@ bool isPointInPolygonUm(const POINT2& point, const std::vector<POINT2>& polygon)
 	}
 	return inside;
 }
+
+// Sutherland-Hodgman: clips `poly` (any simple polygon, closed implicitly) against the
+// axis-aligned rectangle [xmin,xmax] x [ymin,ymax] - a rectangle is always convex, so this is
+// exact regardless of whether `poly` itself is convex or concave. Used by
+// Brillouin::additionalBoundaryXYPoints() so a boundary candidate can never fall outside the
+// grid, even when the ROI polygon itself does.
+std::vector<POINT2> clipPolygonToRect(const std::vector<POINT2>& poly, double xmin, double xmax, double ymin, double ymax) {
+	auto clipEdge = [](
+		const std::vector<POINT2>& points,
+		const std::function<bool(const POINT2&)>& inside,
+		const std::function<POINT2(const POINT2&, const POINT2&)>& intersect
+	) {
+		std::vector<POINT2> out;
+		for (size_t i = 0; i < points.size(); i++) {
+			const auto& curr = points[i];
+			const auto& prev = points[(i + points.size() - 1) % points.size()];
+			const auto currIn = inside(curr);
+			const auto prevIn = inside(prev);
+			if (currIn) {
+				if (!prevIn) {
+					out.push_back(intersect(prev, curr));
+				}
+				out.push_back(curr);
+			} else if (prevIn) {
+				out.push_back(intersect(prev, curr));
+			}
+		}
+		return out;
+	};
+	auto pts = poly;
+	pts = clipEdge(pts,
+		[xmin](const POINT2& p) { return p.x >= xmin; },
+		[xmin](const POINT2& a, const POINT2& b) {
+			const auto t = (xmin - a.x) / (b.x - a.x);
+			return POINT2{ xmin, a.y + t * (b.y - a.y) };
+		});
+	pts = clipEdge(pts,
+		[xmax](const POINT2& p) { return p.x <= xmax; },
+		[xmax](const POINT2& a, const POINT2& b) {
+			const auto t = (xmax - a.x) / (b.x - a.x);
+			return POINT2{ xmax, a.y + t * (b.y - a.y) };
+		});
+	pts = clipEdge(pts,
+		[ymin](const POINT2& p) { return p.y >= ymin; },
+		[ymin](const POINT2& a, const POINT2& b) {
+			const auto t = (ymin - a.y) / (b.y - a.y);
+			return POINT2{ a.x + t * (b.x - a.x), ymin };
+		});
+	pts = clipEdge(pts,
+		[ymax](const POINT2& p) { return p.y <= ymax; },
+		[ymax](const POINT2& a, const POINT2& b) {
+			const auto t = (ymax - a.y) / (b.y - a.y);
+			return POINT2{ a.x + t * (b.x - a.x), ymax };
+		});
+	return pts;
+}
+
+// Walks `poly`'s perimeter (closed implicitly) at even arc-length spacing and returns
+// `count` points - the dense candidate pool additionalBoundaryXYPoints() runs its
+// farthest-point selection over.
+std::vector<POINT2> polygonPerimeterPoints(const std::vector<POINT2>& poly, int count) {
+	std::vector<POINT2> pts;
+	if (count <= 0 || poly.size() < 2) {
+		return pts;
+	}
+	const auto n = poly.size();
+	std::vector<double> edgeLen(n);
+	double total = 0.0;
+	for (size_t i = 0; i < n; i++) {
+		const auto& a = poly[i];
+		const auto& b = poly[(i + 1) % n];
+		edgeLen[i] = std::hypot(b.x - a.x, b.y - a.y);
+		total += edgeLen[i];
+	}
+	if (total <= 0.0) {
+		return pts;
+	}
+	pts.reserve(count);
+	for (int k = 0; k < count; k++) {
+		const auto target = total * k / count;
+		double acc = 0.0;
+		for (size_t i = 0; i < n; i++) {
+			const auto reach = acc + edgeLen[i];
+			if (reach >= target || i == n - 1) {
+				const auto& a = poly[i];
+				const auto& b = poly[(i + 1) % n];
+				const auto frac = edgeLen[i] > 0.0 ? std::clamp((target - acc) / edgeLen[i], 0.0, 1.0) : 0.0;
+				pts.push_back(POINT2{ a.x + frac * (b.x - a.x), a.y + frac * (b.y - a.y) });
+				break;
+			}
+			acc = reach;
+		}
+	}
+	return pts;
+}
+
+// Greedy farthest-point / max-min-distance selection: each pick maximizes the minimum
+// distance to every point already in `existingPoints` or already selected this call -
+// incremental by construction (the k-th pick never moves any earlier one, so raising
+// `maxCount` by one just appends a point rather than recomputing the whole set).
+std::vector<POINT2> farthestPointSequence(const std::vector<POINT2>& candidates, const std::vector<POINT2>& existingPoints, int maxCount) {
+	std::vector<POINT2> selected;
+	auto pool = candidates;
+	auto reference = existingPoints;
+	for (int k = 0; k < maxCount && !pool.empty(); k++) {
+		auto bestIdx = -1;
+		auto bestDist = -std::numeric_limits<double>::infinity();
+		for (size_t i = 0; i < pool.size(); i++) {
+			auto minD = std::numeric_limits<double>::infinity();
+			for (const auto& ref : reference) {
+				const auto d = std::hypot(pool[i].x - ref.x, pool[i].y - ref.y);
+				if (d < minD) {
+					minD = d;
+				}
+			}
+			if (minD > bestDist) {
+				bestDist = minD;
+				bestIdx = (int)i;
+			}
+		}
+		selected.push_back(pool[bestIdx]);
+		reference.push_back(pool[bestIdx]);
+		pool.erase(pool.begin() + bestIdx);
+	}
+	return selected;
+}
 }
 
 /*
@@ -771,11 +897,212 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 
 std::pair<std::vector<double>, std::vector<double>> Brillouin::coarseXYSamples(int bin) const {
 	const auto xyBin = std::max(1, bin);
-	const auto xStepsCoarse = std::max(1, (m_settings.xSteps + xyBin - 1) / xyBin);
-	const auto yStepsCoarse = std::max(1, (m_settings.ySteps + xyBin - 1) / xyBin);
-	auto xSamples = simplemath::linspace(m_settings.xMin, m_settings.xMax, xStepsCoarse);
-	auto ySamples = simplemath::linspace(m_settings.yMin, m_settings.yMax, yStepsCoarse);
+	// Every `bin`-th index of the real, dense grid - not an independent re-interpolation
+	// (see the header comment on this function for why that used to be able to place a
+	// coarse point where no real measurement point would be).
+	auto pickEveryNth = [xyBin](double lo, double hi, int steps) {
+		auto dense = simplemath::linspace(lo, hi, std::max(1, steps));
+		std::vector<double> coarse;
+		for (size_t i = 0; i < dense.size(); i += xyBin) {
+			coarse.push_back(dense[i]);
+		}
+		// Always include the last real point, even when it doesn't fall on a bin-multiple
+		// index, so the far edge of the grid is never silently dropped from the coarse set.
+		if (!dense.empty() && (coarse.empty() || coarse.back() != dense.back())) {
+			coarse.push_back(dense.back());
+		}
+		return coarse;
+	};
+	auto xSamples = pickEveryNth(m_settings.xMin, m_settings.xMax, m_settings.xSteps);
+	auto ySamples = pickEveryNth(m_settings.yMin, m_settings.yMax, m_settings.ySteps);
 	return { std::move(xSamples), std::move(ySamples) };
+}
+
+std::vector<POINT2> Brillouin::additionalBoundaryXYPoints(int count) const {
+	if (count <= 0) {
+		return {};
+	}
+
+	// The curve actually sampled: the ROI clipped to the grid rectangle, or the bare
+	// rectangle when no ROI is set - see clipPolygonToRect()'s comment for why this, rather
+	// than the ROI polygon itself, is what has to be walked.
+	const std::vector<POINT2> rect = {
+		{ m_settings.xMin, m_settings.yMin }, { m_settings.xMax, m_settings.yMin },
+		{ m_settings.xMax, m_settings.yMax }, { m_settings.xMin, m_settings.yMax }
+	};
+	auto boundary = rect;
+	if (m_settings.useRoiMask && m_settings.roiPolygonUm.size() >= 3) {
+		auto clipped = clipPolygonToRect(m_settings.roiPolygonUm, m_settings.xMin, m_settings.xMax, m_settings.yMin, m_settings.yMax);
+		if (clipped.size() >= 3) {
+			boundary = std::move(clipped);
+		}
+	}
+
+	// The uniform coarse grid's own kept anchors (plan frame, same as xSamples/ySamples) -
+	// farthest-point selection is evaluated against these, so a boundary point never lands
+	// right next to interior coverage that's already there.
+	const auto [xSamples, ySamples] = coarseXYSamples(m_settings.preScanXYBin);
+	std::vector<POINT2> uniformAnchors;
+	uniformAnchors.reserve(xSamples.size() * ySamples.size());
+	for (const auto y : ySamples) {
+		for (const auto x : xSamples) {
+			if (m_settings.useRoiMask && !isPointInPolygonUm(POINT2{ x, y }, m_settings.roiPolygonUm)) {
+				continue;
+			}
+			uniformAnchors.push_back(POINT2{ x, y });
+		}
+	}
+
+	// Fine candidate pool along the (clipped) outline - enough resolution for the
+	// farthest-point walk to actually spread `count` points out, capped so a large request
+	// doesn't blow up the (candidates x reference-points) search below.
+	const auto candidateCount = std::clamp(count * 12, 60, 400);
+	const auto candidates = polygonPerimeterPoints(boundary, candidateCount);
+	const auto idealPoints = farthestPointSequence(candidates, uniformAnchors, count);
+
+	// Snap each ideal point to its nearest real grid index, independently per axis - same
+	// "always land on a real measurement point" rule coarseXYSamples() follows.
+	const auto denseX = simplemath::linspace(m_settings.xMin, m_settings.xMax, std::max(1, m_settings.xSteps));
+	const auto denseY = simplemath::linspace(m_settings.yMin, m_settings.yMax, std::max(1, m_settings.ySteps));
+	auto nearestValue = [](double v, const std::vector<double>& values) {
+		auto best = values.front();
+		auto bestD = std::numeric_limits<double>::infinity();
+		for (const auto value : values) {
+			const auto d = std::abs(value - v);
+			if (d < bestD) {
+				bestD = d;
+				best = value;
+			}
+		}
+		return best;
+	};
+
+	// Candidates that snap onto an index already used - by the uniform grid, or by an
+	// earlier boundary pick this same call - are skipped rather than duplicated, which is
+	// why the result can have fewer than `count` entries.
+	std::set<std::pair<double, double>> usedIndices;
+	for (const auto& anchor : uniformAnchors) {
+		usedIndices.insert({ anchor.x, anchor.y });
+	}
+	std::vector<POINT2> result;
+	for (const auto& ideal : idealPoints) {
+		const POINT2 snapped{ nearestValue(ideal.x, denseX), nearestValue(ideal.y, denseY) };
+		const auto key = std::make_pair(snapped.x, snapped.y);
+		if (usedIndices.count(key)) {
+			continue;
+		}
+		usedIndices.insert(key);
+		result.push_back(snapped);
+	}
+	return result;
+}
+
+std::optional<double> Brillouin::measureBoundarySurfaceZ(
+	POINT2 xyPlan, double seedZRel, double zTravel, double zStep, double referenceThreshold
+) {
+	// Mirrors searchColumn()'s algorithm (local to runSurfacePreScan()) exactly - seed,
+	// rewind if already past the interface, forward search, verification window with a
+	// trend check - just parameterized by a raw (x, y) instead of a coarse-grid (xi, yi)
+	// index, since boundary points don't have a slot in that grid to begin with. Kept as its
+	// own copy rather than refactoring searchColumn() itself to share it, to avoid touching
+	// that already-tuned logic for the sake of a point kind it wasn't written to support.
+	auto frame = std::vector<std::byte>(m_settings.camera.roi.bytesPerFrame);
+	auto measureHere = [&](double zRel, int frameAverage) -> std::optional<double> {
+		if (m_abort) {
+			return std::nullopt;
+		}
+		const auto gridOrigin = resolvedGridOriginUm();
+		const auto xyPosition = m_settings.gridCoordinatesAbsolute
+			? POINT2{ xyPlan.x + gridOrigin.x, xyPlan.y + gridOrigin.y }
+			: POINT2{ m_startPosition.x + xyPlan.x, m_startPosition.y + xyPlan.y };
+		const auto zOrigin = m_settings.gridCoordinatesAbsolute
+			? gridOrigin.z
+			: m_startPosition.z;
+		const auto target = POINT3{ xyPosition.x, xyPosition.y, zOrigin + zRel };
+		approachGridPosition(target);
+		const auto frames = std::max(1, frameAverage);
+		double sum = 0.0;
+		for (int f = 0; f < frames; f++) {
+			if (m_abort) {
+				return std::nullopt;
+			}
+			m_andor->getImageForAcquisition(frame.data());
+			sum += estimateFrameMetric(frame);
+		}
+		return sum / frames;
+	};
+
+	auto zRel = std::clamp(seedZRel, 0.0, zTravel);
+	auto metric = measureHere(zRel, 1);
+	if (!metric) {
+		return std::nullopt;
+	}
+
+	auto rewound = 0.0;
+	while (std::isfinite(referenceThreshold) && *metric <= referenceThreshold) {
+		zRel -= zStep;
+		rewound += zStep;
+		if (rewound > m_settings.surfaceMaxRewindUm || zRel < 0.0) {
+			return std::nullopt;
+		}
+		metric = measureHere(zRel, 1);
+		if (!metric) {
+			return std::nullopt;
+		}
+	}
+
+	while (zRel <= zTravel) {
+		if (*metric <= referenceThreshold) {
+			const auto candidateZ = zRel;
+			std::vector<double> window;
+			const auto candidateAvg = measureHere(candidateZ, m_settings.surfaceVerificationFrameAverage);
+			if (!candidateAvg) {
+				return std::nullopt;
+			}
+			window.push_back(*candidateAvg);
+
+			auto verified = true;
+			for (int k = 1; k <= std::max(0, m_settings.surfaceVerificationSteps); k++) {
+				const auto zk = candidateZ + k * zStep;
+				if (zk > zTravel) {
+					verified = false;
+					break;
+				}
+				const auto mk = measureHere(zk, m_settings.surfaceVerificationFrameAverage);
+				if (!mk) {
+					return std::nullopt;
+				}
+				window.push_back(*mk);
+				if (*mk > referenceThreshold) {
+					verified = false;
+					break;
+				}
+			}
+
+			if (verified && window.size() == (size_t)m_settings.surfaceVerificationSteps + 1) {
+				const auto half = (window.size() + 1) / 2;
+				const auto firstMean = std::accumulate(window.begin(), window.begin() + half, 0.0) / half;
+				const auto secondCount = window.size() - half;
+				const auto secondMean = secondCount > 0
+					? std::accumulate(window.begin() + half, window.end(), 0.0) / secondCount
+					: firstMean;
+				if (secondMean <= firstMean * (1.0 + std::max(0.0, m_settings.surfaceVerificationToleranceFraction))) {
+					return candidateZ;
+				}
+			}
+			return std::nullopt;
+		}
+		zRel += zStep;
+		if (zRel > zTravel) {
+			break;
+		}
+		metric = measureHere(zRel, 1);
+		if (!metric) {
+			return std::nullopt;
+		}
+	}
+
+	return std::nullopt;
 }
 
 POINT3 Brillouin::planPositionToGridFrame(const POINT3& planPosition) const {
@@ -822,6 +1149,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	m_surfacePreScanFoundMask.clear();
 	m_surfacePreScanZUm.clear();
 	m_surfacePreScanMetric.clear();
+	m_surfaceBoundaryPointsUm.clear();
 	m_surfaceReferenceThreshold = std::numeric_limits<double>::quiet_NaN();
 
 	if (!m_scanControl || !m_andor) {
@@ -1254,6 +1582,52 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		}
 	}
 
+	// Additional boundary anchor points (opt-in, m_settings.additionalBoundaryPoints) - not
+	// part of the rectangular coarse grid at all, so they get their own small measurement
+	// pass here rather than a slot in zSurface[][], seeded from the rectangular grid's best
+	// available data (genuine or gap-filled) and from each other, using the exact same
+	// seed/rewind/verify algorithm searchColumn() uses (see measureBoundarySurfaceZ()).
+	// Folded into the dense-grid interpolation below as extra weighted neighbors, alongside -
+	// not instead of - the untouched rectangular grid above.
+	const auto boundaryXY = additionalBoundaryXYPoints(m_settings.additionalBoundaryPoints);
+	if (!boundaryXY.empty()) {
+		std::vector<POINT3> referencePoints;
+		for (gsl::index yc{ 0 }; yc < (gsl::index)ySamples.size(); yc++) {
+			for (gsl::index xc{ 0 }; xc < (gsl::index)xSamples.size(); xc++) {
+				if (zSurfaceGenuine[yc][xc] || zSurfaceInterpolatedCoarse[yc][xc]) {
+					referencePoints.push_back(POINT3{ xSamples[xc], ySamples[yc], zSurface[yc][xc] });
+				}
+			}
+		}
+		int boundaryDone = 0;
+		for (const auto& xy : boundaryXY) {
+			if (m_abort) {
+				return {};
+			}
+			// Nearest already-known point (rectangular grid, or an earlier boundary point
+			// this same loop already found) seeds the search - same "locally coplanar"
+			// reasoning findSeedZRel() uses for the rectangular grid.
+			auto seedZ = 0.0;
+			auto bestDist2 = std::numeric_limits<double>::infinity();
+			for (const auto& ref : referencePoints) {
+				const auto dx = ref.x - xy.x;
+				const auto dy = ref.y - xy.y;
+				const auto d2 = dx * dx + dy * dy;
+				if (d2 < bestDist2) {
+					bestDist2 = d2;
+					seedZ = ref.z;
+				}
+			}
+			boundaryDone++;
+			emitSurfaceProgress(QString("Boundary point %1/%2").arg(boundaryDone).arg((int)boundaryXY.size()));
+			const auto found = measureBoundarySurfaceZ(xy, seedZ, zTravel, zStep, referenceThreshold);
+			if (found) {
+				m_surfaceBoundaryPointsUm.push_back(POINT3{ xy.x, xy.y, *found });
+				referencePoints.push_back(POINT3{ xy.x, xy.y, *found });
+			}
+		}
+	}
+
 	// Bilinear interpolation on coarse XY map; nearest sample on boundaries. Both
 	// genuinely-found and gap-filled coarse cells count as data here.
 	const auto xDense = simplemath::linspace(m_settings.xMin, m_settings.xMax, m_settings.xSteps);
@@ -1320,6 +1694,25 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 				}
 				if (exactMatch) {
 					break;
+				}
+			}
+			// Additional boundary points (if any - see measureBoundarySurfaceZ() above)
+			// contribute the same way, as flat extra neighbors rather than (xc, yc) grid
+			// cells - always treated as "genuine" since they have no gap-fill concept of
+			// their own.
+			if (!exactMatch) {
+				for (const auto& boundaryPoint : m_surfaceBoundaryPointsUm) {
+					const auto dx = x - boundaryPoint.x;
+					const auto dy = y - boundaryPoint.y;
+					const auto d2 = dx * dx + dy * dy;
+					if (d2 <= 1e-12) {
+						exactMatch = true;
+						exactZ = boundaryPoint.z;
+						break;
+					}
+					const auto w = 1.0 / d2;
+					weightedSum += w * boundaryPoint.z;
+					weightNorm += w;
 				}
 			}
 			if (!exactMatch && weightNorm <= 0.0) {
@@ -1734,7 +2127,16 @@ std::vector<POINT2> Brillouin::overviewSampledGridXY() const {
 }
 
 std::vector<POINT2> Brillouin::surfacePreScanGridXY() const {
-	return coarseGridXYPoints(m_settings.preScanXYBin);
+	// Must match runSurfacePreScan()'s own point set exactly - this is what the GUI's live
+	// "proposed" preview draws, and a mismatch here is exactly the kind of preview/reality
+	// drift that once made the ROI polygon overlay land nowhere near its own
+	// roi-scan-plan-mask (see planPositionToGridFrame()'s comment).
+	auto points = coarseGridXYPoints(m_settings.preScanXYBin);
+	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : POINT3{};
+	for (const auto& xy : additionalBoundaryXYPoints(m_settings.additionalBoundaryPoints)) {
+		points.push_back(POINT2{ xy.x + origin.x, xy.y + origin.y });
+	}
+	return points;
 }
 
 std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUm() const {
@@ -2237,6 +2639,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	storage->setPositions("surface-verification-frame-average-used", std::vector<double>{ (double)m_settings.surfaceVerificationFrameAverage }, 1, originDims);
 	storage->setPositions("surface-verification-tolerance-fraction-used", std::vector<double>{ m_settings.surfaceVerificationToleranceFraction }, 1, originDims);
 	storage->setPositions("surface-pre-scan-xy-bin-used", std::vector<double>{ (double)m_settings.preScanXYBin }, 1, originDims);
+	storage->setPositions("surface-pre-scan-additional-boundary-points-used", std::vector<double>{ (double)m_settings.additionalBoundaryPoints }, 1, originDims);
 	storage->setPositions("surface-pre-scan-z-step-um-used", std::vector<double>{ m_settings.preScanZStepUm }, 1, originDims);
 	storage->setPositions("surface-pre-scan-z-travel-range-um-used", std::vector<double>{ m_settings.preScanZTravelRangeUm }, 1, originDims);
 	storage->setPositions("surface-metric-threshold-used", std::vector<double>{ m_settings.surfaceMetricThreshold }, 1, originDims);
@@ -2321,6 +2724,29 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		// compared against surface-reference-threshold-computed.
 		storage->setPositions(
 			"surface-prescan-metric", m_surfacePreScanMetric, 2, preScanGridDims);
+	}
+
+	// Additional boundary points that found a surface (additionalBoundaryPoints - see
+	// additionalBoundaryXYPoints()/measureBoundarySurfaceZ()) - a flat list, not a grid, since
+	// unlike the rectangular coarse scan above there is no fixed slot for a point that found
+	// nothing. Skipped entirely (not even an empty dataset) if none were requested or none of
+	// the requested ones found a surface.
+	if (!m_surfaceBoundaryPointsUm.empty()) {
+		const hsize_t boundaryDims[1] = { (hsize_t)m_surfaceBoundaryPointsUm.size() };
+		std::vector<double> boundaryX(m_surfaceBoundaryPointsUm.size());
+		std::vector<double> boundaryY(m_surfaceBoundaryPointsUm.size());
+		std::vector<double> boundaryZ(m_surfaceBoundaryPointsUm.size());
+		for (size_t i = 0; i < m_surfaceBoundaryPointsUm.size(); i++) {
+			const auto stored = planPositionToGridFrame(
+				POINT3{ m_surfaceBoundaryPointsUm[i].x, m_surfaceBoundaryPointsUm[i].y, 0 });
+			boundaryX[i] = stored.x;
+			boundaryY[i] = stored.y;
+			// z relative to this column's own zOrigin - same convention as surface-prescan-z-um.
+			boundaryZ[i] = m_surfaceBoundaryPointsUm[i].z;
+		}
+		storage->setPositions("surface-prescan-boundary-x-um", boundaryX, 1, boundaryDims);
+		storage->setPositions("surface-prescan-boundary-y-um", boundaryY, 1, boundaryDims);
+		storage->setPositions("surface-prescan-boundary-z-um", boundaryZ, 1, boundaryDims);
 	}
 
 	// Grid extent as configured (redundant with the "x"/"y"/"z" position arrays above, but

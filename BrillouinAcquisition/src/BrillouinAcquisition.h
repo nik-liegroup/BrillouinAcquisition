@@ -144,6 +144,7 @@ private:
 	QPushButton* m_clearRoiButton{ nullptr };
 	QCheckBox* m_useSurfaceFollowCheckbox{ nullptr };
 	QSpinBox* m_preScanXYBinSpinBox{ nullptr };
+	QSpinBox* m_additionalBoundaryPointsSpinBox{ nullptr };
 	QDoubleSpinBox* m_preScanZStepSpinBox{ nullptr };
 	QDoubleSpinBox* m_preScanZTravelSpinBox{ nullptr };
 	QDoubleSpinBox* m_surfaceDropSpinBox{ nullptr };

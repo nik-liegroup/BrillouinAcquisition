@@ -634,6 +634,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_clearRoiButton = ui->clearRoiButton;
 			m_useSurfaceFollowCheckbox = ui->useSurfaceFollowCheckbox;
 			m_preScanXYBinSpinBox = ui->preScanXYBinSpinBox;
+			m_additionalBoundaryPointsSpinBox = ui->additionalBoundaryPointsSpinBox;
 			m_preScanZStepSpinBox = ui->preScanZStepSpinBox;
 			m_preScanZTravelSpinBox = ui->preScanZTravelSpinBox;
 			m_surfaceDropSpinBox = ui->surfaceDropSpinBox;
@@ -703,6 +704,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			connect(m_useSurfaceFollowCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
 				m_Brillouin->settings.useSurfaceFollow = enabled;
 				if (m_preScanXYBinSpinBox) m_preScanXYBinSpinBox->setEnabled(enabled);
+				if (m_additionalBoundaryPointsSpinBox) m_additionalBoundaryPointsSpinBox->setEnabled(enabled);
 				if (m_preScanZStepSpinBox) m_preScanZStepSpinBox->setEnabled(enabled);
 				if (m_preScanZTravelSpinBox) m_preScanZTravelSpinBox->setEnabled(enabled);
 				if (m_surfaceDropSpinBox) m_surfaceDropSpinBox->setEnabled(enabled);
@@ -717,6 +719,10 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			});
 			connect(m_preScanXYBinSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
 				m_Brillouin->settings.preScanXYBin = std::max(1, value);
+				update_AOI_preview();
+			});
+			connect(m_additionalBoundaryPointsSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+				m_Brillouin->settings.additionalBoundaryPoints = std::max(0, value);
 				update_AOI_preview();
 			});
 			connect(m_preScanZStepSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
@@ -5088,6 +5094,11 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_preScanXYBinSpinBox->setValue(std::max(1, m_Brillouin->settings.preScanXYBin));
 		m_preScanXYBinSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
 	}
+	if (m_additionalBoundaryPointsSpinBox) {
+		const QSignalBlocker blocker(*m_additionalBoundaryPointsSpinBox);
+		m_additionalBoundaryPointsSpinBox->setValue(std::max(0, m_Brillouin->settings.additionalBoundaryPoints));
+		m_additionalBoundaryPointsSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
+	}
 	if (m_preScanZStepSpinBox) {
 		const QSignalBlocker blocker(*m_preScanZStepSpinBox);
 		m_preScanZStepSpinBox->setValue(std::max(0.01, m_Brillouin->settings.preScanZStepUm));
@@ -5372,9 +5383,10 @@ void BrillouinAcquisition::update_AOI_preview() {
 				squareY.push_back(squarePositionsPixel[i].y);
 			}
 		} else if (showSurfaceSquares && !squarePositionsPixel.empty() && m_scanControl) {
-			// Reuse the exact same µm-space coarse grid runSurfacePreScan() will actually
-			// measure (Brillouin::surfacePreScanGridXY(), built from preScanXYBin the same
-			// way the pre-scan itself does), instead of independently reconstructing an
+			// Reuse the exact same µm-space point set runSurfacePreScan() will actually
+			// measure (Brillouin::surfacePreScanGridXY(): the uniform coarse grid plus any
+			// additional boundary points, built the same way the pre-scan itself builds
+			// them), instead of independently reconstructing an
 			// approximation from the dense grid's pixel-space bounding box - that
 			// reconstruction disagreed with where the pre-scan really goes whenever ROI
 			// masking shrank the dense pixel bounding box (or the calibration wasn't a
@@ -6173,6 +6185,7 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-surface-z-offset-um", m_Brillouin->settings.surfaceZOffsetUm);
 	settings.setValue("brillouin-surface-follow-half-range-um", m_Brillouin->settings.surfaceFollowHalfRangeUm);
 	settings.setValue("brillouin-pre-scan-xy-bin", m_Brillouin->settings.preScanXYBin);
+	settings.setValue("brillouin-additional-boundary-points", m_Brillouin->settings.additionalBoundaryPoints);
 	settings.setValue("brillouin-pre-scan-z-step-um", m_Brillouin->settings.preScanZStepUm);
 	settings.setValue("brillouin-pre-scan-z-travel-um", m_Brillouin->settings.preScanZTravelRangeUm);
 	settings.setValue("brillouin-pre-scan-x-steps", m_Brillouin->settings.preScanXSteps);
@@ -6328,6 +6341,7 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.surfaceZOffsetUm = settings.value("brillouin-surface-z-offset-um", m_Brillouin->settings.surfaceZOffsetUm).toDouble();
 	m_Brillouin->settings.surfaceFollowHalfRangeUm = settings.value("brillouin-surface-follow-half-range-um", m_Brillouin->settings.surfaceFollowHalfRangeUm).toDouble();
 	m_Brillouin->settings.preScanXYBin = settings.value("brillouin-pre-scan-xy-bin", m_Brillouin->settings.preScanXYBin).toInt();
+	m_Brillouin->settings.additionalBoundaryPoints = settings.value("brillouin-additional-boundary-points", m_Brillouin->settings.additionalBoundaryPoints).toInt();
 	m_Brillouin->settings.preScanZStepUm = settings.value("brillouin-pre-scan-z-step-um", m_Brillouin->settings.preScanZStepUm).toDouble();
 	m_Brillouin->settings.preScanZTravelRangeUm = settings.value("brillouin-pre-scan-z-travel-um", m_Brillouin->settings.preScanZTravelRangeUm).toDouble();
 	m_Brillouin->settings.preScanXSteps = settings.value("brillouin-pre-scan-x-steps", m_Brillouin->settings.preScanXSteps).toInt();
