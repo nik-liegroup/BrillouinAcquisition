@@ -3064,6 +3064,29 @@ QTabBar::tab:!selected {
                       </property>
                      </widget>
                     </item>
+                    <item row="12" column="0">
+                     <widget class="QLabel" name="additionalBoundaryPointsLabel">
+                      <property name="text">
+                       <string>Boundary points</string>
+                      </property>
+                      <property name="toolTip">
+                       <string>Extra anchor points placed directly on the active outline (the ROI clipped to the grid rectangle, or the grid rectangle itself with no ROI set) - on top of, not instead of, the uniform "Grid bin" grid above. Chosen by farthest-point selection, so each one lands where coverage is thinnest along the outline. 0 = off.</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="12" column="1">
+                     <widget class="QSpinBox" name="additionalBoundaryPointsSpinBox">
+                      <property name="toolTip">
+                       <string>Extra anchor points placed directly on the active outline (the ROI clipped to the grid rectangle, or the grid rectangle itself with no ROI set) - on top of, not instead of, the uniform "Grid bin" grid above. Chosen by farthest-point selection, so each one lands where coverage is thinnest along the outline. 0 = off.</string>
+                      </property>
+                      <property name="minimum">
+                       <number>0</number>
+                      </property>
+                      <property name="maximum">
+                       <number>200</number>
+                      </property>
+                     </widget>
+                    </item>
                    </layout>
                   </widget>
                  </widget>

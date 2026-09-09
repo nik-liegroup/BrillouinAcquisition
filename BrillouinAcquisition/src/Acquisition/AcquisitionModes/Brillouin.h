@@ -6,6 +6,7 @@
 #include "../../helper/thread.h"
 #include "src/lib/buffer_circular.h"
 #include <limits>
+#include <optional>
 #include <set>
 #include <utility>
 
@@ -73,6 +74,7 @@ struct BRILLOUIN_SETTINGS {
 			surfaceVerificationFrameAverage = settings.surfaceVerificationFrameAverage;
 			surfaceVerificationToleranceFraction = settings.surfaceVerificationToleranceFraction;
 			preScanXYBin = settings.preScanXYBin;
+			additionalBoundaryPoints = settings.additionalBoundaryPoints;
 			preScanZStepUm = settings.preScanZStepUm;
 			preScanZTravelRangeUm = settings.preScanZTravelRangeUm;
 			preScanXSteps = settings.preScanXSteps;
@@ -144,6 +146,13 @@ struct BRILLOUIN_SETTINGS {
 		int surfaceVerificationFrameAverage{ 1 };	// M: frames averaged per point during verification (1 = off)
 		double surfaceVerificationToleranceFraction{ 0.05 }; // allowed relative rebound in the verification window
 		int preScanXYBin{ 3 };
+		// Extra anchor points placed directly on the active outline (the ROI clipped to the
+		// grid rectangle, or the grid rectangle itself if no ROI is set) - on top of, not
+		// instead of, the uniform coarse grid above. 0 = off (default). Chosen by greedy
+		// farthest-point selection against the uniform grid's own kept anchors (see
+		// Brillouin::additionalBoundaryXYPoints()), so each one lands where coverage is
+		// thinnest along the outline rather than at a fixed stride.
+		int additionalBoundaryPoints{ 0 };
 		double preScanZStepUm{ 3.0 };
 		double preScanZTravelRangeUm{ 30.0 };
 		int preScanXSteps{ 8 };
@@ -460,11 +469,44 @@ private:
 		int failedColumns{ 0 };
 	};
 	SurfaceScanResult runSurfacePreScan();
-	// Coarse xSteps/ySteps reduced by `bin`, evenly spaced over [xMin,xMax]/[yMin,yMax] -
-	// the same logic runSurfacePreScan() uses for its coarse pre-scan columns, shared here
-	// so the "sampled grid points" overview coverage mode reuses it verbatim rather than
-	// re-implementing a different notion of "every Nth point".
+	// Coarse xSteps/ySteps reduced by `bin` - indices into the real, dense
+	// linspace(xMin,xMax,xSteps)/linspace(yMin,yMax,ySteps) grid, evenly strided (every
+	// `bin`-th real grid point, always including the last one). Deliberately snaps to real
+	// grid indices rather than independently re-interpolating a new linspace(xMin,xMax,
+	// xStepsCoarse) - the latter (this function's previous implementation) can only land
+	// exactly on a real measurement point when `bin` happens to evenly divide (xSteps-1),
+	// otherwise every coarse/anchor point sits between real points, or even reads as
+	// "outside the ROI" when the nearest real point would actually be inside it. Shared by
+	// the surface pre-scan's coarse columns and the "sampled grid points" overview coverage
+	// mode (via coarseGridXYPoints()).
 	std::pair<std::vector<double>, std::vector<double>> coarseXYSamples(int bin) const;
+	// Up to `count` extra anchor points (m_settings.additionalBoundaryPoints), on top of the
+	// uniform coarse grid coarseXYSamples() already produces. The candidate curve is the ROI
+	// polygon clipped to the grid rectangle [xMin,xMax]x[yMin,yMax] (Sutherland-Hodgman - a
+	// rectangle is always convex, so this is exact), or the bare rectangle when no ROI is
+	// set - either way every returned point is guaranteed on or inside both the grid and the
+	// ROI, never outside. Candidates are picked by greedy farthest-point selection (each new
+	// point maximizes its minimum distance to every uniform anchor already kept - ROI-
+	// filtered, same as coarseGridXYPoints() - and to every boundary point already chosen),
+	// then each is snapped independently to its nearest real x index and nearest real y
+	// index, same "always land on a real measurement point" rule coarseXYSamples() follows.
+	// The result can have fewer than `count` entries: candidates that snap to an index
+	// already used by the uniform grid or an earlier boundary point are skipped rather than
+	// duplicated. Used by both runSurfacePreScan() (the actual measurement) and
+	// surfacePreScanGridXY() (the GUI's live preview), so the two can never drift apart -
+	// see planPositionToGridFrame()'s comment for why that matters here specifically.
+	std::vector<POINT2> additionalBoundaryXYPoints(int count) const;
+	// Same seed-then-rewind-then-forward-search-with-verification algorithm searchColumn()
+	// (local to runSurfacePreScan()) uses, generalized to an arbitrary (x, y) plan-frame
+	// position instead of a coarse-grid (xi, yi) index - used for the additional boundary
+	// points, which don't have a slot in the rectangular coarse grid to begin with.
+	// seedZRel/zTravel/zStep/referenceThreshold are the exact same values runSurfacePreScan()
+	// computed for its own rectangular pass. Returns the found z (relative to the grid's z
+	// origin, same convention as zSurface[][] there), or std::nullopt if aborted or no
+	// surface found within range.
+	std::optional<double> measureBoundarySurfaceZ(
+		POINT2 xyPlan, double seedZRel, double zTravel, double zStep, double referenceThreshold
+	);
 	// Converts a "grid-plan" position - the pre-origin frame directionsX/Y/Z,
 	// m_settings.roiPolygonUm and coarseXYSamples() are all expressed in (see
 	// isPointInPolygonUm() callers, which test roiPolygonUm directly against that frame) -
@@ -548,6 +590,15 @@ private:
 	std::vector<double> m_surfacePreScanFoundMask;
 	std::vector<double> m_surfacePreScanZUm;
 	std::vector<double> m_surfacePreScanMetric;
+	// Populated at the end of runSurfacePreScan() - the additional boundary points that
+	// actually found a surface (see additionalBoundaryXYPoints()/measureBoundarySurfaceZ()),
+	// one entry per point: x, y in the same plan-frame convention as m_surfacePreScanXUm/YUm,
+	// z relative to this scan's own zOrigin (same convention as m_surfacePreScanZUm). A
+	// requested point that found nothing, or wasn't reached because the scan aborted, simply
+	// has no entry here - unlike the rectangular coarse grid, there is no fixed slot for it
+	// to occupy "empty". Empty if additionalBoundaryPoints was 0 or none of them found a
+	// surface.
+	std::vector<POINT3> m_surfaceBoundaryPointsUm;
 	// The medium-reference-derived drop threshold actually used by runSurfacePreScan() -
 	// (1 - surfaceDropFraction) * mediumReferenceValue, or NaN if mediumReferenceValue was
 	// ~0 (see runSurfacePreScan()). Saved directly (see runMeasurementPhase()) so a reader
