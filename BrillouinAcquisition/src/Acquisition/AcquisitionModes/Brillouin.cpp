@@ -729,6 +729,11 @@ void Brillouin::updatePositions() {
 	}
 }
 
+void Brillouin::adjustStartPositionForObjectiveSwitch(POINT2 deltaUm) {
+	m_startPosition.x += deltaUm.x;
+	m_startPosition.y += deltaUm.y;
+}
+
 bool Brillouin::remapProxyRoi(
 	int roiLeft, int roiTop, int roiWidth, int roiHeight,
 	const PROXY_ROI_FRAME& from, const PROXY_ROI_FRAME& to,

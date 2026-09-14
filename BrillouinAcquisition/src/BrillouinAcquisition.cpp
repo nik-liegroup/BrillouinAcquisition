@@ -5300,14 +5300,21 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 		QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
 	}
 
-	// Physical stage move: relative-mode grids anchor to wherever the stage physically is
-	// when a measurement starts (see Brillouin::resolvedGridOriginUm()'s doc comment and
-	// m_startPosition) - nothing recomputes that for them the way updatePositions() just did
-	// for absolute mode above, so without an actual stage move here, a relative-mode grid
-	// would silently re-anchor to the wrong physical location after this switch. Absolute
-	// mode does NOT need this - its eventual measurement target is already correct from
-	// updatePositions() alone; moving the stage there too would only be a cosmetic head start
-	// on what Start would do anyway, so it's skipped to minimize unattended motion.
+	// Relative-mode grids anchor to Brillouin::m_startPosition (a stage position captured once,
+	// at "Start" - see its doc comment), not recomputed fresh on every read the way absolute
+	// mode's resolvedGridOriginUm() is. Without correcting that anchor here, an objective switch
+	// would leave any not-yet-visited grid point targeted at the OLD objective's FOV center.
+	//
+	// This is a pure in-memory shift of that anchor (Brillouin::adjustStartPositionForObjectiveSwitch()),
+	// NOT a physical stage move - a previous version of this code moved the actual stage by delta
+	// here, which was wrong: it yanked the sample out from under the live view/blue dot on every
+	// switch (unrequested motion the operator never asked for), and - since m_startPosition is
+	// only ever captured fresh at "Start" - had no lasting effect anyway once a real target
+	// (m_startPosition + gridOffset, from the value captured BEFORE this switch) was next
+	// commanded, silently undoing the nudge. Shifting the bookkeeping anchor instead means the
+	// blue dot stays exactly where the operator left it, and it's the (not-yet-visited) grid that
+	// moves under it - matching how absolute mode already behaves, and how the stage only ever
+	// actually moves once a real measurement point is visited.
 	// Only fires when both the objective being left and the one just switched to have a
 	// calibrated offset - otherwise there is no valid delta to apply.
 	if (m_Brillouin && !m_Brillouin->settings.gridCoordinatesAbsolute && hasFovOffset && m_scanControl) {
@@ -5316,18 +5323,14 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 			auto deltaX = offsetUm.x - previousCalibration.fovOffsetUm.x;
 			auto deltaY = offsetUm.y - previousCalibration.fovOffsetUm.y;
 			qInfo(logInfo()) << "Objective switch" << previousSlot << "->" << newSlot
-				<< ": relative grid mode, moving stage by (" << deltaX << "," << deltaY
-				<< ") um to preserve FOV-offset alignment.";
+				<< ": relative grid mode, shifting grid origin by (" << deltaX << "," << deltaY
+				<< ") um to preserve FOV-offset alignment (no stage motion).";
+			auto deltaUm = POINT2{ deltaX, deltaY };
 			QMetaObject::invokeMethod(
-				m_scanControl,
-				[scanControl = m_scanControl, deltaX, deltaY]() {
-					// getPosition() (stage+scanner combined) is the frame setPositionCompensated()
-					// expects - see ScanControl::setPosition(POINT2)'s "subtract the scanner
-					// position" comment for why a plain stage-only position would be wrong here.
-					auto position = scanControl->getPosition();
-					scanControl->setPositionCompensated(POINT3{ position.x + deltaX, position.y + deltaY, position.z });
-				},
-				Qt::AutoConnection
+				m_Brillouin,
+				"adjustStartPositionForObjectiveSwitch",
+				Qt::AutoConnection,
+				Q_ARG(POINT2, deltaUm)
 			);
 		}
 	}
