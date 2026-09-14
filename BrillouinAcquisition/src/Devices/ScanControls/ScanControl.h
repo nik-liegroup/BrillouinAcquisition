@@ -235,6 +235,15 @@ public slots:
 	// not mean what the file thinks it means.
 	bool isValidObjectiveSlot(int slot) const;
 
+	// Overwrites the "Objective" device element's display names (DeviceElement::optionNames,
+	// what the beampath buttons show - see BrillouinAcquisition::initBeampathButtons()) at
+	// runtime. optionNames is otherwise only ever set once, at backend-construction time (see
+	// DeviceElement's checkNames()-driven constructors above). No-op if this backend has no
+	// element named "Objective" (e.g. plain NIDAQ) or if names.size() does not match that
+	// element's maxOptions - a size mismatch would silently mislabel/skip slots, so this
+	// refuses rather than guesses.
+	void setObjectiveOptionNames(const std::vector<std::string>& names);
+
 	// Called by the GUI once the operator has explicitly accepted running an objective
 	// switch with no calibrated FOV-center offset (see s_objectiveSwitched()). Reset back to
 	// false on the next objective switch - acceptance does not carry over.

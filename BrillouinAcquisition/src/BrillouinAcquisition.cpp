@@ -9,7 +9,10 @@
 
 #include <cmath>
 #include <algorithm>
+#include <array>
 #include <limits>
+
+#include <QRegularExpression>
 
 using namespace std::filesystem;
 
@@ -3737,8 +3740,41 @@ void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 		[this](double value) { setFovOffsetSigma(value); }
 	);
 
+	// Automated multi-cycle FOV-offset calibration
+	connection = QWidget::connect(
+		m_scaleCalibrationDialogUi.button_startObjectiveCycle,
+		&QPushButton::clicked,
+		this,
+		[this]() { scaleCalibrationButtonStartObjectiveCycle_clicked(); }
+	);
+	connection = QWidget::connect(
+		m_scaleCalibrationDialogUi.button_continueObjectiveCycle,
+		&QPushButton::clicked,
+		this,
+		[this]() { scaleCalibrationButtonContinueObjectiveCycle_clicked(); }
+	);
+	connection = QWidget::connect(
+		m_scaleCalibrationDialogUi.button_abortObjectiveCycle,
+		&QPushButton::clicked,
+		this,
+		[this]() { scaleCalibrationButtonAbortObjectiveCycle_clicked(); }
+	);
+	connection = QWidget::connect(
+		m_scaleCalibration,
+		&ScaleCalibration::s_objectiveCycleProgress,
+		this,
+		[this](int currentCycle, int totalCycles, bool waitingForContinue) {
+			updateObjectiveCycleProgress(currentCycle, totalCycles, waitingForContinue);
+		}
+	);
+
 	// Initialize the scaleCalibration
 	m_scaleCalibration->initialize();
+
+	populateObjectivePickerCombos();
+	m_scaleCalibrationDialogUi.button_continueObjectiveCycle->setEnabled(false);
+	m_scaleCalibrationDialogUi.button_abortObjectiveCycle->setEnabled(false);
+	m_scaleCalibrationDialogUi.objectiveCycleStatusLabel->setText("");
 
 	m_scaleCalibrationDialog->show();
 }
@@ -3851,6 +3887,84 @@ void BrillouinAcquisition::scaleCalibrationButtonFovOffsetMeasure_clicked() {
 		},
 		Qt::AutoConnection
 	);
+}
+
+void BrillouinAcquisition::scaleCalibrationButtonStartObjectiveCycle_clicked() {
+	auto referenceSlot = m_scaleCalibrationDialogUi.referenceObjectiveCombo->currentData().toInt();
+	auto targetSlot = m_scaleCalibrationDialogUi.targetObjectiveCombo->currentData().toInt();
+	auto cycles = m_scaleCalibrationDialogUi.cyclesSpinBox->value();
+	auto retractUm = m_scaleCalibrationDialogUi.zRetractDistanceUm->value();
+
+	// currentData() is a valid, non-zero slot number even for a combo entry showing "Empty" -
+	// the slot number is always populated (populateObjectivePickerCombos()), only the name
+	// text differs - so check the underlying name directly, not just for a 0/invalid slot.
+	auto isNamed = [this](int slot) {
+		return slot >= 1 && slot <= (int)m_objectiveSlotNames.size() && !m_objectiveSlotNames[slot - 1].empty();
+	};
+	if (!isNamed(referenceSlot) || !isNamed(targetSlot)) {
+		m_scaleCalibrationDialogUi.objectiveCycleStatusLabel->setText(
+			"Name both objectives under Devices > Objective Setup before running an automated calibration."
+		);
+		return;
+	}
+	if (referenceSlot == targetSlot) {
+		m_scaleCalibrationDialogUi.objectiveCycleStatusLabel->setText(
+			"Reference and target objective must be different."
+		);
+		return;
+	}
+
+	QMetaObject::invokeMethod(
+		m_scaleCalibration,
+		[&m_scaleCalibration = m_scaleCalibration, referenceSlot, targetSlot, cycles, retractUm]() {
+			m_scaleCalibration->startObjectiveCycleCalibration(referenceSlot, targetSlot, cycles, retractUm);
+		},
+		Qt::AutoConnection
+	);
+}
+
+void BrillouinAcquisition::scaleCalibrationButtonContinueObjectiveCycle_clicked() {
+	QMetaObject::invokeMethod(
+		m_scaleCalibration,
+		[&m_scaleCalibration = m_scaleCalibration]() {
+			m_scaleCalibration->continueObjectiveCycle();
+		},
+		Qt::AutoConnection
+	);
+}
+
+void BrillouinAcquisition::scaleCalibrationButtonAbortObjectiveCycle_clicked() {
+	QMetaObject::invokeMethod(
+		m_scaleCalibration,
+		[&m_scaleCalibration = m_scaleCalibration]() {
+			m_scaleCalibration->abortObjectiveCycle();
+		},
+		Qt::AutoConnection
+	);
+}
+
+void BrillouinAcquisition::updateObjectiveCycleProgress(int currentCycle, int totalCycles, bool waitingForContinue) {
+	// currentCycle == 0 is the idle/finished state (see ScaleCalibration::finishObjectiveCycle())
+	// - everything else (1..totalCycles) is a run in progress, either actively switching/
+	// capturing (waitingForContinue == false) or paused for the operator to refocus
+	// (waitingForContinue == true).
+	auto running = currentCycle != 0;
+	m_suppressObjectiveSwitchWarnings = running;
+
+	m_scaleCalibrationDialogUi.button_startObjectiveCycle->setEnabled(!running);
+	m_scaleCalibrationDialogUi.button_continueObjectiveCycle->setEnabled(waitingForContinue);
+	m_scaleCalibrationDialogUi.button_abortObjectiveCycle->setEnabled(running);
+	m_scaleCalibrationDialogUi.referenceObjectiveCombo->setEnabled(!running);
+	m_scaleCalibrationDialogUi.targetObjectiveCombo->setEnabled(!running);
+	m_scaleCalibrationDialogUi.cyclesSpinBox->setEnabled(!running);
+	m_scaleCalibrationDialogUi.zRetractDistanceUm->setEnabled(!running);
+
+	if (running) {
+		m_scaleCalibrationDialogUi.objectiveCycleStatusLabel->setText(
+			"Cycle " + QString::number(currentCycle) + " of " + QString::number(totalCycles) +
+			(waitingForContinue ? " - refocus, then click Continue." : " - switching objectives...")
+		);
+	}
 }
 
 void BrillouinAcquisition::scaleCalibrationButtonAcquire_clicked() {
@@ -3990,6 +4104,141 @@ void BrillouinAcquisition::calibrationAutoLoadSummary(std::string appliedText, s
 				"apply one manually."
 			)
 		);
+	}
+}
+
+void BrillouinAcquisition::on_action_Objective_setup_triggered() {
+	if (!m_objectiveSetupDialog) {
+		m_objectiveSetupDialog = new QDialog(this, Qt::WindowTitleHint | Qt::WindowCloseButtonHint);
+	}
+	m_objectiveSetupDialogUi.setupUi(m_objectiveSetupDialog);
+	m_objectiveSetupDialog->setWindowTitle("Objective setup");
+	m_objectiveSetupDialog->setWindowModality(Qt::ApplicationModal);
+
+	std::array<QLineEdit*, 6> nameFields{
+		m_objectiveSetupDialogUi.objectiveName_1, m_objectiveSetupDialogUi.objectiveName_2,
+		m_objectiveSetupDialogUi.objectiveName_3, m_objectiveSetupDialogUi.objectiveName_4,
+		m_objectiveSetupDialogUi.objectiveName_5, m_objectiveSetupDialogUi.objectiveName_6
+	};
+	std::array<QLabel*, 6> magnificationLabels{
+		m_objectiveSetupDialogUi.magnification_1, m_objectiveSetupDialogUi.magnification_2,
+		m_objectiveSetupDialogUi.magnification_3, m_objectiveSetupDialogUi.magnification_4,
+		m_objectiveSetupDialogUi.magnification_5, m_objectiveSetupDialogUi.magnification_6
+	};
+	std::array<QLabel*, 6> slotLabels{
+		m_objectiveSetupDialogUi.slot1_label, m_objectiveSetupDialogUi.slot2_label,
+		m_objectiveSetupDialogUi.slot3_label, m_objectiveSetupDialogUi.slot4_label,
+		m_objectiveSetupDialogUi.slot5_label, m_objectiveSetupDialogUi.slot6_label
+	};
+
+	auto hasObjectiveElement = !m_objectiveSlotNames.empty();
+	m_objectiveSetupDialogUi.noObjectiveElementLabel->setVisible(!hasObjectiveElement);
+	m_objectiveSetupDialogUi.slotsContainer->setVisible(hasObjectiveElement);
+	m_objectiveSetupDialogUi.instructionsLabel->setVisible(hasObjectiveElement);
+	m_objectiveSetupDialogUi.button_apply->setEnabled(hasObjectiveElement);
+	m_objectiveSetupDialogUi.statusLabel->setText("");
+
+	for (size_t ii = 0; ii < nameFields.size(); ii++) {
+		auto rowExists = ii < m_objectiveSlotNames.size();
+		slotLabels[ii]->setVisible(rowExists);
+		nameFields[ii]->setVisible(rowExists);
+		magnificationLabels[ii]->setVisible(rowExists);
+		if (rowExists) {
+			nameFields[ii]->setText(QString::fromStdString(m_objectiveSlotNames[ii]));
+			magnificationLabels[ii]->setText(m_objectiveSlotNames[ii].empty() ? "-"
+				: QString::fromStdString(m_objectiveSlotNames[ii].substr(0, m_objectiveSlotNames[ii].size() - 1)));
+		}
+	}
+
+	static QMetaObject::Connection connection;
+	connection = QWidget::connect(
+		m_objectiveSetupDialog,
+		&QDialog::rejected,
+		this,
+		[this]() { m_objectiveSetupDialog->hide(); }
+	);
+	connection = QWidget::connect(
+		m_objectiveSetupDialogUi.button_cancel,
+		&QPushButton::clicked,
+		this,
+		[this]() { m_objectiveSetupDialog->hide(); }
+	);
+	connection = QWidget::connect(
+		m_objectiveSetupDialogUi.button_apply,
+		&QPushButton::clicked,
+		this,
+		[this]() { objectiveSetupButtonApply_clicked(); }
+	);
+
+	m_objectiveSetupDialog->show();
+}
+
+void BrillouinAcquisition::objectiveSetupButtonApply_clicked() {
+	std::array<QLineEdit*, 6> nameFields{
+		m_objectiveSetupDialogUi.objectiveName_1, m_objectiveSetupDialogUi.objectiveName_2,
+		m_objectiveSetupDialogUi.objectiveName_3, m_objectiveSetupDialogUi.objectiveName_4,
+		m_objectiveSetupDialogUi.objectiveName_5, m_objectiveSetupDialogUi.objectiveName_6
+	};
+
+	// Validate every row first, so a single bad entry doesn't leave m_objectiveSlotNames
+	// half-updated - either all rows apply, or none do.
+	static const QRegularExpression namePattern("^[1-9][0-9]x$");
+	auto candidates = std::vector<std::string>(m_objectiveSlotNames.size());
+	for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
+		auto text = nameFields[ii]->text().trimmed();
+		if (text.isEmpty()) {
+			candidates[ii] = "";
+			continue;
+		}
+		if (!namePattern.match(text).hasMatch()) {
+			m_objectiveSetupDialogUi.statusLabel->setText(
+				"Slot " + QString::number(ii + 1) + ": \"" + text +
+				"\" is not valid - use exactly two digits followed by \"x\" (10x-99x), or leave blank."
+			);
+			return;
+		}
+		candidates[ii] = text.toStdString();
+	}
+
+	m_objectiveSlotNames = candidates;
+	writeSettings();
+	pushObjectiveOptionNames();
+	m_objectiveSetupDialog->hide();
+}
+
+void BrillouinAcquisition::pushObjectiveOptionNames() {
+	auto formatted = formatObjectiveNamesForBeampath(m_objectiveSlotNames);
+
+	if (m_scanControl && !formatted.empty()) {
+		QMetaObject::invokeMethod(
+			m_scanControl,
+			[scanControl = m_scanControl, formatted]() { scanControl->setObjectiveOptionNames(formatted); },
+			Qt::AutoConnection
+		);
+	}
+
+	updateElementButtonLabels(formatted);
+	populateObjectivePickerCombos();
+}
+
+void BrillouinAcquisition::populateObjectivePickerCombos() {
+	// Safe to call whether or not the dialog is currently visible/shown (e.g. this also runs
+	// as part of on_action_Scale_calibration_acquire_triggered()'s own setup, before show() is
+	// called) - only guards against the dialog never having been constructed at all.
+	if (!m_scaleCalibrationDialog) {
+		return;
+	}
+	const QSignalBlocker b1(m_scaleCalibrationDialogUi.referenceObjectiveCombo);
+	const QSignalBlocker b2(m_scaleCalibrationDialogUi.targetObjectiveCombo);
+	m_scaleCalibrationDialogUi.referenceObjectiveCombo->clear();
+	m_scaleCalibrationDialogUi.targetObjectiveCombo->clear();
+	for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
+		auto slot = QVariant((int)ii + 1);
+		auto text = m_objectiveSlotNames[ii].empty()
+			? QString("Empty")
+			: QString::fromStdString(m_objectiveSlotNames[ii]);
+		m_scaleCalibrationDialogUi.referenceObjectiveCombo->addItem(text, slot);
+		m_scaleCalibrationDialogUi.targetObjectiveCombo->addItem(text, slot);
 	}
 }
 
@@ -4203,6 +4452,29 @@ void BrillouinAcquisition::initScanControl() {
 		default:
 			m_scanControl = new ZeissECU();
 			break;
+	}
+
+	// Resize m_objectiveSlotNames to this backend's "Objective" element (0 if it has none, e.g.
+	// NIDAQ - see formatObjectiveNamesForBeampath()/pushObjectiveOptionNames()), preserving
+	// whatever was already loaded from settings for slots that still exist and defaulting any
+	// newly-appearing slot to "". Then push directly - m_scanControl is still exclusively
+	// GUI-thread-owned here, before m_acquisitionThread.startWorker(m_scanControl) below, so
+	// this does not need QMetaObject::invokeMethod the way the same call does everywhere else
+	// (see pushObjectiveOptionNames()). This must run before initBeampathButtons() (called from
+	// initBrillouin(), later than this function) so the beampath is built with real names from
+	// the start rather than flashing "1".."6" first.
+	{
+		auto maxOptions = 0;
+		for (const auto& element : m_scanControl->m_deviceElements) {
+			if (element.name == "Objective") {
+				maxOptions = element.maxOptions;
+				break;
+			}
+		}
+		m_objectiveSlotNames.resize(maxOptions);
+		if (maxOptions > 0) {
+			m_scanControl->setObjectiveOptionNames(formatObjectiveNamesForBeampath(m_objectiveSlotNames));
+		}
 	}
 
 	// init or de-init ODT
@@ -4780,34 +5052,53 @@ void BrillouinAcquisition::microscopeElementPositionChanged(DeviceElement elemen
 
 void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool hasCalibration, bool hasFovOffset, POINT2 offsetUm, double offsetSigmaUm) {
 	if (!hasCalibration) {
-		QMessageBox::warning(
-			this,
-			"No Scale Calibration For This Objective",
-			QString("No scale calibration is registered for the objective in slot %1.\n\n"
-				"Pixel<->micrometer conversions, grids, ROIs and overview tiles for this objective "
-				"will be wrong until a calibration is loaded for it.").arg(newSlot)
-		);
+		// Suppressed during an automated multi-cycle run (see
+		// ScaleCalibration::startObjectiveCycleCalibration()) - a blocking popup on every
+		// switch would defeat the point of automating this. The early return below is
+		// unaffected either way: with no scale calibration at all for this objective, there is
+		// nothing meaningful for updatePositions()/the stage-nudge logic further down to
+		// recompute.
+		if (!m_suppressObjectiveSwitchWarnings) {
+			QMessageBox::warning(
+				this,
+				"No Scale Calibration For This Objective",
+				QString("No scale calibration is registered for the objective in slot %1.\n\n"
+					"Pixel<->micrometer conversions, grids, ROIs and overview tiles for this objective "
+					"will be wrong until a calibration is loaded for it.").arg(newSlot)
+			);
+		}
 		return;
 	}
 	if (!hasFovOffset) {
-		auto reply = QMessageBox::warning(
-			this,
-			"No FOV-Center Offset For This Objective Switch",
-			QString("No calibrated FOV-center offset is stored for this objective switch (slot %1 -> %2).\n\n"
-				"In absolute grid-coordinate mode, grids, ROIs and overview tiles will NOT be translated "
-				"to compensate for this objective's field-of-view center shift, and measurements may no "
-				"longer target the same physical sample location as before the switch. Relative-mode grids "
-				"are not affected, since they anchor to wherever the stage is when a measurement starts.\n\n"
-				"Continue anyway?").arg(previousSlot).arg(newSlot),
-			QMessageBox::Yes | QMessageBox::No,
-			QMessageBox::No
-		);
-		if (reply == QMessageBox::Yes) {
+		if (m_suppressObjectiveSwitchWarnings) {
+			// The target slot of an automated run lacking a FOV offset is expected - it is the
+			// thing being calibrated - not something to interrupt for. Treat it as accepted,
+			// same as the operator clicking "Yes" below would.
 			QMetaObject::invokeMethod(
 				m_scanControl,
 				[scanControl = m_scanControl]() { scanControl->acceptMissingObjectiveOffset(); },
 				Qt::AutoConnection
 			);
+		} else {
+			auto reply = QMessageBox::warning(
+				this,
+				"No FOV-Center Offset For This Objective Switch",
+				QString("No calibrated FOV-center offset is stored for this objective switch (slot %1 -> %2).\n\n"
+					"In absolute grid-coordinate mode, grids, ROIs and overview tiles will NOT be translated "
+					"to compensate for this objective's field-of-view center shift, and measurements may no "
+					"longer target the same physical sample location as before the switch. Relative-mode grids "
+					"are not affected, since they anchor to wherever the stage is when a measurement starts.\n\n"
+					"Continue anyway?").arg(previousSlot).arg(newSlot),
+				QMessageBox::Yes | QMessageBox::No,
+				QMessageBox::No
+			);
+			if (reply == QMessageBox::Yes) {
+				QMetaObject::invokeMethod(
+					m_scanControl,
+					[scanControl = m_scanControl]() { scanControl->acceptMissingObjectiveOffset(); },
+					Qt::AutoConnection
+				);
+			}
 		}
 	} else {
 		// hasCalibration && hasFovOffset: nothing needs the operator's attention beyond a log
@@ -4912,6 +5203,36 @@ void BrillouinAcquisition::checkElementButtons() {
 		presetButtons[ii]->style()->unpolish(presetButtons[ii]);
 		presetButtons[ii]->style()->polish(presetButtons[ii]);
 		presetButtons[ii]->update();
+	}
+}
+
+std::vector<std::string> BrillouinAcquisition::formatObjectiveNamesForBeampath(const std::vector<std::string>& names) const {
+	auto formatted = std::vector<std::string>(names.size());
+	for (size_t ii = 0; ii < names.size(); ii++) {
+		formatted[ii] = names[ii].empty() ? "E  " : names[ii];
+	}
+	return formatted;
+}
+
+void BrillouinAcquisition::updateElementButtonLabels(const std::vector<std::string>& objectiveOptionNames) {
+	if (!m_scanControl) {
+		return;
+	}
+	// Mirrors checkElementButtons()'s exact indexing: indButton only increments on a
+	// PUSHBUTTON element, so it stays correct regardless of how many non-pushbutton elements
+	// (or other pushbutton elements, e.g. "RL Shutter") precede "Objective" for this backend.
+	auto elements = m_scanControl->m_deviceElements;
+	int indButton{ 0 };
+	for (gsl::index ii = 0; ii < elements.size(); ii++) {
+		if (elements[ii].inputType != DEVICE_INPUT_TYPE::PUSHBUTTON) {
+			continue;
+		}
+		if (elements[ii].name == "Objective" && indButton < (int)elementButtons.size()) {
+			for (gsl::index jj = 0; jj < elementButtons[indButton].size() && jj < (gsl::index)objectiveOptionNames.size(); jj++) {
+				elementButtons[indButton][jj]->setText(objectiveOptionNames[jj].c_str());
+			}
+		}
+		indButton++;
 	}
 }
 
@@ -6157,6 +6478,12 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("file-path", QString::fromStdString(m_scaleCalibrationFilePath));
 	settings.setValue("calibrations-folder-path", QString::fromStdString(m_calibrationsFolderPath));
 	settings.endGroup();
+	settings.beginGroup("objective-setup");
+	settings.setValue("slot-count", (int)m_objectiveSlotNames.size());
+	for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
+		settings.setValue(QString("slot-%1-name").arg(ii + 1), QString::fromStdString(m_objectiveSlotNames[ii]));
+	}
+	settings.endGroup();
 	settings.beginGroup("devices-settings");
 	settings.setValue("stage-laser-position-x", m_positionScanner.x);
 	settings.setValue("stage-laser-position-y", m_positionScanner.y);
@@ -6309,6 +6636,17 @@ void BrillouinAcquisition::readSettings() {
 	m_scaleCalibrationFilePath = filePath.toString().toStdString();
 	QVariant calibrationsFolderPath = settings.value("calibrations-folder-path");
 	m_calibrationsFolderPath = calibrationsFolderPath.toString().toStdString();
+	settings.endGroup();
+
+	settings.beginGroup("objective-setup");
+	// Read into m_objectiveSlotNames as-is here; initScanControl() (run later at startup, once
+	// the active backend and its real "Objective" element maxOptions are known) resizes this to
+	// match, preserving these values for whichever slots still exist.
+	auto slotCount = settings.value("slot-count", 0).toInt();
+	m_objectiveSlotNames.assign(slotCount, std::string{});
+	for (int ii = 0; ii < slotCount; ii++) {
+		m_objectiveSlotNames[ii] = settings.value(QString("slot-%1-name").arg(ii + 1), "").toString().toStdString();
+	}
 	settings.endGroup();
 
 	settings.beginGroup("devices-settings");

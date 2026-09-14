@@ -759,50 +759,58 @@ void ScaleCalibration::setFovOffsetSigma(double value) {
 /*
  * FOV-offset auto-measurement.
  *
- * Deliberately never commands an objective switch itself - only setElement()-driven or
- * physically-at-the-microscope switches exist elsewhere in this codebase, and having this
- * class blindly drive the nosepiece back and forth (needing to know the reference slot,
- * wait for settle, handle a failed switch, ...) is a different, larger, and untested piece
- * of hardware automation than "capture an image and run OpenCV on it", which this class
- * already does safely. The operator drives the actual switch; this only automates the
- * error-prone part (measuring the resulting pixel shift by eye).
+ * setFovOffsetReference()/measureFovOffset() (the manual, two-button flow) still never command
+ * an objective switch themselves - only setElement()-driven (via the beampath buttons) or
+ * physically-at-the-microscope switches move the nosepiece for that flow. The operator drives
+ * the actual switch there; those two functions only automate the error-prone part (measuring
+ * the resulting pixel shift by eye).
+ *
+ * startObjectiveCycleCalibration()/continueObjectiveCycle()/abortObjectiveCycle() (the
+ * automated multi-cycle flow, added later) are a deliberate, confirmed exception to that: they
+ * do drive the nosepiece themselves, via switchToObjectiveSlotAndVerify(). Doing this by hand
+ * for M repeated reference<->target cycles is exactly the tedious, error-prone repetition this
+ * automation exists to remove - a Z-retract safety step precedes every commanded switch (see
+ * runObjectiveCycleStep()) as the mitigation for the collision risk that hand-driving the
+ * changer avoided entirely before.
  */
 
 void ScaleCalibration::configureCalibrationCameraRoi() {
-	// Previously cropped to a fixed left=1000/top=800/1000x1000 region regardless of the
-	// camera's actual sensor size, or of whatever ROI a concurrently-running live preview (or
-	// the Fluorescence tab) was already using. On a backend where changing the ROI means
-	// reconfiguring the camera's live frame geometry (PointGrey's Format7/AOI), doing that
-	// while a live preview loop on a different thread (Camera::getImageForPreview(), see
-	// Camera.cpp) could be mid-capture at the old size raced the camera's own buffers -
-	// Camera::applySettings() is not mutex-guarded the way startAcquisition()/
-	// getImageForAcquisition()/getImageForPreview() are, so the preview only gets stopped
-	// (safely, under the lock) *after* this had already mutated the live settings. That's the
-	// "referenced memory could not be written" crash and the correctness-of-progress hang seen
-	// with live Brightfield preview active, and it is specific to this class - nothing else in
-	// the app ever asks the camera to change frame size while a preview could be running.
+	// This used to end with m_camera->setSettings(m_cameraSettings) right here, applying the
+	// (no-longer-ROI-changing, but still trigger-mode-changing) settings immediately. That is
+	// itself unsafe while a live preview is running: Camera::applySettings() is not
+	// mutex-guarded, and switching triggerMode away from whatever the running preview loop
+	// (Camera::getImageForPreview(), see Camera.cpp) was capturing with breaks that loop too -
+	// getImageForPreview()/acquireImage() never fires a software trigger the way
+	// getImageForAcquisition() does, so once triggerMode flips to "Software" out from under it,
+	// the *preview's own* next frame-grab blocks forever on RetrieveBuffer() as well, while
+	// holding Camera::m_mutex - which is why the live image froze, the Stop button stopped
+	// responding (it can't interrupt a call the preview loop never returns from to notice the
+	// stop flag), and beam-path/preset switching stopped working too (ScanControl shares
+	// m_acquisitionThread with this class - see the startWorker() calls in
+	// BrillouinAcquisition.cpp - and that thread's own next call into the camera,
+	// startAcquisition() below, then blocks right behind the preview waiting on the same mutex).
 	//
-	// Fix: stop resizing the frame at all. Fluorescence::configureCamera() already established
-	// this pattern for exactly the same brightfield camera ("Deliberately no ROI override -
-	// always capture at full sensor... rather than cropping to a smaller measurement region")
-	// and is unaffected by live preview - do the same here. Capturing at whatever size the
-	// camera is already configured for (full sensor, or whatever preview is currently using)
-	// means this never asks the camera to change its live frame geometry, so there is nothing
-	// for a concurrent preview capture to race against.
+	// Fix: this function only prepares the desired settings now and does not apply them.
+	// Camera::startAcquisition() (called by both callers of this function, right after) already
+	// does the right thing atomically under Camera::m_mutex: stop the preview first (safely,
+	// letting its current call return), *then* apply the new settings, then start capture. So
+	// the actual apply is left to that one call, instead of happening twice - once here,
+	// unsafely, and again (redundantly) inside startAcquisition().
 	m_cameraSettings = m_camera->getSettings();
 
-	// Also mirror Fluorescence::configureCamera()'s trigger-mode handling, for a separate
-	// reason: this class never touched triggerMode before, so a capture here just inherited
-	// whatever the camera was last left in. PointGrey::getImageForAcquisition() only fires a
-	// software trigger when triggerMode == "Software" - in any other mode (e.g. "External",
-	// waiting on a hardware trigger line nothing here ever supplies) it just blocks on
-	// RetrieveBuffer() for a frame that never arrives. Because ScanControl and every
-	// acquisition mode (this one included) share one QThread (m_acquisitionThread - see
-	// BrillouinAcquisition::connectScanControl()/the various startWorker() calls), that block
-	// doesn't just hang this capture - it freezes that entire shared thread, which is why
-	// preset switches (also serviced on m_acquisitionThread via ScanControl) silently stop
-	// working too, while the separately-threaded GUI window stays responsive. Forcing
-	// "Software" here, exactly like Fluorescence does, guarantees a trigger is actually sent.
+	// Deliberately no ROI override - always capture at whatever size the camera is already
+	// configured for (full sensor, or whatever preview is currently using), same as
+	// Fluorescence::configureCamera(). Previously cropped to a fixed left=1000/top=800/
+	// 1000x1000 region regardless of the camera's actual sensor size, which is a separate bug
+	// this class no longer has.
+	//
+	// Trigger mode: mirrors Fluorescence::configureCamera() too. This class never touched
+	// triggerMode before, so a capture just inherited whatever the camera was last left in;
+	// PointGrey::getImageForAcquisition() only fires a software trigger when
+	// triggerMode == "Software", so anything else (e.g. "External", waiting on a hardware
+	// trigger line nothing here supplies) blocked this capture's own RetrieveBuffer() forever.
+	// Forcing "Software" here guarantees a trigger is actually sent for *this* capture; See the
+	// comment above for why applying it must wait for startAcquisition().
 	auto cameraType = (std::string)typeid(*m_camera).name();
 	if (cameraType == "class uEyeCam" || cameraType == "class PointGrey") {
 		m_cameraSettings.readout.triggerMode = L"Software";
@@ -814,8 +822,6 @@ void ScaleCalibration::configureCalibrationCameraRoi() {
 #endif
 	m_cameraSettings.readout.cycleMode = L"Fixed";
 	m_cameraSettings.frameCount = 1;
-	m_camera->setSettings(m_cameraSettings);
-	m_cameraSettings = m_camera->getSettings();
 }
 
 std::vector<std::byte> ScaleCalibration::captureBrightfieldImageForFovOffset() {
@@ -863,9 +869,14 @@ cv::Mat ScaleCalibration::readAsMat8U(const std::vector<std::byte>& image, int r
 bool ScaleCalibration::computeFovOffsetShiftUm(
 	const std::vector<std::byte>& referenceImage, const CAMERA_ROI& referenceRoi, const ScaleCalibrationData& referenceScale, const std::string& referenceDataType,
 	const std::vector<std::byte>& targetImage, const CAMERA_ROI& targetRoi, const ScaleCalibrationData& targetScale, const std::string& targetDataType,
-	POINT2* shiftUm, double* estimatedMagnificationChange
+	POINT2* shiftUm, double* estimatedMagnificationChange, std::string* failureReason
 ) {
 	if (referenceImage.empty() || targetImage.empty()) {
+		*failureReason = referenceImage.empty() && targetImage.empty()
+			? "Neither the reference nor the target image was captured (camera failure)."
+			: (referenceImage.empty()
+				? "The reference image was not captured (camera failure)."
+				: "The target image was not captured (camera failure).");
 		return false;
 	}
 
@@ -878,6 +889,16 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	auto referencePixelSizeUm = 0.5 * (std::abs(referenceScale.pixToMicrometerX.x) + std::abs(referenceScale.pixToMicrometerY.y));
 	auto targetPixelSizeUm = 0.5 * (std::abs(targetScale.pixToMicrometerX.x) + std::abs(targetScale.pixToMicrometerY.y));
 	if (referencePixelSizeUm <= 0.0 || targetPixelSizeUm <= 0.0) {
+		// Not an image-content problem at all - this objective has no (non-zero)
+		// pixToMicrometer pixel-scale calibration registered yet, i.e. its own "Acquire"
+		// (translation between images) has never successfully completed and been applied/
+		// saved. The FOV-offset measurement needs that first, for both objectives, purely to
+		// know how much to rescale one image before comparing it to the other.
+		*failureReason = (referencePixelSizeUm <= 0.0 && targetPixelSizeUm <= 0.0)
+			? "Neither the reference nor the target objective has a saved pixel-scale (\"Acquire\"/translation-between-images) calibration yet - run and apply/save that for both objectives first."
+			: (referencePixelSizeUm <= 0.0
+				? "The reference objective has no saved pixel-scale (\"Acquire\"/translation-between-images) calibration yet - run and apply/save that for it first."
+				: "The target objective has no saved pixel-scale (\"Acquire\"/translation-between-images) calibration yet - run and apply/save that for it first.");
 		return false;
 	}
 
@@ -906,7 +927,14 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 		referenceIsSearch = false;
 	} else {
 		// Neither fits inside the other - very different aspect ratios after rescaling, or a
-		// degenerate ROI. Give up rather than guess.
+		// degenerate ROI. Give up rather than guess. This means the two objectives' pixel-scale
+		// calibrations imply a very different aspect ratio between the two captured frames -
+		// most likely one of the two pixel-scale calibrations is wrong (e.g. x/y swapped),
+		// not that the images lack matchable content.
+		*failureReason = "The reference and target images have too different an aspect ratio after "
+			"rescaling to a common pixel scale - check both objectives' pixel-scale calibrations "
+			"(the estimated magnification change reported after a successful measurement is the "
+			"sanity check for this).";
 		return false;
 	}
 
@@ -914,12 +942,17 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	// shift in any direction (same trick __acquire() uses for the scale-calibration match).
 	auto padding = std::min(templateMat.rows, templateMat.cols) / 5;
 	if (padding < 1 || templateMat.rows <= 2 * padding || templateMat.cols <= 2 * padding) {
+		*failureReason = "The smaller of the two captured images is too small to search for a match "
+			"in (after rescaling to a common pixel scale) - capture at a larger ROI, or check both "
+			"objectives' pixel-scale calibrations for a gross error.";
 		return false;
 	}
 	cv::Rect templateROI(padding, padding, templateMat.cols - 2 * padding, templateMat.rows - 2 * padding);
 	cv::Mat templ = templateMat(templateROI);
 
 	if (searchMat.rows < templ.rows || searchMat.cols < templ.cols) {
+		*failureReason = "The search region ended up smaller than the template after cropping - "
+			"this should not happen given the size check above; please report this.";
 		return false;
 	}
 
@@ -972,6 +1005,10 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 }
 
 void ScaleCalibration::setFovOffsetReference() {
+	captureFovOffsetReferenceImage(/*resetAccumulatedSamples=*/true);
+}
+
+void ScaleCalibration::captureFovOffsetReferenceImage(bool resetAccumulatedSamples) {
 	if (!m_camera || !m_scanControl) {
 		return;
 	}
@@ -989,9 +1026,13 @@ void ScaleCalibration::setFovOffsetReference() {
 	m_fovReferenceObjectiveSlot = m_scanControl->getActiveObjectiveSlot();
 	m_fovReferenceMagnification = activeCalibration.magnification;
 
-	// A new reference invalidates any samples collected against the previous one.
-	m_fovOffsetTargetSlot = -1;
-	m_fovOffsetSamplesUm.clear();
+	if (resetAccumulatedSamples) {
+		// A new reference invalidates any samples collected against the previous one. Skipped
+		// mid-automated-run (cycles 2..M) so re-capturing a fresh reference image each cycle
+		// does not also wipe the mean/sigma being built up across all M cycles.
+		m_fovOffsetTargetSlot = -1;
+		m_fovOffsetSamplesUm.clear();
+	}
 
 	emit(s_scaleCalibrationStatus("FOV-offset reference captured",
 		"Without moving the stage, switch to the objective you want to calibrate and click \"Measure FOV offset\"."));
@@ -1028,13 +1069,14 @@ void ScaleCalibration::measureFovOffset() {
 
 	auto shiftUm = POINT2{};
 	auto estimatedMagnificationChange = 0.0;
+	auto failureReason = std::string{};
 	auto ok = computeFovOffsetShiftUm(
 		m_fovReferenceImage, m_fovReferenceRoi, m_fovReferenceScaleCalibration, m_fovReferenceDataType,
 		targetImage, m_cameraSettings.roi, targetScaleCalibration, targetDataType,
-		&shiftUm, &estimatedMagnificationChange
+		&shiftUm, &estimatedMagnificationChange, &failureReason
 	);
 	if (!ok) {
-		emit(s_scaleCalibrationStatus("FOV-offset measurement failed", "Please make sure there are distinct structures visible in both objectives' field of view."));
+		emit(s_scaleCalibrationStatus("FOV-offset measurement failed", failureReason));
 		return;
 	}
 
@@ -1091,4 +1133,150 @@ void ScaleCalibration::measureFovOffset() {
 	}
 
 	emit(s_scaleCalibrationStatus("FOV offset measured", message));
+}
+
+bool ScaleCalibration::findObjectiveElement(DeviceElement* out) const {
+	if (!m_scanControl) {
+		return false;
+	}
+	for (const auto& element : m_scanControl->m_deviceElements) {
+		if (element.name == "Objective") {
+			*out = element;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ScaleCalibration::switchToObjectiveSlotAndVerify(int slot) {
+	DeviceElement objectiveElement;
+	if (!findObjectiveElement(&objectiveElement)) {
+		emit(s_scaleCalibrationStatus("No objective changer", "This device has no motorized \"Objective\" element."));
+		return false;
+	}
+	// A plain, direct, same-thread synchronous call - ScaleCalibration and ScanControl already
+	// share m_acquisitionThread (see BrillouinAcquisition's startWorker() calls), exactly like
+	// ScanControl::setPreset() already calls setElement() the same way internally. Each
+	// backend's setElement() (e.g. ZeissMTB::setElement(), ~500ms-scaled) blocks until the
+	// physical switch completes and, on the way out, synchronously emits
+	// elementPositionChanged() - ScanControl's self-connection to that signal (default
+	// same-thread DirectConnection) updates m_activeObjectiveSlot before this call returns. So
+	// checking getActiveObjectiveSlot() immediately below is a real, already-settled check, not
+	// a race against the 100ms-polled elementPositionsChanged() path (that path only matters
+	// for a switch made at the microscope's own panel, not one commanded here).
+	m_scanControl->setElement(objectiveElement, (double)slot);
+	if (m_scanControl->getActiveObjectiveSlot() != slot) {
+		emit(s_scaleCalibrationStatus("Objective switch failed",
+			"Expected slot " + std::to_string(slot) + " but the changer reports a different position. Check the nosepiece."));
+		return false;
+	}
+	return true;
+}
+
+void ScaleCalibration::startObjectiveCycleCalibration(int referenceSlot, int targetSlot, int cycles, double zRetractDistanceUm) {
+	if (m_objectiveCycleState != ObjectiveCycleState::Idle) {
+		emit(s_scaleCalibrationStatus("Automated calibration already running", "Abort the current run before starting a new one."));
+		return;
+	}
+	if (!m_camera || !m_scanControl) {
+		return;
+	}
+	if (referenceSlot == targetSlot || cycles < 1) {
+		return;
+	}
+
+	m_objectiveCycleReferenceSlot = referenceSlot;
+	m_objectiveCycleTargetSlot = targetSlot;
+	m_objectiveCycleCount = cycles;
+	m_objectiveCycleIndex = 1;
+	m_objectiveCycleRetractUm = zRetractDistanceUm;
+
+	runObjectiveCycleStep();
+}
+
+void ScaleCalibration::continueObjectiveCycle() {
+	if (m_objectiveCycleState != ObjectiveCycleState::WaitingForContinue) {
+		return;
+	}
+	// Unmodified - m_objectiveCycleTargetSlot is the same slot across every cycle in this run,
+	// so measureFovOffset()'s own "different target than last time, reset samples" guard never
+	// fires mid-run, and repeated calls accumulate into m_fovOffsetSamplesUm exactly as
+	// repeated manual clicks already do (see its class-level doc comment).
+	measureFovOffset();
+
+	if (m_objectiveCycleIndex >= m_objectiveCycleCount) {
+		finishObjectiveCycle(false);
+		return;
+	}
+	m_objectiveCycleIndex++;
+	runObjectiveCycleStep();
+}
+
+void ScaleCalibration::abortObjectiveCycle() {
+	if (m_objectiveCycleState == ObjectiveCycleState::Idle) {
+		return;
+	}
+	finishObjectiveCycle(true);
+}
+
+void ScaleCalibration::runObjectiveCycleStep() {
+	m_objectiveCycleState = ObjectiveCycleState::Running;
+	emit(s_objectiveCycleProgress(m_objectiveCycleIndex, m_objectiveCycleCount, false));
+
+	// (a) Retract Z before every commanded switch, as a safety margin against a collision
+	// between objectives of different parfocal length/working distance - see the class-level
+	// comment above startObjectiveCycleCalibration(). Relative move, sign/magnitude as entered
+	// by the operator (Automated calibration: run > "Z retract [um]").
+	m_scanControl->movePosition(POINT3{ 0, 0, m_objectiveCycleRetractUm });
+	// (b)(c) Switch to the reference objective and verify it landed.
+	if (!switchToObjectiveSlotAndVerify(m_objectiveCycleReferenceSlot)) {
+		finishObjectiveCycle(true);
+		return;
+	}
+	// (d) Capture a fresh reference image every cycle - only reset the accumulated samples on
+	// the very first cycle (see captureFovOffsetReferenceImage()'s own comment).
+	captureFovOffsetReferenceImage(m_objectiveCycleIndex == 1);
+	if (m_fovReferenceImage.empty()) {
+		emit(s_scaleCalibrationStatus("Objective cycle aborted", "Could not capture the reference image."));
+		finishObjectiveCycle(true);
+		return;
+	}
+
+	// (e) Retract again before the second switch of this cycle, for the same reason as (a).
+	m_scanControl->movePosition(POINT3{ 0, 0, m_objectiveCycleRetractUm });
+	// (f) Switch to the target objective and verify it landed.
+	if (!switchToObjectiveSlotAndVerify(m_objectiveCycleTargetSlot)) {
+		finishObjectiveCycle(true);
+		return;
+	}
+
+	// (g) Pause here for the operator to refocus - Z was just retracted twice and neither
+	// switch restores it (deliberately: this objective's parfocal plane is not the previous
+	// one's, so "restoring" the pre-retract Z here could reintroduce the very collision risk
+	// the retract exists to avoid - see continueObjectiveCycle()/finishObjectiveCycle(), Z is
+	// never auto-restored even once the whole run ends). This is a real return to the caller/
+	// event loop, not a blocking wait - ScaleCalibration shares m_acquisitionThread with
+	// ScanControl and every other acquisition mode, so blocking here would freeze all of them,
+	// exactly like the earlier trigger-mode/ROI bugs in this class did. continueObjectiveCycle()
+	// (invoked from a GUI button click, via QMetaObject::invokeMethod like every other GUI ->
+	// ScaleCalibration call) is what resumes from here.
+	m_objectiveCycleState = ObjectiveCycleState::WaitingForContinue;
+	emit(s_objectiveCycleProgress(m_objectiveCycleIndex, m_objectiveCycleCount, true));
+	emit(s_scaleCalibrationStatus("Refocus and continue",
+		"Refocus at the target objective, then click \"Continue\" (cycle " + std::to_string(m_objectiveCycleIndex)
+		+ " of " + std::to_string(m_objectiveCycleCount) + ")."));
+}
+
+void ScaleCalibration::finishObjectiveCycle(bool aborted) {
+	m_objectiveCycleState = ObjectiveCycleState::Idle;
+	emit(s_objectiveCycleProgress(0, m_objectiveCycleCount, false));
+	if (aborted) {
+		emit(s_scaleCalibrationStatus("Automated calibration aborted",
+			"Stopped after cycle " + std::to_string(m_objectiveCycleIndex) + " of " + std::to_string(m_objectiveCycleCount)
+			+ ". Whatever samples were already accumulated are still available below - Apply/Save if usable, or start a new run."));
+	} else {
+		emit(s_scaleCalibrationStatus("Automated calibration finished",
+			"Completed " + std::to_string(m_objectiveCycleCount) + " cycles. Review the mean offset/sigma and the "
+			"estimated-magnification-change sanity check above, then Apply/Save if it looks right."));
+	}
 }

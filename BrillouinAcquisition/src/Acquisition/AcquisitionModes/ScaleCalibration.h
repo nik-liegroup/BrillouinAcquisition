@@ -83,8 +83,7 @@ public slots:
 	void setFovOffsetY(double value);
 	void setFovOffsetSigma(double value);
 
-	// FOV-center offset auto-measurement. Two-step, operator-driven (this never commands an
-	// objective switch itself - see the class-level comment on measureFovOffset() for why):
+	// FOV-center offset auto-measurement. Two-step, operator-driven:
 	// 1) At the reference objective, call setFovOffsetReference() to capture and cache an
 	//    image, without moving the stage afterward.
 	// 2) Switch to the objective being calibrated (any means - GUI button or the microscope's
@@ -92,10 +91,36 @@ public slots:
 	//    (switch away to any other objective and back, then measure again) accumulates more
 	//    samples and tightens fovOffsetSigmaUm; switching to a different target objective
 	//    between calls discards the previous target's samples automatically.
+	// This manual path itself still never commands an objective switch - the operator always
+	// drives it. startObjectiveCycleCalibration() below is a deliberate, later exception to
+	// that (see its own comment for why); it is the only place in this class that does.
 	void setFovOffsetReference();
 	void measureFovOffset();
 
+	// Automated version of the two-step flow above, between two already-named, distinct
+	// nosepiece slots (see BrillouinAcquisition's "Objective Setup" dialog/m_objectiveSlotNames
+	// for where names come from - this class only ever deals in slot numbers). Unlike every
+	// other capture path in this class, this one *does* command objective switches itself
+	// (switchToObjectiveSlotAndVerify(), via ScanControl::setElement()) - a deliberate,
+	// confirmed exception to the "operator always drives the switch" design the manual flow
+	// above still follows, made because doing this by hand for M repeated cycles is exactly the
+	// kind of tedious, error-prone repetition automation is for. Each cycle: retract Z, switch
+	// to referenceSlot, capture a fresh reference image, retract Z again, switch to targetSlot,
+	// then PAUSES (returns to the caller/event loop - see runObjectiveCycleStep()) for the
+	// operator to manually refocus; continueObjectiveCycle() resumes from there, measures (via
+	// measureFovOffset(), accumulating into the same running mean/sigma exactly as repeated
+	// manual clicks would), and either starts the next cycle or finishes. Z is deliberately
+	// *not* restored after the run - see the .cpp comment on runObjectiveCycleStep(). No-op
+	// (emits a status and returns) if a run is already in progress.
+	void startObjectiveCycleCalibration(int referenceSlot, int targetSlot, int cycles, double zRetractDistanceUm);
+	// Resumes after the operator has refocused at the target objective (see the pause above).
+	// No-op if not currently paused.
+	void continueObjectiveCycle();
+	// Aborts a run in progress or a paused run. Safe to call at any time (no-op if idle).
+	void abortObjectiveCycle();
+
 private:
+	enum class ObjectiveCycleState { Idle, Running, WaitingForContinue };
 	void abortMode(std::unique_ptr <StorageWrapper>& storage) override;
 	void abortMode();
 
@@ -159,7 +184,12 @@ private:
 	// a 16-bit source is read at its real depth then downscaled to 8-bit before matching (see
 	// the .cpp definition), matching the same fix applied to __acquire(). Returns false
 	// (leaves *shiftUm and *estimatedMagnificationChange untouched) if either image is empty,
-	// either calibration is degenerate, or no image fits inside the other after rescaling.
+	// either calibration is degenerate, or no image fits inside the other after rescaling -
+	// *failureReason is set to a specific, human-readable explanation of which of those it was
+	// (none of them are actually about image content/matching - this function never rejects a
+	// match based on how good it looks, see the .cpp definition - so do not describe any of
+	// them to the operator as "no distinct structures", which was misleading every previous
+	// caller of this).
 	// *estimatedMagnificationChange is the reference->target pixel-scale rescale factor this
 	// function actually used to bring the two images to a common scale before matching -
 	// exposed so the caller can sanity-check it against the nominal magnification ratio typed
@@ -169,7 +199,7 @@ private:
 	bool computeFovOffsetShiftUm(
 		const std::vector<std::byte>& referenceImage, const CAMERA_ROI& referenceRoi, const ScaleCalibrationData& referenceScale, const std::string& referenceDataType,
 		const std::vector<std::byte>& targetImage, const CAMERA_ROI& targetRoi, const ScaleCalibrationData& targetScale, const std::string& targetDataType,
-		POINT2* shiftUm, double* estimatedMagnificationChange
+		POINT2* shiftUm, double* estimatedMagnificationChange, std::string* failureReason
 	);
 
 	// Wraps a captured buffer at its real depth (dataType: "unsigned short" -> 16-bit,
@@ -179,6 +209,47 @@ private:
 	// onto `image`'s own memory, same as the pre-existing code this mirrors (see
 	// __acquire()'s image-matrix construction).
 	cv::Mat readAsMat8U(const std::vector<std::byte>& image, int rows, int cols, const std::string& dataType) const;
+
+	// setFovOffsetReference()'s actual body, factored out so the automated cycle
+	// (runObjectiveCycleStep()) can capture a fresh reference image every cycle without also
+	// wiping m_fovOffsetSamplesUm every cycle (resetAccumulatedSamples=false after cycle 1) -
+	// calling the public setFovOffsetReference() slot unmodified would do that, defeating "M
+	// cycles average into one mean/sigma". setFovOffsetReference() itself is now just this
+	// with resetAccumulatedSamples=true, so its own (manual-flow) behavior is unchanged.
+	void captureFovOffsetReferenceImage(bool resetAccumulatedSamples);
+
+	// Automated multi-cycle FOV-offset calibration state (see startObjectiveCycleCalibration()
+	// in the public section above for the overall flow).
+	enum class ObjectiveCycleState { Idle, Running, WaitingForContinue };
+	ObjectiveCycleState m_objectiveCycleState{ ObjectiveCycleState::Idle };
+	int m_objectiveCycleReferenceSlot{ -1 };
+	int m_objectiveCycleTargetSlot{ -1 };
+	int m_objectiveCycleCount{ 0 };	// requested M
+	int m_objectiveCycleIndex{ 0 };	// 1-based current cycle
+	double m_objectiveCycleRetractUm{ 0.0 };
+
+	// Runs one full cycle's worth of retract/switch/capture/retract/switch (steps (a)-(f) in
+	// startObjectiveCycleCalibration()'s doc comment), then sets state to WaitingForContinue and
+	// returns - see the .cpp definition for why this return is the only pause point, never a
+	// blocking wait on this object's own thread. Called for cycle 1 from
+	// startObjectiveCycleCalibration(), and for cycles 2..M from continueObjectiveCycle().
+	void runObjectiveCycleStep();
+	// Finds the "Objective" DeviceElement the same way the beampath buttons do
+	// (m_scanControl->m_deviceElements, matched by name). Returns false (leaves *out untouched)
+	// if this backend has none.
+	bool findObjectiveElement(DeviceElement* out) const;
+	// Commands the switch (m_scanControl->setElement(), a plain same-thread synchronous call -
+	// see the .cpp definition for why this is safe/non-racy) and verifies
+	// getActiveObjectiveSlot() == slot afterward. Emits a failure status and returns false on a
+	// missing "Objective" element or a mismatch (the changer not actually landing on the
+	// requested slot).
+	bool switchToObjectiveSlotAndVerify(int slot);
+	// Ends a run (cycles exhausted, or aborted): resets state to Idle, emits a final status and
+	// s_objectiveCycleProgress(0, ...). Deliberately does not call apply()/saveCalibration()
+	// itself - persisting the result stays an explicit, operator-clicked step (the dialog's
+	// existing Apply/Save buttons already read the up-to-date m_scaleCalibration this leaves
+	// behind, exactly as they do after a manual measureFovOffset() click).
+	void finishObjectiveCycle(bool aborted);
 
 	CAMERA_SETTINGS m_cameraSettings;
 	Camera*& m_camera;
@@ -225,6 +296,11 @@ signals:
 	// slot conflict, invalid/non-objective file), empty if there was nothing to flag - the
 	// receiver only needs to show a blocking warning when this is non-empty.
 	void s_calibrationAutoLoadSummary(std::string appliedText, std::string warningText);
+	// Automated multi-cycle FOV-offset calibration progress. currentCycle is 1-based, 0 while
+	// idle/just finished (see finishObjectiveCycle()). waitingForContinue mirrors
+	// m_objectiveCycleState == WaitingForContinue - drives the dialog's
+	// Start/Continue/Abort button enablement and status text.
+	void s_objectiveCycleProgress(int currentCycle, int totalCycles, bool waitingForContinue);
 };
 
 #endif //SCALECALIBRATION_H

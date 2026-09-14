@@ -417,6 +417,18 @@ bool ScanControl::isValidObjectiveSlot(int slot) const {
 	return false;
 }
 
+void ScanControl::setObjectiveOptionNames(const std::vector<std::string>& names) {
+	for (auto& element : m_deviceElements) {
+		if (element.name == "Objective") {
+			if ((int)names.size() != element.maxOptions) {
+				return;
+			}
+			element.optionNames = names;
+			return;
+		}
+	}
+}
+
 int ScanControl::objectiveElementIndex() const {
 	for (const auto& element : m_deviceElements) {
 		if (element.name == "Objective") {

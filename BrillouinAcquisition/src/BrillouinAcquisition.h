@@ -35,6 +35,7 @@
 
 #include <QtWidgets/QMainWindow>
 #include "ui_BrillouinAcquisition.h"
+#include "ui_ObjectiveSetupDialog.h"
 
 #include <vector>
 #include <string>
@@ -286,6 +287,23 @@ private:
 	Ui::Dialog m_scaleCalibrationDialogUi;
 	QDialog* m_scaleCalibrationDialog{ nullptr };
 
+	// Per-slot objective names ("" = unnamed), canonical/GUI-thread-owned. Persisted via
+	// writeSettings()/readSettings() (group "objective-setup"), pushed to ScanControl's live
+	// "Objective" DeviceElement and the beampath buttons via pushObjectiveOptionNames(), and
+	// read directly (not round-tripped through ScanControl) by populateObjectivePickerCombos().
+	// Sized to the active backend's "Objective" DeviceElement::maxOptions once a backend is
+	// connected (6 for every current backend; empty if the backend has none, e.g. NIDAQ).
+	std::vector<std::string> m_objectiveSlotNames;
+	Ui::ObjectiveSetupDialog m_objectiveSetupDialogUi;
+	QDialog* m_objectiveSetupDialog{ nullptr };
+
+	// Suppresses objectiveSwitched()'s two blocking QMessageBox warnings for the duration of an
+	// automated multi-cycle run (ScaleCalibration::startObjectiveCycleCalibration()) - the
+	// target slot being calibrated will, by definition, always lack a FOV offset, so leaving
+	// these active would interrupt every single cycle. Set/cleared from
+	// updateObjectiveCycleProgress().
+	bool m_suppressObjectiveSwitchWarnings{ false };
+
 	Camera* m_andor{ nullptr };
 	ScanControl* m_scanControl{ nullptr };
 	Camera* m_brightfieldCamera{ nullptr };
@@ -428,6 +446,41 @@ private slots:
 	void scaleCalibrationButtonSave_clicked();
 	void scaleCalibrationButtonFovOffsetReference_clicked();
 	void scaleCalibrationButtonFovOffsetMeasure_clicked();
+
+	// Automated multi-cycle FOV-offset calibration (Reference/Target combos + Start/Continue/
+	// Abort, see ScaleCalibration::startObjectiveCycleCalibration()). Dispatches to
+	// m_scaleCalibration exactly like the manual FOV-offset buttons above.
+	void scaleCalibrationButtonStartObjectiveCycle_clicked();
+	void scaleCalibrationButtonContinueObjectiveCycle_clicked();
+	void scaleCalibrationButtonAbortObjectiveCycle_clicked();
+	// s_objectiveCycleProgress() receiver - toggles Start/Continue/Abort enablement and updates
+	// the progress label; also flips m_suppressObjectiveSwitchWarnings for the run's duration.
+	void updateObjectiveCycleProgress(int currentCycle, int totalCycles, bool waitingForContinue);
+
+	// "Devices > Objective Setup": per-slot objective name/magnification, independent of and a
+	// prerequisite for the Reference/Target combos above (see m_objectiveSlotNames).
+	void on_action_Objective_setup_triggered();
+	void objectiveSetupButtonApply_clicked();
+	// Pushes m_objectiveSlotNames out to everywhere it needs to be reflected: the live
+	// ScanControl's "Objective" DeviceElement::optionNames (cross-thread), the already-built
+	// beampath buttons (updateElementButtonLabels(), GUI thread, immediate), and the Scale
+	// Calibration dialog's Reference/Target combos if that dialog is currently open
+	// (populateObjectivePickerCombos()). Called after Objective Setup's Apply and once at
+	// startup (initScanControl(), before the beampath is actually built).
+	void pushObjectiveOptionNames();
+	// Sets the beampath QPushButtons' text for the "Objective" element from
+	// objectiveOptionNames (already formatted - empty slots must already be the fixed-width
+	// placeholder, not ""). Mirrors checkElementButtons()'s exact "indButton only increments on
+	// PUSHBUTTON elements" indexing so it stays correct regardless of backend/element order.
+	void updateElementButtonLabels(const std::vector<std::string>& objectiveOptionNames);
+	// Fills the Scale Calibration dialog's referenceObjectiveCombo/targetObjectiveCombo from
+	// m_objectiveSlotNames (name if set, else the word "Empty"), storing the 1-based slot number
+	// as each item's data (currentData().toInt()). No-op if the dialog is not currently open.
+	void populateObjectivePickerCombos();
+	// Empty slot names -> the fixed-width "E  " beampath placeholder (same width as "10x"-style
+	// names); named slots pass through unchanged. Used for the beampath specifically - the
+	// Reference/Target combos (populateObjectivePickerCombos()) spell out "Empty" instead.
+	std::vector<std::string> formatObjectiveNamesForBeampath(const std::vector<std::string>& names) const;
 
 	void setTranslationDistanceX(double dx);
 	void setTranslationDistanceY(double dy);

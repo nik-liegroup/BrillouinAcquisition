@@ -4875,6 +4875,7 @@ border: none;</string>
     <addaction name="actionConnect_Stage"/>
     <addaction name="menu_Voltage_calibration"/>
     <addaction name="menu_Scale_calibration"/>
+    <addaction name="action_Objective_setup"/>
     <addaction name="separator"/>
     <addaction name="actionConnect_Brightfield_camera"/>
     <addaction name="separator"/>
@@ -4944,6 +4945,11 @@ border: none;</string>
   <action name="actionSettings_Stage">
    <property name="text">
     <string>Settings</string>
+   </property>
+  </action>
+  <action name="action_Objective_setup">
+   <property name="text">
+    <string>Objective Setup</string>
    </property>
   </action>
   <action name="actionLoad_Voltage_Position_calibration">

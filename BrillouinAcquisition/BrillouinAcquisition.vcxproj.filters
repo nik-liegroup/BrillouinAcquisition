@@ -304,6 +304,9 @@
     <QtUic Include="src\gui\ScaleCalibrationDialog.ui">
       <Filter>Form Files</Filter>
     </QtUic>
+    <QtUic Include="src\gui\ObjectiveSetupDialog.ui">
+      <Filter>Form Files</Filter>
+    </QtUic>
     <QtMoc Include="src\lib\h5bm.h">
       <Filter>Header Files\lib</Filter>
     </QtMoc>
