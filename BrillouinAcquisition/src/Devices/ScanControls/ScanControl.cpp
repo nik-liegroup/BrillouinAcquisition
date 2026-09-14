@@ -175,7 +175,17 @@ void ScanControl::enableMeasurementMode(bool enabled) {
 	// so the AOI positions display has the correct origin.
 	if (enabled) {
 		auto pos = getPosition();
-		m_startPosition = POINT2{ pos.x, pos.y };
+		// Fold in the active objective's own FOV-center offset at capture time - relative-mode
+		// targets are "current stage position, translated by the active objective's FOV offset,
+		// plus the grid offset" (one formula, always), not "current stage position" alone with
+		// the FOV term only ever applied as a later correction on a subsequent switch. Without
+		// this, a grid defined and started while already sitting on a non-reference objective
+		// (no switch involved at all) would silently target the wrong physical location by
+		// exactly that objective's own offset. adjustStartPositionForFovOffsetChange() keeps this
+		// invariant (m_startPosition == stage position + active objective's FOV offset) intact
+		// across any later switch/FOV-offset save.
+		auto fovOffsetUm = getActiveObjectiveFovOffsetUm();
+		m_startPosition = POINT2{ pos.x + fovOffsetUm.x, pos.y + fovOffsetUm.y };
 	}
 	m_measurementMode = enabled;
 }
@@ -540,8 +550,14 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	// sliding past a fixed marker.
 	//
 	// In normal (live-preview) mode, the positions are shown relative to the scanner
-	// position, so they track wherever the laser currently points within the FOV.
-	auto offset = m_positionScanner;
+	// position, so they track wherever the laser currently points within the FOV - plus the
+	// active objective's own FOV-center offset, so a relative-mode grid visibly shifts (relative
+	// to the fixed marker) on an objective switch, exactly like it needs to physically shift once
+	// a measurement is actually started (see enableMeasurementMode()'s identical formula for the
+	// measurement-mode case below, and Brillouin::acquire()'s analogous capture of its own
+	// m_startPosition) - without this, switching objectives only ever rescaled the preview, never
+	// translated it, even with a real, saved FOV offset.
+	auto offset = m_positionScanner + getActiveObjectiveFovOffsetUm();
 	if (positionIsAbsolute) {
 		// Absolute positions are stored as the raw target stage+scanner position directly
 		// (absoluteGridOriginUm + gridOffset, see gridOffsetToAbsoluteTarget()), so the

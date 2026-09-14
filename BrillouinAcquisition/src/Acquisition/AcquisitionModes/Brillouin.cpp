@@ -2415,7 +2415,16 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 
 	// get current stage position
 	if (m_scanControl) {
-		m_startPosition = m_scanControl->getPosition();
+		// Fold in the active objective's own FOV-center offset at capture time - see
+		// ScanControl::enableMeasurementMode()'s identical treatment of its own (separate)
+		// m_startPosition for the full reasoning: relative-mode targets are "current stage
+		// position, translated by the active objective's FOV offset, plus the grid offset", one
+		// formula always, not "current stage position" alone with the FOV term only ever applied
+		// as a later correction on a subsequent switch. adjustStartPositionForFovOffsetChange()
+		// keeps this invariant intact across any later switch/FOV-offset save.
+		auto stagePosition = m_scanControl->getPosition();
+		auto fovOffsetUm = m_scanControl->getActiveObjectiveFovOffsetUm();
+		m_startPosition = POINT3{ stagePosition.x + fovOffsetUm.x, stagePosition.y + fovOffsetUm.y, stagePosition.z };
 		// Enable measurement mode (so the AOI display is correct).
 		m_scanControl->enableMeasurementMode(true);
 	} else {
