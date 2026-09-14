@@ -165,8 +165,8 @@ void ScaleCalibration::loadCalibrationForSlot(int slot, std::string filepath, st
 	} catch (...) {
 		emit(s_scaleCalibrationStatus("Could not link calibration file",
 			"\"" + filepath + "\" is not a valid scale calibration file - only files written by "
-			"this version of the software (Apply/Save, or Objective Setup's \"New\" button) are "
-			"accepted."));
+			"this version of the software (Save calibration, or Objective Setup's \"New\" button) "
+			"are accepted."));
 		return;
 	}
 
@@ -350,7 +350,7 @@ void ScaleCalibration::writeLinkedCalibrationFile() {
 	if (m_linkedCalibrationFilePath.empty()) {
 		emit(s_scaleCalibrationStatus("Calibration not saved to a file",
 			"This slot has no linked calibration file yet - link or create one first "
-			"(Devices > Objective Setup), then Apply/Save again to persist this calibration to disk."));
+			"(Devices > Objective Setup), then Save again to persist this calibration to disk."));
 		return;
 	}
 	try {
@@ -1047,14 +1047,25 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	auto maxLoc = cv::Point{};
 	cv::minMaxLoc(matchResult, &minVal, &maxVal, &minLoc, &maxLoc, cv::Mat());
 
-	// minLoc is where templ's top-left corner best matches inside searchMat. templ's content
-	// was itself cropped from templateMat's own center with `padding` margin, and
-	// searchMat/templateMat now share the same (rescaled) pixel scale and were both captured
-	// at the same, deliberately-unmoved stage position - so if the two objectives were
-	// perfectly co-centered, minLoc would land exactly at (padding, padding) (templ's
-	// un-cropped position). Any deviation from that is the pixel shift between the two
-	// objectives' optical centers, as observed in whichever image ended up as the search image.
-	auto pixelShift = minLoc - cv::Point(padding, padding);
+	// minLoc is where templ's top-left corner best matches inside searchMat. searchMat and
+	// templateMat/templ are NOT generally the same size here (that only holds for the
+	// __acquire() scale-calibration match above, which this was copied from) - after rescaling
+	// to a common pixel pitch, the reference's real field of view is still a different physical
+	// size than the target's (e.g. a lower-mag objective genuinely sees more of the sample), so
+	// searchMat (the bigger one) and templ (cropped from the smaller one) differ in size too.
+	// The correct "zero shift" expected location is therefore where templ's own center would
+	// coincide with searchMat's own center - (searchMat.cols - templ.cols) / 2 horizontally,
+	// (searchMat.rows - templ.rows) / 2 vertically - NOT simply (padding, padding), which is
+	// only templ's un-cropped position within templateMat, a different, generally
+	// differently-sized image. Using (padding, padding) here (the previous bug) baked in a
+	// large, spurious, systematic offset - on the order of half the size difference between
+	// searchMat and templ, i.e. hundreds of pixels/um for a ~2x magnification difference -
+	// regardless of how well-aligned the two objectives' optical centers actually were. This
+	// expression reduces to exactly (padding, padding) in the degenerate case where searchMat
+	// and templateMat happen to be the same size (confirming it is a strict generalization, not
+	// a behavior change for that case).
+	auto expectedLoc = cv::Point((searchMat.cols - templ.cols) / 2, (searchMat.rows - templ.rows) / 2);
+	auto pixelShift = minLoc - expectedLoc;
 	if (!referenceIsSearch) {
 		// templ came from the (rescaled) reference and searchMat is the target - the above
 		// then measures "reference relative to target", the opposite of "target relative to
@@ -1208,7 +1219,7 @@ void ScaleCalibration::measureFovOffset() {
 	auto message = "Sample " + sampleCount + ": measured shift vs. reference (" + std::to_string(meanUm.x) + ", " + std::to_string(meanUm.y)
 		+ ") um, sigma " + std::to_string(sigma) + " um.\nFOV-center offset relative to baseline: ("
 		+ std::to_string(composedOffsetUm.x) + ", " + std::to_string(composedOffsetUm.y) + ") um, sigma "
-		+ std::to_string(composedSigmaUm) + " um. Repeat (more cycles) for a better sigma, then Apply/Save.";
+		+ std::to_string(composedSigmaUm) + " um. Repeat (more cycles) for a better sigma, then Save.";
 
 	// Cross-check: estimatedMagnificationChange came purely from each objective's stored
 	// pixToMicrometer calibration (what the template matching actually assumed); the nominal
@@ -1218,13 +1229,14 @@ void ScaleCalibration::measureFovOffset() {
 	// whatever objective was active when the dialog was opened). If matching is working
 	// correctly, these two should agree to within a few percent - a large disagreement means
 	// either the pixel-scale calibration for one of the two objectives is off, or the wrong
-	// objective ended up as reference/target for this measurement.
+	// objective ended up as reference/target for this measurement. Shown to 2 decimal places -
+	// full double precision here was noise, not signal, for a ratio this coarse.
 	auto targetRegisteredMagnification = m_scanControl->getActiveObjectiveCalibration().magnification;
 	message += "\nEstimated magnification change used for image matching (target/reference, from calibrated pixel scale): "
-		+ std::to_string(estimatedMagnificationChange) + "x";
+		+ QString::number(estimatedMagnificationChange, 'f', 2).toStdString() + "x";
 	if (targetRegisteredMagnification > 0.0 && m_fovReferenceMagnification > 0.0) {
 		auto nominalMagnificationChange = targetRegisteredMagnification / m_fovReferenceMagnification;
-		message += " (nominal from saved objective magnifications: " + std::to_string(nominalMagnificationChange)
+		message += " (nominal from saved objective magnifications: " + QString::number(nominalMagnificationChange, 'f', 2).toStdString()
 			+ "x - large disagreement suggests a bad pixel-scale calibration for one of the two objectives, not this measurement).";
 	} else {
 		message += " (nominal magnification ratio unavailable - one of the two objectives has no saved \"Magnification\" value).";
@@ -1371,10 +1383,10 @@ void ScaleCalibration::finishObjectiveCycle(bool aborted) {
 	if (aborted) {
 		emit(s_scaleCalibrationStatus("Automated calibration aborted",
 			"Stopped after cycle " + std::to_string(m_objectiveCycleIndex) + " of " + std::to_string(m_objectiveCycleCount)
-			+ ". Whatever samples were already accumulated are still available below - Apply/Save if usable, or start a new run."));
+			+ ". Whatever samples were already accumulated are still available below - Save if usable, or start a new run."));
 	} else {
 		emit(s_scaleCalibrationStatus("Automated calibration finished",
 			"Completed " + std::to_string(m_objectiveCycleCount) + " cycles. Review the mean offset/sigma and the "
-			"estimated-magnification-change sanity check above, then Apply/Save if it looks right."));
+			"estimated-magnification-change sanity check above, then Save if it looks right."));
 	}
 }

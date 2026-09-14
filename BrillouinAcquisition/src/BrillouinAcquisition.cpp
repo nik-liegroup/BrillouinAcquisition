@@ -4349,13 +4349,13 @@ void BrillouinAcquisition::refreshScaleCalibrationObjectiveDisplay() {
 	const QSignalBlocker blocker2(m_scaleCalibrationDialogUi.magnification);
 	m_scaleCalibrationDialogUi.objectiveName->setText(QString::fromStdString(activeName));
 	m_scaleCalibrationDialogUi.magnification->setValue(activeMagnification);
-	// Keep ScaleCalibration's own edit buffer in sync too, so Apply/Save persist the right
+	// Keep ScaleCalibration's own edit buffer in sync too, so Save persists the right
 	// name/magnification even though nothing in the dialog lets the operator type them anymore.
 	m_scaleCalibration->setObjectiveName(QString::fromStdString(activeName));
 	m_scaleCalibration->setMagnification(activeMagnification);
 
 	// Same idea for the linked calibration file - shown read-only so the operator can see which
-	// file Apply/Save will write into, and pushed into ScaleCalibration so they actually do.
+	// file Save will write into, and pushed into ScaleCalibration so it actually does.
 	auto activePath = (activeSlot >= 1 && activeSlot <= (int)m_objectiveSlotCalibrationPaths.size())
 		? m_objectiveSlotCalibrationPaths[activeSlot - 1] : std::string{};
 	m_scaleCalibrationDialogUi.objectiveCalibrationFile->setToolTip(QString::fromStdString(activePath));
@@ -4910,12 +4910,6 @@ void BrillouinAcquisition::initScaleCalibration() {
 			&ScaleCalibration::s_scaleCalibrationStatus,
 			this,
 			[this](std::string title, std::string message) { showScaleCalibrationStatus(title, message); }
-		);
-		connection = QWidget::connect(
-			m_scaleCalibration,
-			&ScaleCalibration::s_closeScaleCalibrationDialog,
-			this,
-			[this]() { closeScaleCalibrationDialog(); }
 		);
 	}
 }

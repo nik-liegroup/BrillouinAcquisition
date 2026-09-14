@@ -44,7 +44,7 @@ public slots:
 	// Writes a brand-new, blank calibration file (identity/zero scale calibration, no FOV
 	// offset) for a slot that has no calibration file yet, and registers it exactly like
 	// loadCalibrationForSlot() would - so "New" in Objective Setup behaves like picking a real
-	// (if not yet actually calibrated) file from that point on: Apply/Save later overwrite the
+	// (if not yet actually calibrated) file from that point on: Save later overwrites the
 	// same path once a real scale calibration/FOV offset has been measured for it.
 	void createEmptyCalibrationFile(int slot, std::string objectiveName, double magnification, std::string filepath);
 
