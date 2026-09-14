@@ -294,6 +294,15 @@ private:
 	// Sized to the active backend's "Objective" DeviceElement::maxOptions once a backend is
 	// connected (6 for every current backend; empty if the backend has none, e.g. NIDAQ).
 	std::vector<std::string> m_objectiveSlotNames;
+	// Explicit "this slot's scale calibration lives in this file" link, set via Objective
+	// Setup's per-slot "..." browse button - "" = no file linked for that slot. Same size/
+	// indexing as m_objectiveSlotNames (kept in sync by initScanControl()'s resize), persisted
+	// in the same "objective-setup" settings group. Loaded into ScanControl at startup
+	// (loadLinkedObjectiveCalibrations()) and re-loaded immediately whenever changed via Apply -
+	// unlike m_objectiveSlotNames (a label the beampath displays), this is what actually
+	// determines which ObjectiveCalibrationData ends up registered for the slot, via
+	// ScaleCalibration::loadCalibrationForSlot().
+	std::vector<std::string> m_objectiveSlotCalibrationPaths;
 	Ui::ObjectiveSetupDialog m_objectiveSetupDialogUi;
 	QDialog* m_objectiveSetupDialog{ nullptr };
 
@@ -461,6 +470,18 @@ private slots:
 	// prerequisite for the Reference/Target combos above (see m_objectiveSlotNames).
 	void on_action_Objective_setup_triggered();
 	void objectiveSetupButtonApply_clicked();
+	// One per slot, wired to each row's "..."/"x" buttons in on_action_Objective_setup_triggered() -
+	// opens a file picker (browse) or clears the link (clear), updating only that row's
+	// calibrationPath_N label (full path kept in the label's tooltip - see
+	// objectiveSetupButtonApply_clicked()) until Apply is clicked, same as the name fields.
+	void objectiveSetupBrowseCalibration_clicked(int slotIndex);
+	void objectiveSetupClearCalibration_clicked(int slotIndex);
+	// Loads m_objectiveSlotCalibrationPaths into ScanControl for every slot that has one
+	// configured (ScaleCalibration::loadCalibrationForSlot() per slot) - called once at startup
+	// (initScanControl(), after autoLoadObjectiveCalibrations()) and again from
+	// objectiveSetupButtonApply_clicked() whenever a link changes, so a newly-linked file takes
+	// effect immediately without needing an app restart.
+	void loadLinkedObjectiveCalibrations();
 	// Pushes m_objectiveSlotNames out to everywhere it needs to be reflected: the live
 	// ScanControl's "Objective" DeviceElement::optionNames (cross-thread), the already-built
 	// beampath buttons (updateElementButtonLabels(), GUI thread, immediate), and the Scale

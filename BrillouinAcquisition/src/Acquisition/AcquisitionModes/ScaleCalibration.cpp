@@ -163,6 +163,36 @@ void ScaleCalibration::autoLoadCalibrationsFromFolder(std::string folder) {
 	emit(s_calibrationAutoLoadSummary(appliedText, warningText));
 }
 
+void ScaleCalibration::loadCalibrationForSlot(int slot, std::string filepath) {
+	if (!m_scanControl) {
+		return;
+	}
+	if (!m_scanControl->isValidObjectiveSlot(slot)) {
+		emit(s_scaleCalibrationStatus("Could not link calibration file",
+			"Slot " + std::to_string(slot) + " is not a physically-possible objective position on this device."));
+		return;
+	}
+
+	ObjectiveCalibrationData data{};
+	try {
+		readCalibrationFile(filepath, &data);
+		// Same validity check autoLoadCalibrationsFromFolder() uses - also throws on a
+		// degenerate/non-basis calibration, not just an unreadable file.
+		ScaleCalibrationHelper::initializeCalibrationFromPixel(&data);
+	} catch (...) {
+		emit(s_scaleCalibrationStatus("Could not link calibration file",
+			"\"" + filepath + "\" is not a valid scale calibration file."));
+		return;
+	}
+
+	// Explicit link, unlike autoLoadCalibrationsFromFolder()'s name/slot-matching - register
+	// against the requested slot regardless of what the file's own objectiveName/objectiveSlot
+	// say. setObjectiveCalibration() applies it live immediately if slot is already active, and
+	// unconditionally on every future switch to it either way (ScanControl::
+	// handleObjectiveSlotObserved()).
+	m_scanControl->setObjectiveCalibration(slot, data);
+}
+
 /*
  * Private definitions
  */

@@ -13,6 +13,7 @@
 #include <limits>
 
 #include <QRegularExpression>
+#include <QFileInfo>
 
 using namespace std::filesystem;
 
@@ -4089,6 +4090,29 @@ void BrillouinAcquisition::autoLoadObjectiveCalibrations() {
 	);
 }
 
+void BrillouinAcquisition::loadLinkedObjectiveCalibrations() {
+	// Explicit, per-slot links set in Objective Setup - takes priority over (runs after, so
+	// overrides) whatever autoLoadObjectiveCalibrations()'s folder-scan heuristic already
+	// loaded for the same slot, since this is an unambiguous operator choice rather than a
+	// name-matching guess. Only ever registers slots that actually have a link configured;
+	// slots with none are left exactly as autoLoadObjectiveCalibrations() (or a prior session)
+	// set them.
+	for (size_t ii = 0; ii < m_objectiveSlotCalibrationPaths.size(); ii++) {
+		auto path = m_objectiveSlotCalibrationPaths[ii];
+		if (path.empty()) {
+			continue;
+		}
+		auto slot = (int)ii + 1;
+		QMetaObject::invokeMethod(
+			m_scaleCalibration,
+			[&m_scaleCalibration = m_scaleCalibration, slot, path]() {
+				m_scaleCalibration->loadCalibrationForSlot(slot, path);
+			},
+			Qt::AutoConnection
+		);
+	}
+}
+
 void BrillouinAcquisition::calibrationAutoLoadSummary(std::string appliedText, std::string warningText) {
 	if (!appliedText.empty()) {
 		qInfo(logInfo()) << "Objective calibrations auto-loaded from" << QString::fromStdString(m_calibrationsFolderPath) << ":\n" << QString::fromStdString(appliedText);
@@ -4130,6 +4154,21 @@ void BrillouinAcquisition::on_action_Objective_setup_triggered() {
 		m_objectiveSetupDialogUi.slot3_label, m_objectiveSetupDialogUi.slot4_label,
 		m_objectiveSetupDialogUi.slot5_label, m_objectiveSetupDialogUi.slot6_label
 	};
+	std::array<QLabel*, 6> calibrationPathLabels{
+		m_objectiveSetupDialogUi.calibrationPath_1, m_objectiveSetupDialogUi.calibrationPath_2,
+		m_objectiveSetupDialogUi.calibrationPath_3, m_objectiveSetupDialogUi.calibrationPath_4,
+		m_objectiveSetupDialogUi.calibrationPath_5, m_objectiveSetupDialogUi.calibrationPath_6
+	};
+	std::array<QPushButton*, 6> browseButtons{
+		m_objectiveSetupDialogUi.button_browseCalibration_1, m_objectiveSetupDialogUi.button_browseCalibration_2,
+		m_objectiveSetupDialogUi.button_browseCalibration_3, m_objectiveSetupDialogUi.button_browseCalibration_4,
+		m_objectiveSetupDialogUi.button_browseCalibration_5, m_objectiveSetupDialogUi.button_browseCalibration_6
+	};
+	std::array<QPushButton*, 6> clearButtons{
+		m_objectiveSetupDialogUi.button_clearCalibration_1, m_objectiveSetupDialogUi.button_clearCalibration_2,
+		m_objectiveSetupDialogUi.button_clearCalibration_3, m_objectiveSetupDialogUi.button_clearCalibration_4,
+		m_objectiveSetupDialogUi.button_clearCalibration_5, m_objectiveSetupDialogUi.button_clearCalibration_6
+	};
 
 	auto hasObjectiveElement = !m_objectiveSlotNames.empty();
 	m_objectiveSetupDialogUi.noObjectiveElementLabel->setVisible(!hasObjectiveElement);
@@ -4138,15 +4177,31 @@ void BrillouinAcquisition::on_action_Objective_setup_triggered() {
 	m_objectiveSetupDialogUi.button_apply->setEnabled(hasObjectiveElement);
 	m_objectiveSetupDialogUi.statusLabel->setText("");
 
+	// Kept in sync with m_objectiveSlotNames' size everywhere it changes (initScanControl(),
+	// objectiveSetupButtonApply_clicked()) - this resize is just a defensive fallback so a
+	// mismatch (should not happen) shows empty links rather than crashing on an out-of-range
+	// index below.
+	m_objectiveSlotCalibrationPaths.resize(m_objectiveSlotNames.size());
+
 	for (size_t ii = 0; ii < nameFields.size(); ii++) {
 		auto rowExists = ii < m_objectiveSlotNames.size();
 		slotLabels[ii]->setVisible(rowExists);
 		nameFields[ii]->setVisible(rowExists);
 		magnificationLabels[ii]->setVisible(rowExists);
+		calibrationPathLabels[ii]->setVisible(rowExists);
+		browseButtons[ii]->setVisible(rowExists);
+		clearButtons[ii]->setVisible(rowExists);
 		if (rowExists) {
 			nameFields[ii]->setText(QString::fromStdString(m_objectiveSlotNames[ii]));
 			magnificationLabels[ii]->setText(m_objectiveSlotNames[ii].empty() ? "-"
 				: QString::fromStdString(m_objectiveSlotNames[ii].substr(0, m_objectiveSlotNames[ii].size() - 1)));
+			auto path = m_objectiveSlotCalibrationPaths[ii];
+			// Full path lives in the tooltip - objectiveSetupButtonApply_clicked() reads that
+			// back, the visible text is just the filename so a long path doesn't blow out the
+			// column width.
+			calibrationPathLabels[ii]->setToolTip(QString::fromStdString(path));
+			calibrationPathLabels[ii]->setText(path.empty() ? "(none)"
+				: QFileInfo(QString::fromStdString(path)).fileName());
 		}
 	}
 
@@ -4169,8 +4224,56 @@ void BrillouinAcquisition::on_action_Objective_setup_triggered() {
 		this,
 		[this]() { objectiveSetupButtonApply_clicked(); }
 	);
+	for (int ii = 0; ii < (int)browseButtons.size(); ii++) {
+		connection = QWidget::connect(
+			browseButtons[ii],
+			&QPushButton::clicked,
+			this,
+			[this, ii]() { objectiveSetupBrowseCalibration_clicked(ii); }
+		);
+		connection = QWidget::connect(
+			clearButtons[ii],
+			&QPushButton::clicked,
+			this,
+			[this, ii]() { objectiveSetupClearCalibration_clicked(ii); }
+		);
+	}
 
 	m_objectiveSetupDialog->show();
+}
+
+void BrillouinAcquisition::objectiveSetupBrowseCalibration_clicked(int slotIndex) {
+	if (slotIndex < 0 || slotIndex >= (int)m_objectiveSlotCalibrationPaths.size()) {
+		return;
+	}
+	auto currentPath = m_objectiveSlotCalibrationPaths[slotIndex];
+	auto path = QFileDialog::getOpenFileName(m_objectiveSetupDialog, tr("Select scale calibration"),
+		QString::fromStdString(currentPath), tr("Scale calibration (*.h5)"));
+	if (path.isEmpty()) {
+		return;
+	}
+	// Staged in the label only, same as the name fields - not written to
+	// m_objectiveSlotCalibrationPaths or loaded until Apply is clicked.
+	std::array<QLabel*, 6> calibrationPathLabels{
+		m_objectiveSetupDialogUi.calibrationPath_1, m_objectiveSetupDialogUi.calibrationPath_2,
+		m_objectiveSetupDialogUi.calibrationPath_3, m_objectiveSetupDialogUi.calibrationPath_4,
+		m_objectiveSetupDialogUi.calibrationPath_5, m_objectiveSetupDialogUi.calibrationPath_6
+	};
+	calibrationPathLabels[slotIndex]->setToolTip(path);
+	calibrationPathLabels[slotIndex]->setText(QFileInfo(path).fileName());
+}
+
+void BrillouinAcquisition::objectiveSetupClearCalibration_clicked(int slotIndex) {
+	if (slotIndex < 0 || slotIndex >= (int)m_objectiveSlotCalibrationPaths.size()) {
+		return;
+	}
+	std::array<QLabel*, 6> calibrationPathLabels{
+		m_objectiveSetupDialogUi.calibrationPath_1, m_objectiveSetupDialogUi.calibrationPath_2,
+		m_objectiveSetupDialogUi.calibrationPath_3, m_objectiveSetupDialogUi.calibrationPath_4,
+		m_objectiveSetupDialogUi.calibrationPath_5, m_objectiveSetupDialogUi.calibrationPath_6
+	};
+	calibrationPathLabels[slotIndex]->setToolTip("");
+	calibrationPathLabels[slotIndex]->setText("(none)");
 }
 
 void BrillouinAcquisition::objectiveSetupButtonApply_clicked() {
@@ -4181,8 +4284,10 @@ void BrillouinAcquisition::objectiveSetupButtonApply_clicked() {
 	};
 
 	// Validate every row first, so a single bad entry doesn't leave m_objectiveSlotNames
-	// half-updated - either all rows apply, or none do.
-	static const QRegularExpression namePattern("^[1-9][0-9]x$");
+	// half-updated - either all rows apply, or none do. One or two digits (1x-99x, no leading
+	// zero) - formatObjectiveNamesForBeampath() pads a one-digit name to the same 3-character
+	// beampath width as a two-digit one, so the button width stays consistent either way.
+	static const QRegularExpression namePattern("^[1-9][0-9]?x$");
 	auto candidates = std::vector<std::string>(m_objectiveSlotNames.size());
 	for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
 		auto text = nameFields[ii]->text().trimmed();
@@ -4193,16 +4298,30 @@ void BrillouinAcquisition::objectiveSetupButtonApply_clicked() {
 		if (!namePattern.match(text).hasMatch()) {
 			m_objectiveSetupDialogUi.statusLabel->setText(
 				"Slot " + QString::number(ii + 1) + ": \"" + text +
-				"\" is not valid - use exactly two digits followed by \"x\" (10x-99x), or leave blank."
+				"\" is not valid - use one or two digits followed by \"x\" (1x-99x), or leave blank."
 			);
 			return;
 		}
 		candidates[ii] = text.toStdString();
 	}
 
+	std::array<QLabel*, 6> calibrationPathLabels{
+		m_objectiveSetupDialogUi.calibrationPath_1, m_objectiveSetupDialogUi.calibrationPath_2,
+		m_objectiveSetupDialogUi.calibrationPath_3, m_objectiveSetupDialogUi.calibrationPath_4,
+		m_objectiveSetupDialogUi.calibrationPath_5, m_objectiveSetupDialogUi.calibrationPath_6
+	};
+	auto calibrationPathCandidates = std::vector<std::string>(m_objectiveSlotCalibrationPaths.size());
+	for (size_t ii = 0; ii < calibrationPathCandidates.size(); ii++) {
+		// Full path lives in the tooltip (see on_action_Objective_setup_triggered()/
+		// objectiveSetupBrowseCalibration_clicked()) - the visible text is just the filename.
+		calibrationPathCandidates[ii] = calibrationPathLabels[ii]->toolTip().toStdString();
+	}
+
 	m_objectiveSlotNames = candidates;
+	m_objectiveSlotCalibrationPaths = calibrationPathCandidates;
 	writeSettings();
 	pushObjectiveOptionNames();
+	loadLinkedObjectiveCalibrations();
 	m_objectiveSetupDialog->hide();
 }
 
@@ -4472,6 +4591,7 @@ void BrillouinAcquisition::initScanControl() {
 			}
 		}
 		m_objectiveSlotNames.resize(maxOptions);
+		m_objectiveSlotCalibrationPaths.resize(maxOptions);
 		if (maxOptions > 0) {
 			m_scanControl->setObjectiveOptionNames(formatObjectiveNamesForBeampath(m_objectiveSlotNames));
 		}
@@ -4585,6 +4705,7 @@ void BrillouinAcquisition::initScanControl() {
 	);
 
 	autoLoadObjectiveCalibrations();
+	loadLinkedObjectiveCalibrations();
 
 	m_scanControl->locatePositionScanner(m_positionScanner);
 }
@@ -5209,7 +5330,15 @@ void BrillouinAcquisition::checkElementButtons() {
 std::vector<std::string> BrillouinAcquisition::formatObjectiveNamesForBeampath(const std::vector<std::string>& names) const {
 	auto formatted = std::vector<std::string>(names.size());
 	for (size_t ii = 0; ii < names.size(); ii++) {
-		formatted[ii] = names[ii].empty() ? "E  " : names[ii];
+		if (names[ii].empty()) {
+			formatted[ii] = "E  ";
+		} else if (names[ii].size() == 2) {
+			// One-digit magnification (e.g. "5x") - left-pad to the same 3-character width as
+			// a two-digit name ("10x") so the beampath buttons stay a consistent size.
+			formatted[ii] = " " + names[ii];
+		} else {
+			formatted[ii] = names[ii];
+		}
 	}
 	return formatted;
 }
@@ -6482,6 +6611,8 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("slot-count", (int)m_objectiveSlotNames.size());
 	for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
 		settings.setValue(QString("slot-%1-name").arg(ii + 1), QString::fromStdString(m_objectiveSlotNames[ii]));
+		auto path = ii < m_objectiveSlotCalibrationPaths.size() ? m_objectiveSlotCalibrationPaths[ii] : "";
+		settings.setValue(QString("slot-%1-calibration-path").arg(ii + 1), QString::fromStdString(path));
 	}
 	settings.endGroup();
 	settings.beginGroup("devices-settings");
@@ -6639,13 +6770,16 @@ void BrillouinAcquisition::readSettings() {
 	settings.endGroup();
 
 	settings.beginGroup("objective-setup");
-	// Read into m_objectiveSlotNames as-is here; initScanControl() (run later at startup, once
-	// the active backend and its real "Objective" element maxOptions are known) resizes this to
-	// match, preserving these values for whichever slots still exist.
+	// Read into m_objectiveSlotNames/m_objectiveSlotCalibrationPaths as-is here;
+	// initScanControl() (run later at startup, once the active backend and its real
+	// "Objective" element maxOptions are known) resizes both to match, preserving these values
+	// for whichever slots still exist.
 	auto slotCount = settings.value("slot-count", 0).toInt();
 	m_objectiveSlotNames.assign(slotCount, std::string{});
+	m_objectiveSlotCalibrationPaths.assign(slotCount, std::string{});
 	for (int ii = 0; ii < slotCount; ii++) {
 		m_objectiveSlotNames[ii] = settings.value(QString("slot-%1-name").arg(ii + 1), "").toString().toStdString();
+		m_objectiveSlotCalibrationPaths[ii] = settings.value(QString("slot-%1-calibration-path").arg(ii + 1), "").toString().toStdString();
 	}
 	settings.endGroup();
 

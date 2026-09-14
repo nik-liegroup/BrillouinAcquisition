@@ -42,6 +42,23 @@ public slots:
 	// not something the operator is watching in the Scale Calibration dialog.
 	void autoLoadCalibrationsFromFolder(std::string folder);
 
+	// Reads one calibration file and registers it directly against `slot`, regardless of what
+	// the file's own saved objectiveName/objectiveSlot say - unlike
+	// autoLoadCalibrationsFromFolder()'s name/slot-matching heuristic, this is an explicit,
+	// operator-chosen link (see BrillouinAcquisition's "Objective Setup" dialog, which is what
+	// calls this - once per named-and-linked slot, both at startup and right after the operator
+	// picks/changes a file there). Same effect as load()+apply() while standing at that
+	// objective would have, but for an arbitrary slot without needing to be standing there or
+	// touching the dialog's own edit buffer (m_scaleCalibration) or scale calibration cache
+	// (m_scanControl->getScaleCalibration()) at all - registers straight into
+	// ScanControl::setObjectiveCalibration(), which itself applies it live only if `slot`
+	// happens to already be the active one, and unconditionally re-applies it on every future
+	// switch to that slot (ScanControl::handleObjectiveSlotObserved()). Emits
+	// s_scaleCalibrationStatus() on failure (unreadable/invalid file, or slot not physically
+	// possible on this backend) rather than throwing, since the caller is a startup/background
+	// path, not something with its own try/catch around every call.
+	void loadCalibrationForSlot(int slot, std::string filepath);
+
 	// Writes the current calibration (scale + whatever objective-identity/FOV-offset fields
 	// are set) to a new file, the same way the acquire-based procedure's save() does - but
 	// without requiring an acquire to have run first (no images to write, no dependency on
@@ -120,7 +137,6 @@ public slots:
 	void abortObjectiveCycle();
 
 private:
-	enum class ObjectiveCycleState { Idle, Running, WaitingForContinue };
 	void abortMode(std::unique_ptr <StorageWrapper>& storage) override;
 	void abortMode();
 
