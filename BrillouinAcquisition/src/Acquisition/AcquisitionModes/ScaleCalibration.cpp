@@ -1113,8 +1113,15 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 		return false;
 	}
 
+	// TM_CCOEFF_NORMED (mean-subtracted, normalized cross-correlation) rather than TM_SQDIFF -
+	// unlike the same-objective scale-calibration match in __acquire(), reference and target here
+	// are captured through two different objectives, whose illumination/brightness (and contrast)
+	// commonly differ with magnification. TM_SQDIFF's score is sensitive to absolute intensity
+	// offsets/scale between the two images, which can bias or outright break the match; the
+	// normalized-correlation coefficient is invariant to a per-image additive/multiplicative
+	// brightness difference, so it keeps matching on structure regardless.
 	cv::Mat matchResult;
-	cv::matchTemplate(searchMat, templ, matchResult, cv::TemplateMatchModes::TM_SQDIFF);
+	cv::matchTemplate(searchMat, templ, matchResult, cv::TemplateMatchModes::TM_CCOEFF_NORMED);
 	cv::normalize(matchResult, matchResult, 0, 1, cv::NORM_MINMAX, -1, cv::Mat());
 
 	auto minVal = double{};
@@ -1123,20 +1130,21 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	auto maxLoc = cv::Point{};
 	cv::minMaxLoc(matchResult, &minVal, &maxVal, &minLoc, &maxLoc, cv::Mat());
 
-	// minLoc is where templ's top-left corner best matches inside searchMat. searchMat and templ
-	// are NOT the same size here (unlike the __acquire() scale-calibration match this pipeline
-	// was originally adapted from) - after rescaling to a common pixel pitch, the reference's
-	// real field of view is still a different physical size than the target's (e.g. a lower-mag
-	// objective genuinely sees more of the sample), so searchMat (the bigger one) and templ (the
-	// full smaller one) differ in size. The correct "zero shift" expected location is therefore
-	// where templ's own center would coincide with searchMat's own center -
+	// maxLoc (not minLoc - TM_CCOEFF_NORMED's best match is the highest score, the opposite
+	// convention from TM_SQDIFF) is where templ's top-left corner best matches inside searchMat.
+	// searchMat and templ are NOT the same size here (unlike the __acquire() scale-calibration
+	// match this pipeline was originally adapted from) - after rescaling to a common pixel pitch,
+	// the reference's real field of view is still a different physical size than the target's
+	// (e.g. a lower-mag objective genuinely sees more of the sample), so searchMat (the bigger
+	// one) and templ (the full smaller one) differ in size. The correct "zero shift" expected
+	// location is therefore where templ's own center would coincide with searchMat's own center -
 	// (searchMat.cols - templ.cols) / 2 horizontally, (searchMat.rows - templ.rows) / 2
 	// vertically. An earlier version of this code got this reference point wrong (assumed the
 	// two images were the same size) and then additionally cropped a margin off templ for no
 	// real benefit, discarding image content in a way that made repeated measurements
 	// noticeably inconsistent - both are fixed now.
 	auto expectedLoc = cv::Point((searchMat.cols - templ.cols) / 2, (searchMat.rows - templ.rows) / 2);
-	auto pixelShift = minLoc - expectedLoc;
+	auto pixelShift = maxLoc - expectedLoc;
 	if (!referenceIsSearch) {
 		// templ came from the (rescaled) reference and searchMat is the target - the above
 		// then measures "reference relative to target", the opposite of "target relative to
