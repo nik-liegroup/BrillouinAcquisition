@@ -874,11 +874,26 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	cv::Mat refMat = readAsMat8U(referenceImage, referenceRoi.height_binned, referenceRoi.width_binned, referenceDataType);
 	cv::Mat tgtMat = readAsMat8U(targetImage, targetRoi.height_binned, targetRoi.width_binned, targetDataType);
 
-	// Approximate, isotropic pixel pitch [um/pix] - only to bring the two images to a
-	// roughly comparable scale before template matching. The final um result below uses the
-	// target's full, non-approximated calibration instead.
-	auto referencePixelSizeUm = 0.5 * (std::abs(referenceScale.pixToMicrometerX.x) + std::abs(referenceScale.pixToMicrometerY.y));
-	auto targetPixelSizeUm = 0.5 * (std::abs(targetScale.pixToMicrometerX.x) + std::abs(targetScale.pixToMicrometerY.y));
+	// Approximate, isotropic pixel pitch [um/pix] - only to bring the two images to a roughly
+	// comparable scale before template matching. The final um result below uses the target's
+	// full, non-approximated calibration instead.
+	//
+	// sqrt(|determinant|) of the pix->um matrix, NOT an average of its diagonal terms: the
+	// determinant is the matrix's area-scale factor (um^2/pixel^2), which is correct regardless
+	// of any rotation between the camera's pixel axes and the stage axes - averaging only the
+	// diagonal (X.x, Y.y) terms silently assumes zero rotation, and is wrong (by a large,
+	// rotation-dependent factor - up to totally collapsing to ~0 at 90 degrees) whenever the two
+	// objectives' optical paths actually introduce different image rotations, which is exactly
+	// what produced a grossly inflated "estimated magnification change" (and the resulting
+	// nonsense multi-hundred-um shift, since the two images were then rescaled to the wrong
+	// relative size before matching) even with two independently-verified-correct per-objective
+	// pixel-scale calibrations.
+	auto pixelPitchUm = [](const ScaleCalibrationData& scale) {
+		auto det = scale.pixToMicrometerX.x * scale.pixToMicrometerY.y - scale.pixToMicrometerY.x * scale.pixToMicrometerX.y;
+		return std::sqrt(std::abs(det));
+	};
+	auto referencePixelSizeUm = pixelPitchUm(referenceScale);
+	auto targetPixelSizeUm = pixelPitchUm(targetScale);
 	if (referencePixelSizeUm <= 0.0 || targetPixelSizeUm <= 0.0) {
 		// Not an image-content problem at all - this objective has no (non-zero)
 		// pixToMicrometer pixel-scale calibration registered yet, i.e. its own "Acquire"

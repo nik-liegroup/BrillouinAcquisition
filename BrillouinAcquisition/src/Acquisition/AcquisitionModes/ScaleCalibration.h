@@ -195,9 +195,12 @@ private:
 	std::vector<std::byte> captureBrightfieldImageForFovOffset();
 
 	// The actual rescale-then-template-match: brings referenceImage/targetImage to a common
-	// approximate pixel scale (using each side's own calibration's approximate isotropic
-	// pixel pitch - shear/rotation are not corrected for, only used to get the two images'
-	// scale roughly aligned so matchTemplate has a chance), locates the best match, and
+	// approximate pixel scale (using each side's own calibration's isotropic-equivalent pixel
+	// pitch - sqrt(|determinant|) of its pix->um matrix, which is correct regardless of any
+	// rotation between the camera's pixel axes and the stage axes, unlike averaging the
+	// matrix's diagonal terms; shear beyond a pure rotation is still not corrected for, this is
+	// only used to get the two images' scale roughly aligned so matchTemplate has a chance),
+	// locates the best match, and
 	// converts the resulting pixel shift to micrometers using the target's full (exact,
 	// non-approximated) calibration. referenceDataType/targetDataType are each image's
 	// CAMERA_SETTINGS.readout.dataType ("unsigned char" or "unsigned short") at capture time -
