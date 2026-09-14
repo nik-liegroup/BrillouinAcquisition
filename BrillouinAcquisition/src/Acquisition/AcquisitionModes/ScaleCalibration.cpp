@@ -378,6 +378,11 @@ void ScaleCalibration::persistPartial(bool includeScale, bool includeFov) {
 	// half the caller does NOT own is left exactly as it was, regardless of what might currently
 	// be sitting, not-yet-committed, in that half of the dialog's shared edit buffer.
 	auto data = m_scanControl->getObjectiveCalibration(slot);
+	// Snapshot of the FOV-offset half exactly as it was BEFORE this save overwrites it below -
+	// only meaningful/used when includeFov (see the s_fovOffsetSaved emit at the end), kept
+	// outside that condition only because `data` itself is about to be overwritten either way.
+	auto oldHasFovOffset = data.hasFovOffset;
+	auto oldFovOffsetUm = data.fovOffsetUm;
 	// Identity fields are not "owned" by either half - refreshScaleCalibrationObjectiveDisplay()
 	// always keeps these correct on m_scaleCalibration, so always safe (and necessary, since a
 	// blank "New" file's stored copy may still be empty) to carry them over.
@@ -403,6 +408,18 @@ void ScaleCalibration::persistPartial(bool includeScale, bool includeFov) {
 	writeLinkedCalibrationFile();
 	emit(s_scaleCalibrationChanged(m_scaleCalibration));
 	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
+	if (includeFov) {
+		// Unlike an objective switch (ScanControl::s_objectiveSwitched), nothing else forces the
+		// on-screen grid to recompute after this - s_scaleCalibrationChanged/
+		// s_objectiveCalibrationChanged above only refresh the dialog's own display fields and
+		// re-project the already-cached grid pixel positions, they never rebuild them. Carries
+		// the pre-save/post-save FOV-offset state (slot is always the active one - this dialog
+		// only ever edits/saves against whichever objective is currently active) so a listener
+		// can apply the same "shift the not-yet-visited relative-mode grid by the delta" an
+		// objective switch gets, and force an absolute-mode redraw - see
+		// BrillouinAcquisition::onFovOffsetSaved().
+		emit(s_fovOffsetSaved(slot, oldFovOffsetUm, oldHasFovOffset, data.fovOffsetUm, data.hasFovOffset));
+	}
 }
 
 void ScaleCalibration::saveScaleCalibration() {

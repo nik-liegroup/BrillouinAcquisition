@@ -385,6 +385,16 @@ signals:
 	// currentCycle is 1-based, 0 while idle/just finished - no "waiting for continue" state,
 	// this run is fully autonomous.
 	void s_scaleCalibrationCycleProgress(int currentCycle, int totalCycles);
+	// Emitted by persistPartial() whenever saveFovOffsetCalibration() (or saveScaleCalibration()
+	// if the FOV half happened to be included too - not currently possible from the GUI, but
+	// persistPartial() doesn't otherwise know that) commits new FOV-offset fields for the active
+	// slot. `slot` is always ScanControl::getActiveObjectiveSlot() at save time - this dialog only
+	// ever edits/saves against whichever objective is currently active, never a different one.
+	// old*/new* let a listener (BrillouinAcquisition::onFovOffsetSaved()) apply the exact same
+	// "shift the not-yet-visited relative-mode grid by the delta, force an absolute-mode redraw"
+	// treatment ScanControl::s_objectiveSwitched() already gets on an actual objective switch -
+	// a plain Save while staying on the same objective triggers neither on its own.
+	void s_fovOffsetSaved(int slot, POINT2 oldOffsetUm, bool oldHasFovOffset, POINT2 newOffsetUm, bool newHasFovOffset);
 };
 
 #endif //SCALECALIBRATION_H

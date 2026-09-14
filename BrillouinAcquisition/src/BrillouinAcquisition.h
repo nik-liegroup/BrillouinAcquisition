@@ -560,6 +560,13 @@ private slots:
 	// initial hardware read at startup, not an operator-driven switch, and is filtered out
 	// before this is even called (ScanControl itself does not emit for that case).
 	void objectiveSwitched(int previousSlot, int newSlot, bool hasCalibration, bool hasFovOffset, POINT2 offsetUm, double offsetSigmaUm);
+	// Reacts to ScaleCalibration::s_fovOffsetSaved(): a plain "Save calibration" on the FOV-offset
+	// box, while staying on the same active objective, otherwise triggers neither an on-screen
+	// grid redraw nor the relative-mode grid-origin correction that an actual objective switch
+	// gets (see s_fovOffsetSaved's doc comment in ScaleCalibration.h for why). This applies the
+	// same treatment objectiveSwitched() does, just keyed off old/new FOV-offset state instead of
+	// old/new objective slot.
+	void onFovOffsetSaved(int slot, POINT2 oldOffsetUm, bool oldHasFovOffset, POINT2 newOffsetUm, bool newHasFovOffset);
 	void on_camera_playPause_clicked();
 
 	void updateImageBrillouin();

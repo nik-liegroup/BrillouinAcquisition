@@ -175,6 +175,19 @@ public slots:
 
 	void enableMeasurementMode(bool enabled);
 
+	// Shifts m_startPosition (the relative-mode AOI/grid-marker DISPLAY offset reference during
+	// an active/paused measurement - see getPositionOffset()'s measurement-mode branch) by
+	// deltaUm - a pure book-keeping update, no hardware motion. No-op while not in measurement
+	// mode (m_startPosition is irrelevant then - it gets a fresh live capture the next time
+	// enableMeasurementMode(true) runs, so there's nothing to correct yet). Called both by
+	// handleObjectiveSlotObserved() on an actual objective switch, and by BrillouinAcquisition
+	// (via onFovOffsetSaved()) when the operator saves a revised FOV offset for the active
+	// objective without switching away from it - same delta, same reasoning, two different
+	// triggers. Kept in sync with Brillouin::adjustStartPositionForFovOffsetChange(), which does
+	// the analogous shift for the actual measurement-target anchor (a different variable in a
+	// different class - see that function's own doc comment for why there are two).
+	void adjustStartPositionForFovOffsetChange(POINT2 deltaUm);
+
 	void setPreset(ScanPreset presetType);
 	Preset getPreset(ScanPreset);
 	void checkPresets();

@@ -4921,6 +4921,14 @@ void BrillouinAcquisition::initScaleCalibration() {
 			this,
 			[this](std::string title, std::string message) { showScaleCalibrationStatus(title, message); }
 		);
+		connection = QWidget::connect(
+			m_scaleCalibration,
+			&ScaleCalibration::s_fovOffsetSaved,
+			this,
+			[this](int slot, POINT2 oldOffsetUm, bool oldHasFovOffset, POINT2 newOffsetUm, bool newHasFovOffset) {
+				onFovOffsetSaved(slot, oldOffsetUm, oldHasFovOffset, newOffsetUm, newHasFovOffset);
+			}
+		);
 	}
 }
 
@@ -5305,7 +5313,7 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 	// mode's resolvedGridOriginUm() is. Without correcting that anchor here, an objective switch
 	// would leave any not-yet-visited grid point targeted at the OLD objective's FOV center.
 	//
-	// This is a pure in-memory shift of that anchor (Brillouin::adjustStartPositionForObjectiveSwitch()),
+	// This is a pure in-memory shift of that anchor (Brillouin::adjustStartPositionForFovOffsetChange()),
 	// NOT a physical stage move - a previous version of this code moved the actual stage by delta
 	// here, which was wrong: it yanked the sample out from under the live view/blue dot on every
 	// switch (unrequested motion the operator never asked for), and - since m_startPosition is
@@ -5328,11 +5336,48 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 			auto deltaUm = POINT2{ deltaX, deltaY };
 			QMetaObject::invokeMethod(
 				m_Brillouin,
-				"adjustStartPositionForObjectiveSwitch",
+				"adjustStartPositionForFovOffsetChange",
 				Qt::AutoConnection,
 				Q_ARG(POINT2, deltaUm)
 			);
 		}
+	}
+}
+
+void BrillouinAcquisition::onFovOffsetSaved(int slot, POINT2 oldOffsetUm, bool oldHasFovOffset, POINT2 newOffsetUm, bool newHasFovOffset) {
+	// Unconditional and first, mirrors objectiveSwitched() - a plain Save otherwise leaves the
+	// on-screen grid/ROI/overview-tile preview showing the OLD offset (see
+	// ScaleCalibration::s_fovOffsetSaved's doc comment for why nothing else already does this).
+	// Safe regardless of hasFovOffset/mode: absolute mode's resolvedGridOriginUm() just re-reads
+	// whatever is now registered, and if nothing meaningful changed this is a harmless no-op
+	// redraw.
+	if (m_Brillouin) {
+		QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
+	}
+
+	// Relative mode: the same "shift the not-yet-visited grid by the delta, don't move the
+	// stage" treatment objectiveSwitched() applies on an actual switch - see that function's own
+	// doc comment for why this is a pure bookkeeping shift. `slot` is always the active one (see
+	// s_fovOffsetSaved's doc comment), so the extra equality check here is just defensive - only
+	// meaningful if both the old and new state have a real offset to take a delta between.
+	if (m_Brillouin && !m_Brillouin->settings.gridCoordinatesAbsolute && m_scanControl
+			&& slot == m_scanControl->getActiveObjectiveSlot() && oldHasFovOffset && newHasFovOffset) {
+		auto deltaUm = POINT2{ newOffsetUm.x - oldOffsetUm.x, newOffsetUm.y - oldOffsetUm.y };
+		qInfo(logInfo()) << "FOV-offset calibration saved for slot" << slot
+			<< ": relative grid mode, shifting grid origin by (" << deltaUm.x << "," << deltaUm.y
+			<< ") um (no stage motion).";
+		QMetaObject::invokeMethod(
+			m_Brillouin,
+			"adjustStartPositionForFovOffsetChange",
+			Qt::AutoConnection,
+			Q_ARG(POINT2, deltaUm)
+		);
+		QMetaObject::invokeMethod(
+			m_scanControl,
+			"adjustStartPositionForFovOffsetChange",
+			Qt::AutoConnection,
+			Q_ARG(POINT2, deltaUm)
+		);
 	}
 }
 

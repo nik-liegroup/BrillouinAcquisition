@@ -729,7 +729,7 @@ void Brillouin::updatePositions() {
 	}
 }
 
-void Brillouin::adjustStartPositionForObjectiveSwitch(POINT2 deltaUm) {
+void Brillouin::adjustStartPositionForFovOffsetChange(POINT2 deltaUm) {
 	m_startPosition.x += deltaUm.x;
 	m_startPosition.y += deltaUm.y;
 }
