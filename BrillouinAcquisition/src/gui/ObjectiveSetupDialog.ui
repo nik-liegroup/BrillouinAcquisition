@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>560</width>
-    <height>360</height>
+    <width>600</width>
+    <height>340</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -20,7 +20,7 @@
    <item>
     <widget class="QLabel" name="instructionsLabel">
      <property name="text">
-      <string>Name each nosepiece slot as its magnification followed by "x" (e.g. 5x, 10x, 20x, 63x) - one or two digits, 1-99. Leave a slot blank if it is unused or unnamed. Optionally link a saved scale-calibration file (.h5) to a slot - it loads automatically at startup and re-applies every time the nosepiece switches to that slot.</string>
+      <string>Name each nosepiece slot as its magnification followed by "x" (e.g. 5x, 10x, 20x, 63x) - one or two digits, 1-99. Leave a slot blank if it is unused or unnamed. Optionally link a saved scale-calibration file (.h5) to a slot - it loads automatically at startup and re-applies every time the nosepiece switches to that slot. "New" creates a blank one to fill in later; "..." links an existing file.</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
@@ -64,27 +64,27 @@
        </widget>
       </item>
       <item row="0" column="2">
-       <widget class="QLabel" name="magnification_1">
-        <property name="text">
-         <string>-</string>
-        </property>
-        <property name="minimumSize">
-         <size>
-          <width>28</width>
-          <height>0</height>
-         </size>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="3">
        <widget class="QLabel" name="calibrationPath_1">
         <property name="text">
          <string>(none)</string>
         </property>
         <property name="minimumSize">
          <size>
-          <width>140</width>
+          <width>180</width>
           <height>0</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QPushButton" name="button_newCalibration_1">
+        <property name="text">
+         <string>New</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>16777215</height>
          </size>
         </property>
        </widget>
@@ -130,16 +130,22 @@
        </widget>
       </item>
       <item row="1" column="2">
-       <widget class="QLabel" name="magnification_2">
+       <widget class="QLabel" name="calibrationPath_2">
         <property name="text">
-         <string>-</string>
+         <string>(none)</string>
         </property>
        </widget>
       </item>
       <item row="1" column="3">
-       <widget class="QLabel" name="calibrationPath_2">
+       <widget class="QPushButton" name="button_newCalibration_2">
         <property name="text">
-         <string>(none)</string>
+         <string>New</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>16777215</height>
+         </size>
         </property>
        </widget>
       </item>
@@ -184,16 +190,22 @@
        </widget>
       </item>
       <item row="2" column="2">
-       <widget class="QLabel" name="magnification_3">
+       <widget class="QLabel" name="calibrationPath_3">
         <property name="text">
-         <string>-</string>
+         <string>(none)</string>
         </property>
        </widget>
       </item>
       <item row="2" column="3">
-       <widget class="QLabel" name="calibrationPath_3">
+       <widget class="QPushButton" name="button_newCalibration_3">
         <property name="text">
-         <string>(none)</string>
+         <string>New</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>16777215</height>
+         </size>
         </property>
        </widget>
       </item>
@@ -238,16 +250,22 @@
        </widget>
       </item>
       <item row="3" column="2">
-       <widget class="QLabel" name="magnification_4">
+       <widget class="QLabel" name="calibrationPath_4">
         <property name="text">
-         <string>-</string>
+         <string>(none)</string>
         </property>
        </widget>
       </item>
       <item row="3" column="3">
-       <widget class="QLabel" name="calibrationPath_4">
+       <widget class="QPushButton" name="button_newCalibration_4">
         <property name="text">
-         <string>(none)</string>
+         <string>New</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>16777215</height>
+         </size>
         </property>
        </widget>
       </item>
@@ -288,16 +306,22 @@
        <widget class="QLineEdit" name="objectiveName_5"/>
       </item>
       <item row="4" column="2">
-       <widget class="QLabel" name="magnification_5">
+       <widget class="QLabel" name="calibrationPath_5">
         <property name="text">
-         <string>-</string>
+         <string>(none)</string>
         </property>
        </widget>
       </item>
       <item row="4" column="3">
-       <widget class="QLabel" name="calibrationPath_5">
+       <widget class="QPushButton" name="button_newCalibration_5">
         <property name="text">
-         <string>(none)</string>
+         <string>New</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>16777215</height>
+         </size>
         </property>
        </widget>
       </item>
@@ -338,16 +362,22 @@
        <widget class="QLineEdit" name="objectiveName_6"/>
       </item>
       <item row="5" column="2">
-       <widget class="QLabel" name="magnification_6">
+       <widget class="QLabel" name="calibrationPath_6">
         <property name="text">
-         <string>-</string>
+         <string>(none)</string>
         </property>
        </widget>
       </item>
       <item row="5" column="3">
-       <widget class="QLabel" name="calibrationPath_6">
+       <widget class="QPushButton" name="button_newCalibration_6">
         <property name="text">
-         <string>(none)</string>
+         <string>New</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>16777215</height>
+         </size>
         </property>
        </widget>
       </item>

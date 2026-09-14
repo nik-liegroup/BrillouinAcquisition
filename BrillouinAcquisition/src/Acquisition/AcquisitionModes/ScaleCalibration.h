@@ -24,40 +24,29 @@ public:
 public slots:
 	void startRepetitions() override;
 
-	void load(std::string filepath);
-
-	// Scans `folder` (non-recursive) for "*.h5" calibration files, matches each one to a
-	// nosepiece slot via its stored objectiveName/objectiveSlot fields (see
-	// writeCalibrationMetadata()), and registers the unambiguous matches with the scanControl
-	// (ScanControl::setObjectiveCalibration()) exactly as if the operator had stood at each
-	// objective and clicked Load+Apply. Called at startup (see
-	// BrillouinAcquisition::autoLoadObjectiveCalibrations()) once a calibrations folder has
-	// been configured. A file is left unregistered - and reported back via
-	// s_calibrationAutoLoadSummary()'s warning text - if: it does not parse as a calibration
-	// file at all (readCalibrationFile() throws), it has no objectiveName, its objectiveSlot is
-	// unset or is not a physically-possible slot on this backend (ScanControl::
-	// isValidObjectiveSlot()), its objectiveName is shared by more than one file in the folder,
-	// or its objectiveSlot is claimed by a different objectiveName's file. Does not touch
-	// m_scaleCalibration or the dialog (unlike load()) - this is a background batch operation,
-	// not something the operator is watching in the Scale Calibration dialog.
-	void autoLoadCalibrationsFromFolder(std::string folder);
-
 	// Reads one calibration file and registers it directly against `slot`, regardless of what
-	// the file's own saved objectiveName/objectiveSlot say - unlike
-	// autoLoadCalibrationsFromFolder()'s name/slot-matching heuristic, this is an explicit,
-	// operator-chosen link (see BrillouinAcquisition's "Objective Setup" dialog, which is what
-	// calls this - once per named-and-linked slot, both at startup and right after the operator
-	// picks/changes a file there). Same effect as load()+apply() while standing at that
-	// objective would have, but for an arbitrary slot without needing to be standing there or
-	// touching the dialog's own edit buffer (m_scaleCalibration) or scale calibration cache
-	// (m_scanControl->getScaleCalibration()) at all - registers straight into
-	// ScanControl::setObjectiveCalibration(), which itself applies it live only if `slot`
-	// happens to already be the active one, and unconditionally re-applies it on every future
-	// switch to that slot (ScanControl::handleObjectiveSlotObserved()). Emits
+	// the file's own saved objectiveName/objectiveSlot say - this is an explicit, operator-
+	// chosen link (see BrillouinAcquisition's "Objective Setup" dialog, which is what calls
+	// this - once per named-and-linked slot, both at startup and right after the operator
+	// picks/changes a file there). Backfills objectiveName/magnification from Objective Setup's
+	// own name for this slot (unconditionally, not just when the file lacks them) - Objective
+	// Setup is the single authoritative source of a slot's identity now, so this is also how a
+	// legacy calibration file (saved before these fields existed, or under a name that has since
+	// changed) gets "extended"/kept in sync automatically, with no separate migration step.
+	// Registers straight into ScanControl::setObjectiveCalibration(), which itself applies it
+	// live only if `slot` happens to already be the active one, and unconditionally re-applies
+	// it on every future switch to that slot (ScanControl::handleObjectiveSlotObserved()). Emits
 	// s_scaleCalibrationStatus() on failure (unreadable/invalid file, or slot not physically
 	// possible on this backend) rather than throwing, since the caller is a startup/background
 	// path, not something with its own try/catch around every call.
-	void loadCalibrationForSlot(int slot, std::string filepath);
+	void loadCalibrationForSlot(int slot, std::string filepath, std::string objectiveName, double magnification);
+
+	// Writes a brand-new, blank calibration file (identity/zero scale calibration, no FOV
+	// offset) for a slot that has no calibration file yet, and registers it exactly like
+	// loadCalibrationForSlot() would - so "New" in Objective Setup behaves like picking a real
+	// (if not yet actually calibrated) file from that point on: Apply/Save later overwrite the
+	// same path once a real scale calibration/FOV offset has been measured for it.
+	void createEmptyCalibrationFile(int slot, std::string objectiveName, double magnification, std::string filepath);
 
 	// Writes the current calibration (scale + whatever objective-identity/FOV-offset fields
 	// are set) to a new file, the same way the acquire-based procedure's save() does - but
@@ -87,41 +76,38 @@ public slots:
 	void setPixToMicrometerY_y(double value);
 
 	// The objective-identity/FOV-offset fields on top of the existing scale calibration
-	// (see ObjectiveCalibrationData) - set from the dialog's new "Objective" group, saved/
-	// loaded alongside the rest of this calibration file, and registered against whichever
-	// objective slot is active when apply() runs (not a separately-typed slot number - the
-	// operator is expected to physically/software-switch to the objective being calibrated
-	// first, exactly like the existing acquire-based procedure already implicitly assumes).
+	// (see ObjectiveCalibrationData) - name/magnification are now set programmatically (the
+	// dialog shows them read-only, driven by Objective Setup's own name for the active slot,
+	// not free-text editable here), and referenceObjectiveName is set internally by
+	// measureFovOffset() - neither has a dedicated GUI input anymore. Saved/loaded alongside the
+	// rest of this calibration file, and registered against whichever objective slot is active
+	// when apply() runs.
 	void setObjectiveName(QString name);
 	void setMagnification(double value);
-	void setReferenceObjectiveName(QString name);
 	void setHasFovOffset(bool hasFovOffset);
 	void setFovOffsetX(double value);
 	void setFovOffsetY(double value);
 	void setFovOffsetSigma(double value);
 
-	// FOV-center offset auto-measurement. Two-step, operator-driven:
-	// 1) At the reference objective, call setFovOffsetReference() to capture and cache an
-	//    image, without moving the stage afterward.
-	// 2) Switch to the objective being calibrated (any means - GUI button or the microscope's
-	//    own panel), without moving the stage, and call measureFovOffset(). Repeating step 2
-	//    (switch away to any other objective and back, then measure again) accumulates more
-	//    samples and tightens fovOffsetSigmaUm; switching to a different target objective
-	//    between calls discards the previous target's samples automatically.
-	// This manual path itself still never commands an objective switch - the operator always
-	// drives it. startObjectiveCycleCalibration() below is a deliberate, later exception to
-	// that (see its own comment for why); it is the only place in this class that does.
-	void setFovOffsetReference();
+	// FOV-center offset auto-measurement, driven only by the automated multi-cycle run now (see
+	// startObjectiveCycleCalibration() below) - captureFovOffsetReferenceImage() (private) takes
+	// the reference image, measureFovOffset() (below) computes the shift once the target
+	// objective is active, composing it through the reference objective's own already-stored,
+	// baseline-relative offset (see the .cpp definition) so results stay correct no matter which
+	// already-calibrated objective was used as the reference for this particular run. Repeated
+	// calls (successive cycles of the same run) accumulate more samples and tighten
+	// fovOffsetSigmaUm; a different target objective than the previous call discards the
+	// previous target's samples automatically.
 	void measureFovOffset();
 
-	// Automated version of the two-step flow above, between two already-named, distinct
-	// nosepiece slots (see BrillouinAcquisition's "Objective Setup" dialog/m_objectiveSlotNames
-	// for where names come from - this class only ever deals in slot numbers). Unlike every
-	// other capture path in this class, this one *does* command objective switches itself
-	// (switchToObjectiveSlotAndVerify(), via ScanControl::setElement()) - a deliberate,
-	// confirmed exception to the "operator always drives the switch" design the manual flow
-	// above still follows, made because doing this by hand for M repeated cycles is exactly the
-	// kind of tedious, error-prone repetition automation is for. Each cycle: retract Z, switch
+	// Runs the flow above, between two already-named, distinct nosepiece slots (see
+	// BrillouinAcquisition's "Objective Setup" dialog/m_objectiveSlotNames for where names come
+	// from - this class only ever deals in slot numbers). Unlike every other capture path in
+	// this class, this one *does* command objective switches itself
+	// (switchToObjectiveSlotAndVerify(), via ScanControl::setElement()) - a deliberate, confirmed
+	// exception to "the operator drives every switch", made because doing this by hand for M
+	// repeated cycles is exactly the kind of tedious, error-prone repetition automation is for.
+	// Each cycle: retract Z, switch
 	// to referenceSlot, capture a fresh reference image, retract Z again, switch to targetSlot,
 	// then PAUSES (returns to the caller/event loop - see runObjectiveCycleStep()) for the
 	// operator to manually refocus; continueObjectiveCycle() resumes from there, measures (via
@@ -152,12 +138,11 @@ private:
 	std::string newCalibrationFilePath() const;
 
 	// Reads one calibration file's fields into *out (scale calibration + objective-identity/
-	// FOV-offset + objectiveSlot), without touching m_scaleCalibration or emitting any of the
-	// dialog-refresh signals load() does - shared by load() (which then does both) and
-	// autoLoadCalibrationsFromFolder() (which does neither, since no single file is "the one
-	// being edited"). Throws H5::Exception if filepath is not a readable HDF5 file or lacks the
-	// required scale-calibration datasets (origin/pixToMicrometerX/Y/micrometerToPixX/Y) - the
-	// caller decides what "invalid calibration file" means for its own context.
+	// FOV-offset + objectiveSlot), without touching m_scaleCalibration or emitting any dialog-
+	// refresh signals - used by loadCalibrationForSlot(). Throws H5::Exception if filepath is
+	// not a readable HDF5 file or lacks the required scale-calibration datasets (origin/
+	// pixToMicrometerX/Y/micrometerToPixX/Y) - the caller decides what "invalid calibration
+	// file" means for its own context.
 	void readCalibrationFile(const std::string& filepath, ObjectiveCalibrationData* out);
 
 	void writePoint(H5::Group group, std::string name, POINT2 point);
@@ -226,12 +211,10 @@ private:
 	// __acquire()'s image-matrix construction).
 	cv::Mat readAsMat8U(const std::vector<std::byte>& image, int rows, int cols, const std::string& dataType) const;
 
-	// setFovOffsetReference()'s actual body, factored out so the automated cycle
-	// (runObjectiveCycleStep()) can capture a fresh reference image every cycle without also
-	// wiping m_fovOffsetSamplesUm every cycle (resetAccumulatedSamples=false after cycle 1) -
-	// calling the public setFovOffsetReference() slot unmodified would do that, defeating "M
-	// cycles average into one mean/sigma". setFovOffsetReference() itself is now just this
-	// with resetAccumulatedSamples=true, so its own (manual-flow) behavior is unchanged.
+	// Captures and caches the reference image (see measureFovOffset()'s doc comment above) -
+	// called by runObjectiveCycleStep() with resetAccumulatedSamples=(cycle == 1), so a fresh
+	// reference image is captured every cycle without also wiping m_fovOffsetSamplesUm each
+	// time, which would defeat "M cycles average into one mean/sigma".
 	void captureFovOffsetReferenceImage(bool resetAccumulatedSamples);
 
 	// Automated multi-cycle FOV-offset calibration state (see startObjectiveCycleCalibration()
@@ -271,7 +254,7 @@ private:
 	Camera*& m_camera;
 	POINT3 m_startPosition{ 0, 0, 0 };
 
-	// FOV-offset reference/measurement state (see setFovOffsetReference()/measureFovOffset()).
+	// FOV-offset reference/measurement state (see captureFovOffsetReferenceImage()/measureFovOffset()).
 	std::vector<std::byte> m_fovReferenceImage;
 	CAMERA_ROI m_fovReferenceRoi{};
 	std::string m_fovReferenceDataType;
@@ -280,7 +263,7 @@ private:
 	int m_fovReferenceObjectiveSlot{ -1 };
 	// Magnification registered for the reference objective (ScanControl's saved calibration,
 	// not the dialog's possibly-since-edited-and-unapplied buffer) at the moment
-	// setFovOffsetReference() was clicked - used only for the nominal-magnification-ratio
+	// captureFovOffsetReferenceImage() was called - used only for the nominal-magnification-ratio
 	// sanity check in measureFovOffset(). 0 if unset.
 	double m_fovReferenceMagnification{ 0.0 };
 
@@ -306,12 +289,6 @@ signals:
 	void s_scaleCalibrationAcquisitionProgress(double);
 	void s_scaleCalibrationStatus(std::string title, std::string message);
 	void s_closeScaleCalibrationDialog();
-	// Result of autoLoadCalibrationsFromFolder(). appliedText lists what got registered
-	// (objective name -> slot -> file), one per line, empty if nothing matched cleanly.
-	// warningText lists everything that did NOT get auto-applied and why (ambiguous name,
-	// slot conflict, invalid/non-objective file), empty if there was nothing to flag - the
-	// receiver only needs to show a blocking warning when this is non-empty.
-	void s_calibrationAutoLoadSummary(std::string appliedText, std::string warningText);
 	// Automated multi-cycle FOV-offset calibration progress. currentCycle is 1-based, 0 while
 	// idle/just finished (see finishObjectiveCycle()). waitingForContinue mirrors
 	// m_objectiveCycleState == WaitingForContinue - drives the dialog's

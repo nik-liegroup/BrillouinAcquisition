@@ -276,11 +276,16 @@ private:
 	QComboBox* m_camera_BrillouinDropdown;
 	QComboBox* m_numberCameras_BrillouinDropdown;
 	std::string m_voltageCalibrationFilePath;
-	std::string m_scaleCalibrationFilePath;
-	// Folder scanned by autoLoadObjectiveCalibrations() at startup - unset (empty) means "no
-	// folder configured yet", in which case startup falls back to loading just
-	// m_scaleCalibrationFilePath as before. Persisted via writeSettings()/readSettings().
-	std::string m_calibrationsFolderPath;
+	// Default save-as location offered by Objective Setup's "New" (create empty calibration
+	// file) button - a fixed, source-tree-relative "<repo>/BrillouinAcquisition/scaleCalibrationFiles"
+	// folder, computed from the running executable's own location
+	// (QCoreApplication::applicationDirPath()) rather than hardcoded, since the exe lands at
+	// "<repo>/x64/<Debug|Release>/" for every build configuration - two directories up from
+	// there is always the repo root. Created if missing. Purely a convenience default - the
+	// operator can save anywhere via the New/Browse dialogs, and this is not itself scanned or
+	// auto-loaded from (that folder-scan mechanism was removed in favor of Objective Setup's
+	// explicit per-slot links, which are what actually determines what gets loaded).
+	std::string defaultCalibrationsFolderPath() const;
 
 	QDialog* m_settingsDialog{ nullptr };
 
@@ -427,21 +432,6 @@ private slots:
 	void on_action_Voltage_calibration_load_triggered();
 
 	void on_action_Scale_calibration_acquire_triggered();
-	void on_action_Scale_calibration_load_triggered();
-	void loadScaleCalibrationFile();
-
-	// Lets the operator point at a folder holding one calibration file per objective (see
-	// ScaleCalibration::autoLoadCalibrationsFromFolder()) - persisted the same way
-	// m_scaleCalibrationFilePath already is (writeSettings()/readSettings()).
-	void on_action_Scale_calibration_set_folder_triggered();
-	// Invoked at startup/connect (initBrillouin()): if a calibrations folder is configured,
-	// scans it and auto-applies whatever matches unambiguously; otherwise falls back to the
-	// pre-existing single-file loadScaleCalibrationFile() so a session that never configured
-	// a folder keeps behaving exactly as before.
-	void autoLoadObjectiveCalibrations();
-	// s_calibrationAutoLoadSummary() receiver - logs appliedText, and pops a blocking
-	// QMessageBox for warningText (ambiguous/invalid files) if it is non-empty.
-	void calibrationAutoLoadSummary(std::string appliedText, std::string warningText);
 
 	void updateScaleCalibrationTranslationValue(POINT2 translation);
 	void updateScaleCalibrationData(ScaleCalibrationData scaleCalibration);
@@ -453,8 +443,19 @@ private slots:
 	void scaleCalibrationButtonApply_clicked();
 	void scaleCalibrationButtonAcquire_clicked();
 	void scaleCalibrationButtonSave_clicked();
-	void scaleCalibrationButtonFovOffsetReference_clicked();
-	void scaleCalibrationButtonFovOffsetMeasure_clicked();
+
+	// Refreshes the dialog's read-only "Objective" name/magnification (from m_objectiveSlotNames
+	// for whichever slot is physically/software-active right now - the operator can no longer
+	// type into these fields directly, Objective Setup is the only place that changes them) and
+	// the "compare to" pairwise FOV-offset display. Called once when the dialog is opened and
+	// again from objectiveSwitched() every time the active slot changes while it is open.
+	void refreshScaleCalibrationObjectiveDisplay();
+	// scaleCalibrationCompareToObjectiveCombo's currentIndexChanged handler - recomputes and
+	// shows the pairwise FOV-offset between the active slot and whichever objective is selected
+	// (both already stored relative to the same baseline reference, see
+	// ScaleCalibration::measureFovOffset()'s composition - this is a pure display calculation,
+	// nothing is stored per-pair).
+	void scaleCalibrationCompareToObjectiveChanged();
 
 	// Automated multi-cycle FOV-offset calibration (Reference/Target combos + Start/Continue/
 	// Abort, see ScaleCalibration::startObjectiveCycleCalibration()). Dispatches to
@@ -476,11 +477,15 @@ private slots:
 	// objectiveSetupButtonApply_clicked()) until Apply is clicked, same as the name fields.
 	void objectiveSetupBrowseCalibration_clicked(int slotIndex);
 	void objectiveSetupClearCalibration_clicked(int slotIndex);
+	// "New" button per row - prompts for a save path (defaulting into
+	// defaultCalibrationsFolderPath()), writes a blank calibration file (identity/zero scale,
+	// no FOV offset, name/magnification pre-filled from that row's own name field so it is
+	// self-consistent even before Apply), and links it exactly like Browse would.
+	void objectiveSetupNewCalibration_clicked(int slotIndex);
 	// Loads m_objectiveSlotCalibrationPaths into ScanControl for every slot that has one
 	// configured (ScaleCalibration::loadCalibrationForSlot() per slot) - called once at startup
-	// (initScanControl(), after autoLoadObjectiveCalibrations()) and again from
-	// objectiveSetupButtonApply_clicked() whenever a link changes, so a newly-linked file takes
-	// effect immediately without needing an app restart.
+	// (initScanControl()) and again from objectiveSetupButtonApply_clicked() whenever a link
+	// changes, so a newly-linked file takes effect immediately without needing an app restart.
 	void loadLinkedObjectiveCalibrations();
 	// Pushes m_objectiveSlotNames out to everywhere it needs to be reflected: the live
 	// ScanControl's "Objective" DeviceElement::optionNames (cross-thread), the already-built
@@ -502,6 +507,9 @@ private slots:
 	// names); named slots pass through unchanged. Used for the beampath specifically - the
 	// Reference/Target combos (populateObjectivePickerCombos()) spell out "Empty" instead.
 	std::vector<std::string> formatObjectiveNamesForBeampath(const std::vector<std::string>& names) const;
+	// Parses the magnification out of an already-validated "<N>x"/"<NN>x" objective name (see
+	// objectiveSetupButtonApply_clicked()'s namePattern) - 0.0 for an empty/unnamed slot.
+	double magnificationFromObjectiveName(const std::string& name) const;
 
 	void setTranslationDistanceX(double dx);
 	void setTranslationDistanceY(double dy);
@@ -518,7 +526,6 @@ private slots:
 
 	void setObjectiveName(QString name);
 	void setMagnification(double value);
-	void setReferenceObjectiveName(QString name);
 	void setHasFovOffset(bool hasFovOffset);
 	void setFovOffsetX(double value);
 	void setFovOffsetY(double value);

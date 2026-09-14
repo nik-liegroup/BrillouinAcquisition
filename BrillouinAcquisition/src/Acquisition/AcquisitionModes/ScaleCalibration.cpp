@@ -1,5 +1,4 @@
 #include "stdafx.h"
-#include "filesystem"
 #include "ScaleCalibration.h"
 
 #include "src/helper/h5_helper.h"
@@ -52,118 +51,7 @@ void ScaleCalibration::startRepetitions() {
 	
 }
 
-void ScaleCalibration::load(std::string filepath) {
-
-	using namespace std::filesystem;
-
-	if (exists(filepath)) {
-		try {
-			readCalibrationFile(filepath, &m_scaleCalibration);
-
-			// Apply the scale calibration
-			apply();
-		} catch (H5::Exception& exception) {
-			emit(s_scaleCalibrationStatus("Could not load the scale calibration", "Please select a valid scale calibration file."));
-		}
-	}
-}
-
-void ScaleCalibration::autoLoadCalibrationsFromFolder(std::string folder) {
-	using namespace std::filesystem;
-
-	if (folder.empty() || !exists(folder) || !is_directory(folder)) {
-		return;
-	}
-
-	struct Candidate {
-		std::string filepath;
-		ObjectiveCalibrationData data;
-	};
-	// objectiveName -> every file in the folder that declares that name.
-	std::map<std::string, std::vector<Candidate>> byName;
-	// filepath -> why it was rejected before even getting a name group (parse failure,
-	// degenerate matrix, or no objectiveName at all).
-	std::vector<std::pair<std::string, std::string>> rejected;
-
-	for (const auto& entry : directory_iterator(folder)) {
-		if (!entry.is_regular_file() || entry.path().extension() != ".h5") {
-			continue;
-		}
-		auto filepath = entry.path().string();
-		ObjectiveCalibrationData data{};
-		try {
-			readCalibrationFile(filepath, &data);
-			// Derive the inverse matrix, same as apply() does - also serves as a validity
-			// check (throws on a degenerate/non-basis calibration). Caught with a bare "..."
-			// rather than "H5::Exception&"/"std::exception&" specifically - readCalibrationFile()
-			// can throw either (H5::Exception from a non-HDF5/corrupt file, std::exception from
-			// this call on a degenerate matrix) and both are equally "not usable", so there is
-			// no different handling to justify telling them apart here.
-			ScaleCalibrationHelper::initializeCalibrationFromPixel(&data);
-		} catch (...) {
-			rejected.emplace_back(filepath, "not a valid scale calibration file");
-			continue;
-		}
-		if (data.objectiveName.empty()) {
-			rejected.emplace_back(filepath, "no objective name set in the file");
-			continue;
-		}
-		byName[data.objectiveName].push_back(Candidate{ filepath, data });
-	}
-
-	std::string appliedText;
-	std::string warningText;
-	for (const auto& reason : rejected) {
-		warningText += reason.first + ": " + reason.second + "\n";
-	}
-
-	// First pass: for every objectiveName with exactly one file, work out which slot it wants
-	// and group by slot - this has to happen before anything is applied, so a slot claimed by
-	// two differently-named files can be caught and rejected for BOTH of them, rather than the
-	// first one processed winning silently and the second being told (incorrectly) that it
-	// lost to an already-applied calibration.
-	std::map<int, std::vector<std::string>> slotClaims;			// slot -> objectiveNames claiming it
-	std::map<int, const Candidate*> slotCandidate;					// slot -> its (so far unique) candidate
-
-	for (const auto& [name, candidates] : byName) {
-		if (candidates.size() > 1) {
-			warningText += "Multiple calibration files found for objective \"" + name + "\" - none applied automatically:\n";
-			for (const auto& candidate : candidates) {
-				warningText += "  " + candidate.filepath + "\n";
-			}
-			continue;
-		}
-
-		const auto& candidate = candidates.front();
-		auto slot = candidate.data.objectiveSlot;
-		if (slot < 0 || !m_scanControl->isValidObjectiveSlot(slot)) {
-			warningText += candidate.filepath + ": objective \"" + name + "\" has no valid nosepiece slot recorded (calibrate/save it again while this objective is active) - not applied automatically.\n";
-			continue;
-		}
-		slotClaims[slot].push_back(name);
-		slotCandidate[slot] = &candidate;
-	}
-
-	// Second pass: only apply where exactly one objectiveName claimed the slot.
-	for (const auto& [slot, names] : slotClaims) {
-		if (names.size() > 1) {
-			std::string nameList;
-			for (const auto& name : names) {
-				nameList += "\"" + name + "\" ";
-			}
-			warningText += "Slot " + std::to_string(slot) + " is claimed by more than one objective (" + nameList + ") - none applied automatically for that slot.\n";
-			continue;
-		}
-
-		const auto& candidate = *slotCandidate[slot];
-		m_scanControl->setObjectiveCalibration(slot, candidate.data);
-		appliedText += names.front() + " -> slot " + std::to_string(slot) + " (" + candidate.filepath + ")\n";
-	}
-
-	emit(s_calibrationAutoLoadSummary(appliedText, warningText));
-}
-
-void ScaleCalibration::loadCalibrationForSlot(int slot, std::string filepath) {
+void ScaleCalibration::loadCalibrationForSlot(int slot, std::string filepath, std::string objectiveName, double magnification) {
 	if (!m_scanControl) {
 		return;
 	}
@@ -176,8 +64,7 @@ void ScaleCalibration::loadCalibrationForSlot(int slot, std::string filepath) {
 	ObjectiveCalibrationData data{};
 	try {
 		readCalibrationFile(filepath, &data);
-		// Same validity check autoLoadCalibrationsFromFolder() uses - also throws on a
-		// degenerate/non-basis calibration, not just an unreadable file.
+		// Also throws on a degenerate/non-basis calibration, not just an unreadable file.
 		ScaleCalibrationHelper::initializeCalibrationFromPixel(&data);
 	} catch (...) {
 		emit(s_scaleCalibrationStatus("Could not link calibration file",
@@ -185,11 +72,66 @@ void ScaleCalibration::loadCalibrationForSlot(int slot, std::string filepath) {
 		return;
 	}
 
-	// Explicit link, unlike autoLoadCalibrationsFromFolder()'s name/slot-matching - register
-	// against the requested slot regardless of what the file's own objectiveName/objectiveSlot
-	// say. setObjectiveCalibration() applies it live immediately if slot is already active, and
-	// unconditionally on every future switch to it either way (ScanControl::
-	// handleObjectiveSlotObserved()).
+	// Objective Setup's own name/magnification for this slot is authoritative - overwrite
+	// whatever the file itself says (if anything), rather than trusting a name that may be
+	// stale, absent (legacy file), or simply never matched this slot's current name. This is
+	// also what "extends" a legacy file with no objective fields at all.
+	data.objectiveName = objectiveName;
+	data.magnification = magnification;
+	data.objectiveSlot = slot;
+
+	// Explicit link - register against the requested slot regardless of what the file's own
+	// objectiveSlot said. setObjectiveCalibration() applies it live immediately if slot is
+	// already active, and unconditionally on every future switch to it either way
+	// (ScanControl::handleObjectiveSlotObserved()).
+	m_scanControl->setObjectiveCalibration(slot, data);
+}
+
+void ScaleCalibration::createEmptyCalibrationFile(int slot, std::string objectiveName, double magnification, std::string filepath) {
+	if (!m_scanControl) {
+		return;
+	}
+	if (!m_scanControl->isValidObjectiveSlot(slot)) {
+		emit(s_scaleCalibrationStatus("Could not create calibration file",
+			"Slot " + std::to_string(slot) + " is not a physically-possible objective position on this device."));
+		return;
+	}
+
+	// Deliberately not run through ScaleCalibrationHelper::initializeCalibrationFromPixel() -
+	// an all-zero scale calibration is not a valid basis and would throw. This is a genuinely
+	// blank placeholder (no scale calibration, no FOV offset yet), the same state a freshly-
+	// constructed ObjectiveCalibrationData{} already represents elsewhere in this codebase -
+	// only registered directly, not validated as if it were a real measured calibration.
+	ObjectiveCalibrationData data{};
+	data.objectiveName = objectiveName;
+	data.magnification = magnification;
+	data.objectiveSlot = slot;
+	data.calibrationDate = QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc())
+		.toString(Qt::ISODateWithMs).toStdString();
+
+	try {
+		auto file = H5::H5File(&filepath[0], H5F_ACC_TRUNC);
+		auto root = file.openGroup("/");
+		writeAttribute(root, "date", data.calibrationDate);
+		writePoint(root, "origin", data.originPix);
+		writePoint(root, "pixToMicrometerX", data.pixToMicrometerX);
+		writePoint(root, "pixToMicrometerY", data.pixToMicrometerY);
+		writePoint(root, "micrometerToPixX", data.micrometerToPixX);
+		writePoint(root, "micrometerToPixY", data.micrometerToPixY);
+		writeAttribute(root, "objectiveName", data.objectiveName);
+		writeAttribute(root, "magnification", data.magnification);
+		writeAttribute(root, "referenceObjectiveName", data.referenceObjectiveName);
+		writeAttribute(root, "calibrationDate", data.calibrationDate);
+		writeAttribute(root, "hasFovOffset", data.hasFovOffset ? 1.0 : 0.0);
+		writeAttribute(root, "fovOffsetX", data.fovOffsetUm.x);
+		writeAttribute(root, "fovOffsetY", data.fovOffsetUm.y);
+		writeAttribute(root, "fovOffsetSigma", data.fovOffsetSigmaUm);
+		writeAttribute(root, "objectiveSlot", (double)data.objectiveSlot);
+	} catch (H5::Exception&) {
+		emit(s_scaleCalibrationStatus("Could not create calibration file", "\"" + filepath + "\" is not writable."));
+		return;
+	}
+
 	m_scanControl->setObjectiveCalibration(slot, data);
 }
 
@@ -265,8 +207,8 @@ void ScaleCalibration::writeCalibrationMetadata(H5::Group& root) {
 	// Record which slot this calibration is being saved from - apply() (called right after by
 	// both save() and saveCalibration()'s callers) already assumes the operator is standing at
 	// the objective being calibrated, so the currently active slot is exactly the right value
-	// to persist for the calibrations-folder auto-load to key off of later (see
-	// autoLoadCalibrationsFromFolder()).
+	// to persist (informational - loadCalibrationForSlot() overwrites it with whatever slot the
+	// file is explicitly linked to, regardless of what was recorded here at save time).
 	m_scaleCalibration.objectiveSlot = m_scanControl->getActiveObjectiveSlot();
 
 	auto fulldate = QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc())
@@ -761,11 +703,6 @@ void ScaleCalibration::setMagnification(double value) {
 	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
 }
 
-void ScaleCalibration::setReferenceObjectiveName(QString name) {
-	m_scaleCalibration.referenceObjectiveName = name.toStdString();
-	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
-}
-
 void ScaleCalibration::setHasFovOffset(bool hasFovOffset) {
 	m_scaleCalibration.hasFovOffset = hasFovOffset;
 	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
@@ -789,18 +726,16 @@ void ScaleCalibration::setFovOffsetSigma(double value) {
 /*
  * FOV-offset auto-measurement.
  *
- * setFovOffsetReference()/measureFovOffset() (the manual, two-button flow) still never command
- * an objective switch themselves - only setElement()-driven (via the beampath buttons) or
- * physically-at-the-microscope switches move the nosepiece for that flow. The operator drives
- * the actual switch there; those two functions only automate the error-prone part (measuring
- * the resulting pixel shift by eye).
- *
- * startObjectiveCycleCalibration()/continueObjectiveCycle()/abortObjectiveCycle() (the
- * automated multi-cycle flow, added later) are a deliberate, confirmed exception to that: they
- * do drive the nosepiece themselves, via switchToObjectiveSlotAndVerify(). Doing this by hand
- * for M repeated reference<->target cycles is exactly the tedious, error-prone repetition this
- * automation exists to remove - a Z-retract safety step precedes every commanded switch (see
- * runObjectiveCycleStep()) as the mitigation for the collision risk that hand-driving the
+ * startObjectiveCycleCalibration()/continueObjectiveCycle()/abortObjectiveCycle() are the only
+ * way this measurement runs now (the earlier manual, two-button "Set as FOV-offset reference"/
+ * "Measure FOV offset" flow was removed from the GUI once this automated flow existed - the
+ * underlying captureFovOffsetReferenceImage()/measureFovOffset() functions are unchanged, just
+ * called by the cycle instead of by a button). Unlike every other capture path in this class,
+ * this flow *does* drive the nosepiece itself, via switchToObjectiveSlotAndVerify() -
+ * a deliberate, confirmed exception to "the operator always drives the switch": doing this by
+ * hand for M repeated reference<->target cycles is exactly the tedious, error-prone repetition
+ * this automation exists to remove. A Z-retract safety step precedes every commanded switch
+ * (see runObjectiveCycleStep()) as the mitigation for the collision risk that hand-driving the
  * changer avoided entirely before.
  */
 
@@ -1034,10 +969,6 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	return true;
 }
 
-void ScaleCalibration::setFovOffsetReference() {
-	captureFovOffsetReferenceImage(/*resetAccumulatedSamples=*/true);
-}
-
 void ScaleCalibration::captureFovOffsetReferenceImage(bool resetAccumulatedSamples) {
 	if (!m_camera || !m_scanControl) {
 		return;
@@ -1065,7 +996,7 @@ void ScaleCalibration::captureFovOffsetReferenceImage(bool resetAccumulatedSampl
 	}
 
 	emit(s_scaleCalibrationStatus("FOV-offset reference captured",
-		"Without moving the stage, switch to the objective you want to calibrate and click \"Measure FOV offset\"."));
+		"Reference image captured at slot " + std::to_string(m_fovReferenceObjectiveSlot) + "."));
 }
 
 void ScaleCalibration::measureFovOffset() {
@@ -1073,7 +1004,7 @@ void ScaleCalibration::measureFovOffset() {
 		return;
 	}
 	if (m_fovReferenceImage.empty()) {
-		emit(s_scaleCalibrationStatus("No FOV-offset reference set", "Click \"Set as FOV-offset reference\" at the reference objective first."));
+		emit(s_scaleCalibrationStatus("No FOV-offset reference set", "Start an automated calibration run to capture a reference image first."));
 		return;
 	}
 
@@ -1131,16 +1062,32 @@ void ScaleCalibration::measureFovOffset() {
 		sigma = std::sqrt(sumSq / (m_fovOffsetSamplesUm.size() - 1));
 	}
 
+	// Compose through the reference objective's own already-stored, baseline-relative offset
+	// (see this function's doc comment in the header) - so it does not matter which already-
+	// calibrated objective was used as the reference for this particular measurement, the
+	// result stored here is always this target's offset relative to the same shared baseline
+	// every other objective's fovOffsetUm is relative to. If the reference itself has no stored
+	// offset (hasFovOffset false - typically true for the baseline objective itself, which has
+	// nothing to be offset from), it contributes {0,0}/0, so measuring directly against the
+	// baseline still works exactly as before.
+	auto referenceCalibration = m_scanControl->getObjectiveCalibration(m_fovReferenceObjectiveSlot);
+	auto referenceOffsetUm = referenceCalibration.hasFovOffset ? referenceCalibration.fovOffsetUm : POINT2{ 0, 0 };
+	auto referenceSigmaUm = referenceCalibration.hasFovOffset ? referenceCalibration.fovOffsetSigmaUm : 0.0;
+	auto composedOffsetUm = POINT2{ referenceOffsetUm.x + meanUm.x, referenceOffsetUm.y + meanUm.y };
+	auto composedSigmaUm = std::sqrt(sigma * sigma + referenceSigmaUm * referenceSigmaUm);
+
 	m_scaleCalibration.hasFovOffset = true;
-	m_scaleCalibration.fovOffsetUm = meanUm;
-	m_scaleCalibration.fovOffsetSigmaUm = sigma;
+	m_scaleCalibration.fovOffsetUm = composedOffsetUm;
+	m_scaleCalibration.fovOffsetSigmaUm = composedSigmaUm;
 	m_scaleCalibration.referenceObjectiveName = m_fovReferenceObjectiveName;
 
 	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
 
 	auto sampleCount = std::to_string(m_fovOffsetSamplesUm.size());
-	auto message = "Sample " + sampleCount + ": mean offset (" + std::to_string(meanUm.x) + ", " + std::to_string(meanUm.y)
-		+ ") um, sigma " + std::to_string(sigma) + " um. Repeat (switch away and back) for a better sigma, then Apply/Save.";
+	auto message = "Sample " + sampleCount + ": measured shift vs. reference (" + std::to_string(meanUm.x) + ", " + std::to_string(meanUm.y)
+		+ ") um, sigma " + std::to_string(sigma) + " um.\nFOV-center offset relative to baseline: ("
+		+ std::to_string(composedOffsetUm.x) + ", " + std::to_string(composedOffsetUm.y) + ") um, sigma "
+		+ std::to_string(composedSigmaUm) + " um. Repeat (more cycles) for a better sigma, then Apply/Save.";
 
 	// Cross-check: estimatedMagnificationChange came purely from each objective's stored
 	// pixToMicrometer calibration (what the template matching actually assumed); the nominal
