@@ -158,12 +158,18 @@ private:
 	// CAMERA_SETTINGS.readout.dataType ("unsigned char" or "unsigned short") at capture time -
 	// a 16-bit source is read at its real depth then downscaled to 8-bit before matching (see
 	// the .cpp definition), matching the same fix applied to __acquire(). Returns false
-	// (leaves *shiftUm untouched) if either image is empty, either calibration is degenerate,
-	// or no image fits inside the other after rescaling.
+	// (leaves *shiftUm and *estimatedMagnificationChange untouched) if either image is empty,
+	// either calibration is degenerate, or no image fits inside the other after rescaling.
+	// *estimatedMagnificationChange is the reference->target pixel-scale rescale factor this
+	// function actually used to bring the two images to a common scale before matching -
+	// exposed so the caller can sanity-check it against the nominal magnification ratio typed
+	// into the two objectives' "Magnification" fields (see measureFovOffset()). A large
+	// disagreement between the two means the pixel-scale calibration for one of the objectives
+	// (not the FOV-offset measurement itself) is the thing to re-check.
 	bool computeFovOffsetShiftUm(
 		const std::vector<std::byte>& referenceImage, const CAMERA_ROI& referenceRoi, const ScaleCalibrationData& referenceScale, const std::string& referenceDataType,
 		const std::vector<std::byte>& targetImage, const CAMERA_ROI& targetRoi, const ScaleCalibrationData& targetScale, const std::string& targetDataType,
-		POINT2* shiftUm
+		POINT2* shiftUm, double* estimatedMagnificationChange
 	);
 
 	// Wraps a captured buffer at its real depth (dataType: "unsigned short" -> 16-bit,
@@ -185,6 +191,11 @@ private:
 	ScaleCalibrationData m_fovReferenceScaleCalibration{};
 	std::string m_fovReferenceObjectiveName;
 	int m_fovReferenceObjectiveSlot{ -1 };
+	// Magnification registered for the reference objective (ScanControl's saved calibration,
+	// not the dialog's possibly-since-edited-and-unapplied buffer) at the moment
+	// setFovOffsetReference() was clicked - used only for the nominal-magnification-ratio
+	// sanity check in measureFovOffset(). 0 if unset.
+	double m_fovReferenceMagnification{ 0.0 };
 
 	// Which objective slot the currently-accumulating m_fovOffsetSamplesUm belong to - reset
 	// (cleared) automatically whenever measureFovOffset() sees a different active slot than

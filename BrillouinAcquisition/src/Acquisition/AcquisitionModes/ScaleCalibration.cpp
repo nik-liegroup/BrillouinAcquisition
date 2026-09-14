@@ -769,37 +769,50 @@ void ScaleCalibration::setFovOffsetSigma(double value) {
  */
 
 void ScaleCalibration::configureCalibrationCameraRoi() {
+	// Previously cropped to a fixed left=1000/top=800/1000x1000 region regardless of the
+	// camera's actual sensor size, or of whatever ROI a concurrently-running live preview (or
+	// the Fluorescence tab) was already using. On a backend where changing the ROI means
+	// reconfiguring the camera's live frame geometry (PointGrey's Format7/AOI), doing that
+	// while a live preview loop on a different thread (Camera::getImageForPreview(), see
+	// Camera.cpp) could be mid-capture at the old size raced the camera's own buffers -
+	// Camera::applySettings() is not mutex-guarded the way startAcquisition()/
+	// getImageForAcquisition()/getImageForPreview() are, so the preview only gets stopped
+	// (safely, under the lock) *after* this had already mutated the live settings. That's the
+	// "referenced memory could not be written" crash and the correctness-of-progress hang seen
+	// with live Brightfield preview active, and it is specific to this class - nothing else in
+	// the app ever asks the camera to change frame size while a preview could be running.
+	//
+	// Fix: stop resizing the frame at all. Fluorescence::configureCamera() already established
+	// this pattern for exactly the same brightfield camera ("Deliberately no ROI override -
+	// always capture at full sensor... rather than cropping to a smaller measurement region")
+	// and is unaffected by live preview - do the same here. Capturing at whatever size the
+	// camera is already configured for (full sensor, or whatever preview is currently using)
+	// means this never asks the camera to change its live frame geometry, so there is nothing
+	// for a concurrent preview capture to race against.
 	m_cameraSettings = m_camera->getSettings();
 
-	// The previous unconditional left=1000/top=800/1000x1000 assumed a sensor of at least
-	// 2000x1800 px. On a smaller sensor that request is invalid; depending on the backend the
-	// SDK either silently rejects it (PointGrey's ValidateFormat7Settings failing, so the
-	// camera keeps its old, different AOI) or clamps it inconsistently, while width_binned/
-	// height_binned/bytesPerFrame below still got computed from the requested-but-never-applied
-	// 1000x1000 - so every buffer this class allocates ends up sized for a frame the camera
-	// was never actually delivering. This is the "referenced memory could not be
-	// written"/"could not be read" crash on both Acquire and the FOV-offset buttons, which
-	// share this same setup call. Live preview and the Fluorescence tab never hit this because
-	// they never request this fixed offset/size - only this dialog does.
-	//
-	// Fix: clamp the requested ROI to whatever the camera itself reports as its sensor limits
-	// (already populated by the time this dialog can be opened, since that requires an already-
-	// connected, already-previewed camera), instead of assuming a fixed sensor size.
-	const auto options = m_camera->getOptions();
-	const auto maxWidth = options.ROIWidthLimits.size() > 1 ? options.ROIWidthLimits[1] : 1000;
-	const auto maxHeight = options.ROIHeightLimits.size() > 1 ? options.ROIHeightLimits[1] : 1000;
-
-	const auto width = std::min<long long>(1000, maxWidth);
-	const auto height = std::min<long long>(1000, maxHeight);
-	// Keep the previous preferred offset where it still fits; pull it in just enough to keep
-	// left+width / top+height within the sensor otherwise.
-	const auto left = std::min<long long>(1000, std::max<long long>(0, maxWidth - width));
-	const auto top = std::min<long long>(800, std::max<long long>(0, maxHeight - height));
-
-	m_cameraSettings.roi.left = left;
-	m_cameraSettings.roi.top = top;
-	m_cameraSettings.roi.width_physical = width;
-	m_cameraSettings.roi.height_physical = height;
+	// Also mirror Fluorescence::configureCamera()'s trigger-mode handling, for a separate
+	// reason: this class never touched triggerMode before, so a capture here just inherited
+	// whatever the camera was last left in. PointGrey::getImageForAcquisition() only fires a
+	// software trigger when triggerMode == "Software" - in any other mode (e.g. "External",
+	// waiting on a hardware trigger line nothing here ever supplies) it just blocks on
+	// RetrieveBuffer() for a frame that never arrives. Because ScanControl and every
+	// acquisition mode (this one included) share one QThread (m_acquisitionThread - see
+	// BrillouinAcquisition::connectScanControl()/the various startWorker() calls), that block
+	// doesn't just hang this capture - it freezes that entire shared thread, which is why
+	// preset switches (also serviced on m_acquisitionThread via ScanControl) silently stop
+	// working too, while the separately-threaded GUI window stays responsive. Forcing
+	// "Software" here, exactly like Fluorescence does, guarantees a trigger is actually sent.
+	auto cameraType = (std::string)typeid(*m_camera).name();
+	if (cameraType == "class uEyeCam" || cameraType == "class PointGrey") {
+		m_cameraSettings.readout.triggerMode = L"Software";
+	}
+#ifdef _DEBUG
+	else if (cameraType == "class MockCamera") {
+		m_cameraSettings.readout.triggerMode = L"Software";
+	}
+#endif
+	m_cameraSettings.readout.cycleMode = L"Fixed";
 	m_cameraSettings.frameCount = 1;
 	m_camera->setSettings(m_cameraSettings);
 	m_cameraSettings = m_camera->getSettings();
@@ -850,7 +863,7 @@ cv::Mat ScaleCalibration::readAsMat8U(const std::vector<std::byte>& image, int r
 bool ScaleCalibration::computeFovOffsetShiftUm(
 	const std::vector<std::byte>& referenceImage, const CAMERA_ROI& referenceRoi, const ScaleCalibrationData& referenceScale, const std::string& referenceDataType,
 	const std::vector<std::byte>& targetImage, const CAMERA_ROI& targetRoi, const ScaleCalibrationData& targetScale, const std::string& targetDataType,
-	POINT2* shiftUm
+	POINT2* shiftUm, double* estimatedMagnificationChange
 ) {
 	if (referenceImage.empty() || targetImage.empty()) {
 		return false;
@@ -869,6 +882,12 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	}
 
 	auto rescaleFactor = referencePixelSizeUm / targetPixelSizeUm;
+	// This is exactly the reference->target magnification ratio the matching below assumes,
+	// derived purely from each objective's own stored pixToMicrometer calibration (not from
+	// the image content) - the caller compares it against the nominal ratio of the two
+	// objectives' typed-in "Magnification" values as a sanity check that the matching is
+	// operating at a sane scale.
+	*estimatedMagnificationChange = rescaleFactor;
 	cv::Mat refMatRescaled;
 	cv::resize(refMat, refMatRescaled, cv::Size(), rescaleFactor, rescaleFactor, cv::INTER_LINEAR);
 
@@ -968,6 +987,7 @@ void ScaleCalibration::setFovOffsetReference() {
 	auto activeCalibration = m_scanControl->getActiveObjectiveCalibration();
 	m_fovReferenceObjectiveName = activeCalibration.objectiveName;
 	m_fovReferenceObjectiveSlot = m_scanControl->getActiveObjectiveSlot();
+	m_fovReferenceMagnification = activeCalibration.magnification;
 
 	// A new reference invalidates any samples collected against the previous one.
 	m_fovOffsetTargetSlot = -1;
@@ -1007,10 +1027,11 @@ void ScaleCalibration::measureFovOffset() {
 	auto targetDataType = m_cameraSettings.readout.dataType;
 
 	auto shiftUm = POINT2{};
+	auto estimatedMagnificationChange = 0.0;
 	auto ok = computeFovOffsetShiftUm(
 		m_fovReferenceImage, m_fovReferenceRoi, m_fovReferenceScaleCalibration, m_fovReferenceDataType,
 		targetImage, m_cameraSettings.roi, targetScaleCalibration, targetDataType,
-		&shiftUm
+		&shiftUm, &estimatedMagnificationChange
 	);
 	if (!ok) {
 		emit(s_scaleCalibrationStatus("FOV-offset measurement failed", "Please make sure there are distinct structures visible in both objectives' field of view."));
@@ -1048,5 +1069,26 @@ void ScaleCalibration::measureFovOffset() {
 	auto sampleCount = std::to_string(m_fovOffsetSamplesUm.size());
 	auto message = "Sample " + sampleCount + ": mean offset (" + std::to_string(meanUm.x) + ", " + std::to_string(meanUm.y)
 		+ ") um, sigma " + std::to_string(sigma) + " um. Repeat (switch away and back) for a better sigma, then Apply/Save.";
+
+	// Cross-check: estimatedMagnificationChange came purely from each objective's stored
+	// pixToMicrometer calibration (what the template matching actually assumed); the nominal
+	// ratio below comes from the two objectives' own registered "Magnification" values (read
+	// from ScanControl's saved per-slot calibration, not this dialog's edit buffer, so it's
+	// correct even if the dialog's Objective name/Magnification fields are still showing
+	// whatever objective was active when the dialog was opened). If matching is working
+	// correctly, these two should agree to within a few percent - a large disagreement means
+	// either the pixel-scale calibration for one of the two objectives is off, or the wrong
+	// objective ended up as reference/target for this measurement.
+	auto targetRegisteredMagnification = m_scanControl->getActiveObjectiveCalibration().magnification;
+	message += "\nEstimated magnification change used for image matching (target/reference, from calibrated pixel scale): "
+		+ std::to_string(estimatedMagnificationChange) + "x";
+	if (targetRegisteredMagnification > 0.0 && m_fovReferenceMagnification > 0.0) {
+		auto nominalMagnificationChange = targetRegisteredMagnification / m_fovReferenceMagnification;
+		message += " (nominal from saved objective magnifications: " + std::to_string(nominalMagnificationChange)
+			+ "x - large disagreement suggests a bad pixel-scale calibration for one of the two objectives, not this measurement).";
+	} else {
+		message += " (nominal magnification ratio unavailable - one of the two objectives has no saved \"Magnification\" value).";
+	}
+
 	emit(s_scaleCalibrationStatus("FOV offset measured", message));
 }
