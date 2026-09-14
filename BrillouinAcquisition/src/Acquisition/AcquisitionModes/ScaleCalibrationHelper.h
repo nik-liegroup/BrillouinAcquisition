@@ -3,6 +3,7 @@
 
 #include "../../lib/math/points.h"
 
+#include <cmath>
 #include <string>
 
 struct ScaleCalibrationData {
@@ -35,6 +36,13 @@ struct ObjectiveCalibrationData : public ScaleCalibrationData {
 	double fovOffsetSigmaUm{ 0.0 };		// [um] measured repeatability (std dev) of fovOffsetUm across calibration round trips
 	std::string referenceObjectiveName{ "" };
 	std::string calibrationDate{ "" };
+
+	// [um/pix] repeatability (std dev of the isotropic pixel pitch, see
+	// ScaleCalibrationHelper::isotropicPixelPitchUm()) of the pix<->um scale calibration across
+	// the automated "Automated calibration: Scale" cycles that produced it - 0 if the scale
+	// calibration was only ever measured once (a single Acquire, not a multi-cycle run) or not
+	// at all. Purely a QC/repeatability display value, not consumed by anything else.
+	double scaleCalibrationSigmaUm{ 0.0 };
 
 	// The nosepiece slot this file was written from (ScanControl::getActiveObjectiveSlot() at
 	// save time - see ScaleCalibration::writeCalibrationMetadata()). -1 if unset: either an
@@ -83,6 +91,19 @@ public:
 
 		calibration->micrometerToPixX = POINT2{ inverted.a, inverted.c };
 		calibration->micrometerToPixY = POINT2{ inverted.b, inverted.d };
+	}
+
+	// Isotropic-equivalent pixel pitch [um/pix]: sqrt(|determinant|) of the pix->um matrix - the
+	// matrix's area-scale factor, correct regardless of any rotation between the camera's pixel
+	// axes and the stage axes (unlike averaging the matrix's diagonal terms, which silently
+	// assumes zero rotation). Used both to bring two different objectives' images to a
+	// comparable scale before FOV-offset matching (ScaleCalibration::computeFovOffsetShiftUm())
+	// and to report repeatability across repeated scale-calibration cycles (ScaleCalibration::
+	// startScaleCalibrationCycle()).
+	static double isotropicPixelPitchUm(const ScaleCalibrationData& calibration) {
+		auto det = calibration.pixToMicrometerX.x * calibration.pixToMicrometerY.y
+			- calibration.pixToMicrometerY.x * calibration.pixToMicrometerX.y;
+		return std::sqrt(std::abs(det));
 	}
 
 	static bool isBasis(POINT2 e_0, POINT2 e_1) {

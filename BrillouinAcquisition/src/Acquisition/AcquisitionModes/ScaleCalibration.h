@@ -58,12 +58,12 @@ public slots:
 
 	// Writes the current calibration (scale + whatever objective-identity/FOV-offset fields
 	// are set) into the active slot's linked calibration file (see setLinkedCalibrationFilePath()),
-	// without requiring an acquire to have run first. Also registers it live, exactly like
-	// apply() (minus closing the dialog) - so a measured FOV offset takes effect immediately
-	// without needing a separate Apply click. Tolerant of a still-degenerate (not yet
-	// "Acquire"d) scale calibration, unlike apply() - this button's whole point is entering/
-	// saving just an FOV-center offset for an objective that may not have a pixel-scale
-	// calibration yet.
+	// without requiring an acquire to have run first. Also registers it live immediately - the
+	// sole way to persist/apply a calibration now (the former, near-duplicate apply() - whose
+	// only difference was also closing the dialog - was removed once this covered its role too).
+	// Tolerant of a still-degenerate (not yet "Acquire"d) scale calibration - this button's whole
+	// point is entering/saving just an FOV-center offset for an objective that may not have a
+	// pixel-scale calibration yet.
 	void saveCalibration();
 
 	void acquire(std::unique_ptr <StorageWrapper>& storage) override;
@@ -71,7 +71,17 @@ public slots:
 
 	void initialize();
 
-	void apply();
+	// Runs startRepetitions() (the existing single-shot "translation between images" procedure)
+	// `cycles` times back-to-back, then averages every cycle's resulting pix<->um matrix
+	// (component-wise mean) into m_scaleCalibration and stores the repeatability (std dev of the
+	// isotropic pixel pitch across cycles, see ScaleCalibrationHelper::isotropicPixelPitchUm())
+	// as scaleCalibrationSigmaUm. Unlike the FOV-offset automated cycle, this needs no objective
+	// switch/operator refocus between repetitions - it is fully autonomous, cycles run in one
+	// call with no pause. A cycle whose match fails is skipped (not averaged in); if every cycle
+	// fails, m_scaleCalibration is left untouched and s_scaleCalibrationStatus() explains why.
+	// Aborted early (m_abort, same flag/convention as every other acquisition mode) still
+	// averages whatever cycles completed before the abort.
+	void startScaleCalibrationCycle(int cycles);
 
 	void setTranslationDistanceX(double dx);
 	void setTranslationDistanceY(double dy);
@@ -92,7 +102,7 @@ public slots:
 	// not free-text editable here), and referenceObjectiveName is set internally by
 	// measureFovOffset() - neither has a dedicated GUI input anymore. Saved/loaded alongside the
 	// rest of this calibration file, and registered against whichever objective slot is active
-	// when apply() runs.
+	// when saveCalibration() runs.
 	void setObjectiveName(QString name);
 	void setMagnification(double value);
 	void setHasFovOffset(bool hasFovOffset);
@@ -266,10 +276,10 @@ private:
 	// requested slot).
 	bool switchToObjectiveSlotAndVerify(int slot);
 	// Ends a run (cycles exhausted, or aborted): resets state to Idle, emits a final status and
-	// s_objectiveCycleProgress(0, ...). Deliberately does not call apply()/saveCalibration()
-	// itself - persisting the result stays an explicit, operator-clicked step (the dialog's
-	// existing Apply/Save buttons already read the up-to-date m_scaleCalibration this leaves
-	// behind, exactly as they do after a manual measureFovOffset() click).
+	// s_objectiveCycleProgress(0, ...). Deliberately does not call saveCalibration() itself -
+	// persisting the result stays an explicit, operator-clicked step (the dialog's existing Save
+	// button already reads the up-to-date m_scaleCalibration this leaves behind, exactly as it
+	// does after a manual measureFovOffset() click).
 	void finishObjectiveCycle(bool aborted);
 
 	CAMERA_SETTINGS m_cameraSettings;
@@ -301,6 +311,12 @@ private:
 	ObjectiveCalibrationData m_scaleCalibration;
 	POINT2 m_Ds{ 10.0, 10.0 };	// [µm]	shift in x- and y-direction
 
+	// Set by __acquire() - false at the start of every startRepetitions() call, true only once
+	// its match has actually succeeded and m_scaleCalibration's pix<->um fields have been
+	// updated for that call. startScaleCalibrationCycle() reads this right after each
+	// startRepetitions() call to know whether that cycle's result is safe to average in.
+	bool m_lastAcquireSucceeded{ false };
+
 	// See setLinkedCalibrationFilePath()/writeLinkedCalibrationFile().
 	std::string m_linkedCalibrationFilePath;
 
@@ -313,12 +329,15 @@ signals:
 	void s_objectiveCalibrationChanged(ObjectiveCalibrationData);
 	void s_scaleCalibrationAcquisitionProgress(double);
 	void s_scaleCalibrationStatus(std::string title, std::string message);
-	void s_closeScaleCalibrationDialog();
 	// Automated multi-cycle FOV-offset calibration progress. currentCycle is 1-based, 0 while
 	// idle/just finished (see finishObjectiveCycle()). waitingForContinue mirrors
 	// m_objectiveCycleState == WaitingForContinue - drives the dialog's
 	// Start/Continue/Abort button enablement and status text.
 	void s_objectiveCycleProgress(int currentCycle, int totalCycles, bool waitingForContinue);
+	// Automated multi-cycle scale-calibration progress (startScaleCalibrationCycle()).
+	// currentCycle is 1-based, 0 while idle/just finished - no "waiting for continue" state,
+	// this run is fully autonomous.
+	void s_scaleCalibrationCycleProgress(int currentCycle, int totalCycles);
 };
 
 #endif //SCALECALIBRATION_H

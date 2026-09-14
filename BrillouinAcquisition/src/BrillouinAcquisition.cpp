@@ -3607,22 +3607,28 @@ void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 			[this]() { closeScaleCalibrationDialog(); }
 		);
 		connection = QWidget::connect(
-			m_scaleCalibrationDialogUi.button_apply,
-			&QPushButton::clicked,
-			this,
-			[this]() { scaleCalibrationButtonApply_clicked(); }
-		);
-		connection = QWidget::connect(
 			m_scaleCalibrationDialogUi.button_acquire,
 			&QPushButton::clicked,
 			this,
-			[this]() { scaleCalibrationButtonAcquire_clicked(); }
+			[this]() { scaleCalibrationButtonStartScaleCycle_clicked(); }
 		);
 		connection = QWidget::connect(
 			m_scaleCalibrationDialogUi.button_save,
 			&QPushButton::clicked,
 			this,
 			[this]() { scaleCalibrationButtonSave_clicked(); }
+		);
+		connection = QWidget::connect(
+			m_scaleCalibrationDialogUi.button_saveScale,
+			&QPushButton::clicked,
+			this,
+			[this]() { scaleCalibrationButtonSave_clicked(); }
+		);
+		connection = QWidget::connect(
+			m_scaleCalibration,
+			&ScaleCalibration::s_scaleCalibrationCycleProgress,
+			this,
+			[this](int currentCycle, int totalCycles) { updateScaleCalibrationCycleProgress(currentCycle, totalCycles); }
 		);
 
 		// Connect translation distance boxes
@@ -3746,6 +3752,7 @@ void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 	m_scaleCalibrationDialogUi.button_continueObjectiveCycle->setEnabled(false);
 	m_scaleCalibrationDialogUi.button_abortObjectiveCycle->setEnabled(false);
 	m_scaleCalibrationDialogUi.objectiveCycleStatusLabel->setText("");
+	m_scaleCalibrationDialogUi.scaleCalibrationCycleStatusLabel->setText("");
 
 	m_scaleCalibrationDialog->show();
 }
@@ -3780,11 +3787,20 @@ void BrillouinAcquisition::updateObjectiveCalibrationData(ObjectiveCalibrationDa
 	const QSignalBlocker blocker5(m_scaleCalibrationDialogUi.fovOffsetX);
 	const QSignalBlocker blocker6(m_scaleCalibrationDialogUi.fovOffsetY);
 	const QSignalBlocker blocker7(m_scaleCalibrationDialogUi.fovOffsetSigma);
+	const QSignalBlocker blocker8(m_scaleCalibrationDialogUi.objectiveCycleFovOffsetSigma);
+	const QSignalBlocker blocker9(m_scaleCalibrationDialogUi.scaleCalibrationSigma);
 
 	m_scaleCalibrationDialogUi.hasFovOffsetCheckbox->setChecked(calibration.hasFovOffset);
 	m_scaleCalibrationDialogUi.fovOffsetX->setValue(calibration.fovOffsetUm.x);
 	m_scaleCalibrationDialogUi.fovOffsetY->setValue(calibration.fovOffsetUm.y);
 	m_scaleCalibrationDialogUi.fovOffsetSigma->setValue(calibration.fovOffsetSigmaUm);
+	// Read-only mirror of the same FOV-offset sigma, shown inside "Automated calibration: FOV"
+	// itself so it is visible right next to Start/Continue/Abort without also scrolling up to
+	// the FOV-center offset box.
+	m_scaleCalibrationDialogUi.objectiveCycleFovOffsetSigma->setValue(calibration.fovOffsetSigmaUm);
+	// Read-only display of the scale calibration's own repeatability (see
+	// ScaleCalibration::startScaleCalibrationCycle()) inside "Automated calibration: Scale".
+	m_scaleCalibrationDialogUi.scaleCalibrationSigma->setValue(calibration.scaleCalibrationSigmaUm);
 
 	// The pairwise "compare to" display is derived from this same offset - keep it in sync
 	// whenever the active slot's own calibration changes (e.g. right after a measurement).
@@ -3811,16 +3827,6 @@ void BrillouinAcquisition::showScaleCalibrationStatus(std::string title, std::st
 		Qt::WindowTitleHint | Qt::WindowCloseButtonHint
 	);
 	msgBox.exec();
-}
-
-void BrillouinAcquisition::scaleCalibrationButtonApply_clicked() {
-	QMetaObject::invokeMethod(
-		m_scaleCalibration,
-		[&m_scaleCalibration = m_scaleCalibration]() {
-			m_scaleCalibration->apply();
-		},
-		Qt::AutoConnection
-	);
 }
 
 void BrillouinAcquisition::scaleCalibrationButtonSave_clicked() {
@@ -3911,14 +3917,30 @@ void BrillouinAcquisition::updateObjectiveCycleProgress(int currentCycle, int to
 	}
 }
 
-void BrillouinAcquisition::scaleCalibrationButtonAcquire_clicked() {
+void BrillouinAcquisition::scaleCalibrationButtonStartScaleCycle_clicked() {
+	auto cycles = m_scaleCalibrationDialogUi.scaleCyclesSpinBox->value();
 	QMetaObject::invokeMethod(
 		m_scaleCalibration,
-		[&m_scaleCalibration = m_scaleCalibration]() {
-			m_scaleCalibration->startRepetitions();
+		[&m_scaleCalibration = m_scaleCalibration, cycles]() {
+			m_scaleCalibration->startScaleCalibrationCycle(cycles);
 		},
 		Qt::AutoConnection
 	);
+}
+
+void BrillouinAcquisition::updateScaleCalibrationCycleProgress(int currentCycle, int totalCycles) {
+	// currentCycle == 0 is the idle/finished state (see ScaleCalibration::startScaleCalibrationCycle()).
+	// Unlike the FOV-offset cycle, there is no "waiting for continue" pause - this run is fully
+	// autonomous - so only a running/not-running distinction is needed here.
+	auto running = currentCycle != 0;
+	m_scaleCalibrationDialogUi.button_acquire->setEnabled(!running && m_brightfieldCamera);
+	m_scaleCalibrationDialogUi.scaleCyclesSpinBox->setEnabled(!running);
+
+	if (running) {
+		m_scaleCalibrationDialogUi.scaleCalibrationCycleStatusLabel->setText(
+			"Cycle " + QString::number(currentCycle) + " of " + QString::number(totalCycles) + "..."
+		);
+	}
 }
 
 void BrillouinAcquisition::setTranslationDistanceX(double dx) {

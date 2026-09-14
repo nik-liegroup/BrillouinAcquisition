@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>441</width>
-    <height>850</height>
+    <height>1020</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -16,27 +16,14 @@
   <widget class="QPushButton" name="button_cancel">
    <property name="geometry">
     <rect>
-     <x>204</x>
-     <y>184</y>
-     <width>65</width>
+     <x>178</x>
+     <y>982</y>
+     <width>85</width>
      <height>23</height>
     </rect>
    </property>
    <property name="text">
     <string>Cancel</string>
-   </property>
-  </widget>
-  <widget class="QPushButton" name="button_apply">
-   <property name="geometry">
-    <rect>
-     <x>275</x>
-     <y>184</y>
-     <width>158</width>
-     <height>23</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>Apply</string>
    </property>
   </widget>
   <widget class="QWidget" name="verticalLayoutWidget">
@@ -272,40 +259,135 @@
     </item>
    </layout>
   </widget>
-  <widget class="QPushButton" name="button_acquire">
+  <widget class="QGroupBox" name="scaleCalibrationCycleGroupBox">
    <property name="geometry">
     <rect>
      <x>8</x>
-     <y>184</y>
-     <width>158</width>
-     <height>23</height>
+     <y>106</y>
+     <width>425</width>
+     <height>200</height>
     </rect>
    </property>
-   <property name="text">
-    <string>Acquire</string>
+   <property name="title">
+    <string>Automated calibration: Scale</string>
    </property>
-  </widget>
-  <widget class="QProgressBar" name="progress">
-   <property name="geometry">
-    <rect>
-     <x>8</x>
-     <y>152</y>
-     <width>158</width>
-     <height>23</height>
-    </rect>
-   </property>
-   <property name="value">
-    <number>0</number>
-   </property>
-   <property name="alignment">
-    <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
-   </property>
+   <layout class="QVBoxLayout" name="scaleCalibrationCycleVerticalLayout">
+    <property name="spacing">
+     <number>6</number>
+    </property>
+    <property name="leftMargin">
+     <number>9</number>
+    </property>
+    <property name="topMargin">
+     <number>12</number>
+    </property>
+    <property name="rightMargin">
+     <number>9</number>
+    </property>
+    <property name="bottomMargin">
+     <number>9</number>
+    </property>
+    <item>
+     <layout class="QFormLayout" name="scaleCalibrationCycleFormLayout">
+      <property name="verticalSpacing">
+       <number>10</number>
+      </property>
+      <property name="horizontalSpacing">
+       <number>6</number>
+      </property>
+      <item row="0" column="0">
+       <widget class="QLabel" name="scaleCyclesSpinBox_label">
+        <property name="text">
+         <string>Cycles</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QSpinBox" name="scaleCyclesSpinBox">
+        <property name="minimum">
+         <number>1</number>
+        </property>
+        <property name="maximum">
+         <number>100</number>
+        </property>
+        <property name="value">
+         <number>3</number>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="scaleCalibrationSigma_label">
+        <property name="text">
+         <string>Sigma [µm/pix]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QDoubleSpinBox" name="scaleCalibrationSigma">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="decimals">
+         <number>4</number>
+        </property>
+        <property name="minimum">
+         <double>0.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100000.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QProgressBar" name="progress">
+      <property name="value">
+       <number>0</number>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QLabel" name="scaleCalibrationCycleStatusLabel">
+      <property name="text">
+       <string/>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="scaleCalibrationCycleButtonLayout">
+      <property name="spacing">
+       <number>6</number>
+      </property>
+      <item>
+       <widget class="QPushButton" name="button_acquire">
+        <property name="text">
+         <string>Start</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="button_saveScale">
+        <property name="text">
+         <string>Save calibration (no acquire needed)</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+   </layout>
   </widget>
   <widget class="QGroupBox" name="objectiveGroupBox">
    <property name="geometry">
     <rect>
      <x>8</x>
-     <y>216</y>
+     <y>316</y>
      <width>425</width>
      <height>120</height>
     </rect>
@@ -389,7 +471,7 @@
    <property name="geometry">
     <rect>
      <x>8</x>
-     <y>346</y>
+     <y>446</y>
      <width>425</width>
      <height>250</height>
     </rect>
@@ -530,13 +612,13 @@
    <property name="geometry">
     <rect>
      <x>8</x>
-     <y>606</y>
+     <y>706</y>
      <width>425</width>
-     <height>230</height>
+     <height>266</height>
     </rect>
    </property>
    <property name="title">
-    <string>Automated calibration: run</string>
+    <string>Automated calibration: FOV</string>
    </property>
    <layout class="QVBoxLayout" name="objectiveCycleVerticalLayout">
     <property name="spacing">
@@ -625,6 +707,29 @@
         </property>
        </widget>
       </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="objectiveCycleFovOffsetSigma_label">
+        <property name="text">
+         <string>FOV offset sigma [µm]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QDoubleSpinBox" name="objectiveCycleFovOffsetSigma">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="decimals">
+         <number>3</number>
+        </property>
+        <property name="minimum">
+         <double>0.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100000.000000000000000</double>
+        </property>
+       </widget>
+      </item>
      </layout>
     </item>
     <item>
@@ -681,9 +786,10 @@
   <tabstop>pixToMicrometerX_y</tabstop>
   <tabstop>pixToMicrometerY_x</tabstop>
   <tabstop>pixToMicrometerY_y</tabstop>
+  <tabstop>scaleCyclesSpinBox</tabstop>
   <tabstop>button_acquire</tabstop>
+  <tabstop>button_saveScale</tabstop>
   <tabstop>button_cancel</tabstop>
-  <tabstop>button_apply</tabstop>
  </tabstops>
  <resources/>
  <connections/>

@@ -440,18 +440,26 @@ private slots:
 	void showScaleCalibrationStatus(std::string title, std::string message);
 
 	void closeScaleCalibrationDialog();
-	void scaleCalibrationButtonApply_clicked();
-	void scaleCalibrationButtonAcquire_clicked();
 	void scaleCalibrationButtonSave_clicked();
+	// "Automated calibration: Scale" box's Start button - reads scaleCyclesSpinBox and dispatches
+	// to ScaleCalibration::startScaleCalibrationCycle(). Replaces the former single-shot
+	// "Acquire" (now cycles=1 degenerates back to the same single-measurement behavior) and the
+	// former separate Apply button, whose only distinct behavior (closing the dialog) was
+	// dropped - saveCalibration() (button_save/button_saveScale) is now the sole persist action.
+	void scaleCalibrationButtonStartScaleCycle_clicked();
+	// s_scaleCalibrationCycleProgress() receiver - toggles Start/Cycles enablement and updates
+	// the "Automated calibration: Scale" status label. No "waiting for continue" state, unlike
+	// updateObjectiveCycleProgress() - this run is fully autonomous.
+	void updateScaleCalibrationCycleProgress(int currentCycle, int totalCycles);
 
 	// Refreshes the dialog's read-only "Objective" name/magnification/calibration-file display
 	// (from m_objectiveSlotNames/m_objectiveSlotCalibrationPaths for whichever slot is
 	// physically/software-active right now - the operator can no longer type into these fields
 	// directly, Objective Setup is the only place that changes them) and the "compare to"
 	// pairwise FOV-offset display. Also pushes the active slot's linked calibration file path
-	// into m_scaleCalibration (setLinkedCalibrationFilePath()) so Apply/Save write into the
-	// same file. Called once when the dialog is opened and again from objectiveSwitched() every
-	// time the active slot changes while it is open.
+	// into m_scaleCalibration (setLinkedCalibrationFilePath()) so Save writes into the same
+	// file. Called once when the dialog is opened and again from objectiveSwitched() every time
+	// the active slot changes while it is open.
 	void refreshScaleCalibrationObjectiveDisplay();
 	// scaleCalibrationCompareToObjectiveCombo's currentIndexChanged handler - recomputes and
 	// shows the pairwise FOV-offset between the active slot and whichever objective is selected

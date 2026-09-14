@@ -27,6 +27,12 @@ ScaleCalibration::~ScaleCalibration() {}
  */
 
 void ScaleCalibration::startRepetitions() {
+	// Reset up front, regardless of which path below this call takes - startScaleCalibrationCycle()
+	// reads this right after every call to decide whether to average this cycle's result in, and
+	// a stale "true" left over from a previous, unrelated successful call must never leak into a
+	// call that (for whatever reason) didn't actually run/complete a measurement this time.
+	m_lastAcquireSucceeded = false;
+
 	bool allowed = m_acquisition->enableMode(ACQUISITION_MODE::SCALECALIBRATION);
 	if (!allowed) {
 		return;
@@ -48,7 +54,89 @@ void ScaleCalibration::startRepetitions() {
 	acquire();
 
 	m_acquisition->disableMode(ACQUISITION_MODE::SCALECALIBRATION);
-	
+
+}
+
+void ScaleCalibration::startScaleCalibrationCycle(int cycles) {
+	if (cycles < 1 || !m_camera || !m_scanControl) {
+		return;
+	}
+
+	auto samples = std::vector<ScaleCalibrationData>{};
+	for (int cycle = 1; cycle <= cycles; cycle++) {
+		emit(s_scaleCalibrationCycleProgress(cycle, cycles));
+		// Fully autonomous - unlike the FOV-offset automated cycle, no objective switch/operator
+		// refocus is needed between repetitions, so this just runs the existing single-shot
+		// procedure (three small stage moves + captures + template match, see __acquire()) back
+		// to back, on this same call/thread.
+		startRepetitions();
+		if (m_lastAcquireSucceeded) {
+			samples.push_back(static_cast<ScaleCalibrationData>(m_scaleCalibration));
+		}
+		if (m_abort) {
+			break;
+		}
+	}
+	emit(s_scaleCalibrationCycleProgress(0, cycles));
+
+	if (samples.empty()) {
+		emit(s_scaleCalibrationStatus("Scale calibration cycle failed",
+			"No cycle produced a valid scale calibration - please make sure there are distinct structures visible."));
+		return;
+	}
+
+	// Average the pix->um matrix across every successful cycle (component-wise mean), the same
+	// "M cycles -> one averaged result" convention as the automated FOV-offset cycle. Sigma is
+	// the std dev of each cycle's isotropic pixel pitch (see
+	// ScaleCalibrationHelper::isotropicPixelPitchUm()) around that mean - a single, rotation-
+	// independent repeatability number, not one component out of the four in the matrix.
+	auto meanPixToMicrometerX = POINT2{ 0, 0 };
+	auto meanPixToMicrometerY = POINT2{ 0, 0 };
+	auto pitchesUm = std::vector<double>{};
+	for (const auto& sample : samples) {
+		meanPixToMicrometerX.x += sample.pixToMicrometerX.x;
+		meanPixToMicrometerX.y += sample.pixToMicrometerX.y;
+		meanPixToMicrometerY.x += sample.pixToMicrometerY.x;
+		meanPixToMicrometerY.y += sample.pixToMicrometerY.y;
+		pitchesUm.push_back(ScaleCalibrationHelper::isotropicPixelPitchUm(sample));
+	}
+	meanPixToMicrometerX.x /= samples.size();
+	meanPixToMicrometerX.y /= samples.size();
+	meanPixToMicrometerY.x /= samples.size();
+	meanPixToMicrometerY.y /= samples.size();
+
+	auto meanPitchUm = 0.0;
+	for (auto pitchUm : pitchesUm) {
+		meanPitchUm += pitchUm;
+	}
+	meanPitchUm /= pitchesUm.size();
+	auto sigma = 0.0;
+	if (pitchesUm.size() > 1) {
+		auto sumSq = 0.0;
+		for (auto pitchUm : pitchesUm) {
+			auto d = pitchUm - meanPitchUm;
+			sumSq += d * d;
+		}
+		sigma = std::sqrt(sumSq / (pitchesUm.size() - 1));
+	}
+
+	m_scaleCalibration.pixToMicrometerX = meanPixToMicrometerX;
+	m_scaleCalibration.pixToMicrometerY = meanPixToMicrometerY;
+	try {
+		// Derives the (redundant, internal-only) micrometerToPix direction from the averaged
+		// pixToMicrometer and validates it is still a real basis.
+		ScaleCalibrationHelper::initializeCalibrationFromPixel(&m_scaleCalibration);
+	} catch (std::exception&) {
+	}
+	m_scaleCalibration.scaleCalibrationSigmaUm = sigma;
+
+	emit(s_scaleCalibrationChanged(m_scaleCalibration));
+	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
+
+	auto message = "Averaged " + std::to_string(samples.size()) + " of " + std::to_string(cycles)
+		+ " requested cycle(s). Pixel pitch " + std::to_string(meanPitchUm) + " um/pix, sigma "
+		+ std::to_string(sigma) + " um/pix. \"Save calibration (no acquire needed)\" to persist.";
+	emit(s_scaleCalibrationStatus("Scale calibration cycle finished", message));
 }
 
 void ScaleCalibration::loadCalibrationForSlot(int slot, std::string filepath, std::string objectiveName, double magnification) {
@@ -136,6 +224,7 @@ void ScaleCalibration::createEmptyCalibrationFile(int slot, std::string objectiv
 		writeAttribute(root, "fovOffsetX", data.fovOffsetUm.x);
 		writeAttribute(root, "fovOffsetY", data.fovOffsetUm.y);
 		writeAttribute(root, "fovOffsetSigma", data.fovOffsetSigmaUm);
+		writeAttribute(root, "scaleCalibrationSigma", data.scaleCalibrationSigmaUm);
 		writeAttribute(root, "objectiveSlot", (double)data.objectiveSlot);
 	} catch (H5::Exception&) {
 		emit(s_scaleCalibrationStatus("Could not create calibration file", "\"" + filepath + "\" is not writable."));
@@ -207,17 +296,26 @@ void ScaleCalibration::readCalibrationFile(const std::string& filepath, Objectiv
 	readAttribute(root, "fovOffsetX", &out->fovOffsetUm.x);
 	readAttribute(root, "fovOffsetY", &out->fovOffsetUm.y);
 	readAttribute(root, "fovOffsetSigma", &out->fovOffsetSigmaUm);
+	// Added after the fields above - kept optional (existence-checked) rather than required, so
+	// calibration files created just before this field existed don't also need recreating: a
+	// missing sigma is non-critical QC metadata, not something that can silently misapply a
+	// calibration the way a missing objectiveName/hasFovOffset could.
+	out->scaleCalibrationSigmaUm = 0.0;
+	if (root.attrExists("scaleCalibrationSigma")) {
+		readAttribute(root, "scaleCalibrationSigma", &out->scaleCalibrationSigmaUm);
+	}
 	auto objectiveSlotValue = 0.0;
 	readAttribute(root, "objectiveSlot", &objectiveSlotValue);
 	out->objectiveSlot = (int)objectiveSlotValue;
 }
 
 void ScaleCalibration::writeCalibrationMetadata(H5::Group& root) {
-	// Record which slot this calibration is being saved from - apply() (called right after by
-	// both save() and saveCalibration()'s callers) already assumes the operator is standing at
-	// the objective being calibrated, so the currently active slot is exactly the right value
-	// to persist (informational - loadCalibrationForSlot() overwrites it with whatever slot the
-	// file is explicitly linked to, regardless of what was recorded here at save time).
+	// Record which slot this calibration is being saved from - both callers (save(), the
+	// acquire-based procedure, and writeLinkedCalibrationFile(), used by saveCalibration())
+	// already assume the operator is standing at the objective being calibrated, so the
+	// currently active slot is exactly the right value to persist (informational -
+	// loadCalibrationForSlot() overwrites it with whatever slot the file is explicitly linked
+	// to, regardless of what was recorded here at save time).
 	m_scaleCalibration.objectiveSlot = m_scanControl->getActiveObjectiveSlot();
 
 	auto fulldate = QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc())
@@ -240,6 +338,7 @@ void ScaleCalibration::writeCalibrationMetadata(H5::Group& root) {
 	writeAttribute(root, "fovOffsetX", m_scaleCalibration.fovOffsetUm.x);
 	writeAttribute(root, "fovOffsetY", m_scaleCalibration.fovOffsetUm.y);
 	writeAttribute(root, "fovOffsetSigma", m_scaleCalibration.fovOffsetSigmaUm);
+	writeAttribute(root, "scaleCalibrationSigma", m_scaleCalibration.scaleCalibrationSigmaUm);
 	writeAttribute(root, "objectiveSlot", (double)m_scaleCalibration.objectiveSlot);
 }
 
@@ -554,6 +653,10 @@ void ScaleCalibration::__acquire() {
 		auto images_ = (std::vector<std::vector<T>> *) &images;
 		save((*images_), positions);
 
+		// Read by startScaleCalibrationCycle() right after this call returns, to decide whether
+		// this cycle's m_scaleCalibration is safe to average in.
+		m_lastAcquireSucceeded = true;
+
 		emit(s_scaleCalibrationChanged(m_scaleCalibration));
 
 	} catch (std::exception& e) {
@@ -604,37 +707,13 @@ void ScaleCalibration::initialize() {
 	m_scaleCalibration.fovOffsetSigmaUm = activeCalibration.fovOffsetSigmaUm;
 	m_scaleCalibration.referenceObjectiveName = activeCalibration.referenceObjectiveName;
 	m_scaleCalibration.calibrationDate = activeCalibration.calibrationDate;
+	m_scaleCalibration.scaleCalibrationSigmaUm = activeCalibration.scaleCalibrationSigmaUm;
 
 	// Emit it to the main GUI thread
 	emit(s_scaleCalibrationAcquisitionProgress(0.0));
 	emit(s_scaleCalibrationChanged(m_scaleCalibration));
 	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
 	emit(s_Ds_changed(m_Ds));
-}
-
-void ScaleCalibration::apply() {
-	try {
-		// Pixel-to-micrometer is the only direction the dialog still shows/lets the operator
-		// edit (see setPixToMicrometerX_x() etc.) - micrometerToPix is kept in sync live by
-		// those setters already, this is just the final validation pass (throws on a
-		// degenerate/non-basis calibration).
-		ScaleCalibrationHelper::initializeCalibrationFromPixel(&m_scaleCalibration);
-		// Registers against whichever objective slot is currently active (see
-		// ScanControl::setObjectiveCalibration()) - the operator is expected to have already
-		// switched to the objective being calibrated, exactly like the existing
-		// acquire-based procedure already implicitly assumes. This also applies the scale
-		// calibration to the live scanControl immediately (setObjectiveCalibration() does
-		// that itself when the slot matches the active one), so a separate
-		// setScaleCalibration() call is no longer needed here.
-		m_scanControl->setObjectiveCalibration(m_scanControl->getActiveObjectiveSlot(), m_scaleCalibration);
-		// Persist into the slot's linked calibration file - previously Apply only updated the
-		// live, in-memory registration, so the change was lost on the next app restart/reload
-		// unless "Save calibration" was also clicked separately.
-		writeLinkedCalibrationFile();
-		emit(s_closeScaleCalibrationDialog());
-	} catch (std::exception& e) {
-		emit(s_scaleCalibrationStatus("Cannot apply scale calibration", "The provided scale calibration is invalid."));
-	}
 }
 
 void ScaleCalibration::setTranslationDistanceX(double dx) {
@@ -878,22 +957,18 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	// comparable scale before template matching. The final um result below uses the target's
 	// full, non-approximated calibration instead.
 	//
-	// sqrt(|determinant|) of the pix->um matrix, NOT an average of its diagonal terms: the
-	// determinant is the matrix's area-scale factor (um^2/pixel^2), which is correct regardless
-	// of any rotation between the camera's pixel axes and the stage axes - averaging only the
-	// diagonal (X.x, Y.y) terms silently assumes zero rotation, and is wrong (by a large,
-	// rotation-dependent factor - up to totally collapsing to ~0 at 90 degrees) whenever the two
-	// objectives' optical paths actually introduce different image rotations, which is exactly
-	// what produced a grossly inflated "estimated magnification change" (and the resulting
-	// nonsense multi-hundred-um shift, since the two images were then rescaled to the wrong
-	// relative size before matching) even with two independently-verified-correct per-objective
-	// pixel-scale calibrations.
-	auto pixelPitchUm = [](const ScaleCalibrationData& scale) {
-		auto det = scale.pixToMicrometerX.x * scale.pixToMicrometerY.y - scale.pixToMicrometerY.x * scale.pixToMicrometerX.y;
-		return std::sqrt(std::abs(det));
-	};
-	auto referencePixelSizeUm = pixelPitchUm(referenceScale);
-	auto targetPixelSizeUm = pixelPitchUm(targetScale);
+	// ScaleCalibrationHelper::isotropicPixelPitchUm() (sqrt(|determinant|) of the pix->um
+	// matrix), NOT an average of its diagonal terms: the determinant is the matrix's area-scale
+	// factor (um^2/pixel^2), which is correct regardless of any rotation between the camera's
+	// pixel axes and the stage axes - averaging only the diagonal (X.x, Y.y) terms silently
+	// assumes zero rotation, and is wrong (by a large, rotation-dependent factor - up to totally
+	// collapsing to ~0 at 90 degrees) whenever the two objectives' optical paths actually
+	// introduce different image rotations, which is exactly what previously produced a grossly
+	// inflated "estimated magnification change" (and the resulting nonsense multi-hundred-um
+	// shift, since the two images were then rescaled to the wrong relative size before matching)
+	// even with two independently-verified-correct per-objective pixel-scale calibrations.
+	auto referencePixelSizeUm = ScaleCalibrationHelper::isotropicPixelPitchUm(referenceScale);
+	auto targetPixelSizeUm = ScaleCalibrationHelper::isotropicPixelPitchUm(targetScale);
 	if (referencePixelSizeUm <= 0.0 || targetPixelSizeUm <= 0.0) {
 		// Not an image-content problem at all - this objective has no (non-zero)
 		// pixToMicrometer pixel-scale calibration registered yet, i.e. its own "Acquire"
