@@ -463,17 +463,12 @@ private slots:
 	// (from m_objectiveSlotNames/m_objectiveSlotCalibrationPaths for whichever slot is
 	// physically/software-active right now - the operator can no longer type into these fields
 	// directly, Objective Setup is the only place that changes them) and the "compare to"
-	// pairwise FOV-offset display. Also pushes the active slot's linked calibration file path
-	// into m_scaleCalibration (setLinkedCalibrationFilePath()) so Save writes into the same
-	// file. Called once when the dialog is opened and again from objectiveSwitched() every time
-	// the active slot changes while it is open.
+	// FOV-offset field enablement (greyed out for the reference objective - its offset is locked
+	// at {0,0}, see ObjectiveCalibrationData::isReferenceObjective). Also pushes the active
+	// slot's linked calibration file path into m_scaleCalibration (setLinkedCalibrationFilePath())
+	// so Save writes into the same file. Called once when the dialog is opened and again from
+	// objectiveSwitched() every time the active slot changes while it is open.
 	void refreshScaleCalibrationObjectiveDisplay();
-	// scaleCalibrationCompareToObjectiveCombo's currentIndexChanged handler - recomputes and
-	// shows the pairwise FOV-offset between the active slot and whichever objective is selected
-	// (both already stored relative to the same baseline reference, see
-	// ScaleCalibration::measureFovOffset()'s composition - this is a pure display calculation,
-	// nothing is stored per-pair).
-	void scaleCalibrationCompareToObjectiveChanged();
 
 	// Automated multi-cycle FOV-offset calibration (Reference/Target combos + Start/Continue/
 	// Abort, see ScaleCalibration::startObjectiveCycleCalibration()). Dispatches to
@@ -530,6 +525,11 @@ private slots:
 	// Fills the Scale Calibration dialog's referenceObjectiveCombo/targetObjectiveCombo from
 	// m_objectiveSlotNames (name if set, else the word "Empty"), storing the 1-based slot number
 	// as each item's data (currentData().toInt()). No-op if the dialog is not currently open.
+	// referenceObjectiveCombo is also locked to whichever slot is the global reference objective
+	// (Objective Setup's "Reference" checkbox) and disabled outright, if one is set - there is
+	// only ever one true reference, so picking anything else there was only ever operator error
+	// (see this function's own .cpp comment). Left as an ordinary combo if no reference is set
+	// yet.
 	void populateObjectivePickerCombos();
 	// Empty slot names -> the fixed-width "E  " beampath placeholder (same width as "10x"-style
 	// names); named slots pass through unchanged. Used for the beampath specifically - the

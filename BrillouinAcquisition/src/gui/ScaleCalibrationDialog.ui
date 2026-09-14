@@ -573,33 +573,6 @@
      </layout>
     </item>
     <item>
-     <layout class="QHBoxLayout" name="compareToLayout">
-      <property name="spacing">
-       <number>6</number>
-      </property>
-      <item>
-       <widget class="QLabel" name="compareToObjectiveCombo_label">
-        <property name="text">
-         <string>Compare to:</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QComboBox" name="compareToObjectiveCombo"/>
-      </item>
-     </layout>
-    </item>
-    <item>
-     <widget class="QLabel" name="compareToResultLabel">
-      <property name="text">
-       <string/>
-      </property>
-      <property name="wordWrap">
-       <bool>true</bool>
-      </property>
-     </widget>
-    </item>
-    <item>
      <widget class="QPushButton" name="button_save">
       <property name="text">
        <string>Save calibration (no acquire needed)</string>
@@ -703,7 +676,7 @@
          <double>10000.000000000000000</double>
         </property>
         <property name="value">
-         <double>100.000000000000000</double>
+         <double>0.000000000000000</double>
         </property>
        </widget>
       </item>

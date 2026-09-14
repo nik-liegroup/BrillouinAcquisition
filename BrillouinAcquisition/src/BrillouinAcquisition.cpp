@@ -3702,13 +3702,6 @@ void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 			this,
 			[this](double value) { setFovOffsetSigma(value); }
 		);
-		connection = QWidget::connect<void(QComboBox::*)(int)>(
-			m_scaleCalibrationDialogUi.compareToObjectiveCombo,
-			&QComboBox::currentIndexChanged,
-			this,
-			[this](int) { scaleCalibrationCompareToObjectiveChanged(); }
-		);
-
 		// Automated multi-cycle FOV-offset calibration
 		connection = QWidget::connect(
 			m_scaleCalibrationDialogUi.button_startObjectiveCycle,
@@ -3914,7 +3907,18 @@ void BrillouinAcquisition::updateObjectiveCycleProgress(int currentCycle, int to
 	m_scaleCalibrationDialogUi.button_startObjectiveCycle->setEnabled(!running);
 	m_scaleCalibrationDialogUi.button_continueObjectiveCycle->setEnabled(waitingForContinue);
 	m_scaleCalibrationDialogUi.button_abortObjectiveCycle->setEnabled(running);
-	m_scaleCalibrationDialogUi.referenceObjectiveCombo->setEnabled(!running);
+	// referenceObjectiveCombo: locked permanently once a global reference objective is set (see
+	// populateObjectivePickerCombos()'s own doc comment) - only still an ordinary, run-lockable
+	// combo for the "no reference set yet" case.
+	auto hasGlobalReference = m_scanControl && [this]() {
+		for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
+			if (m_scanControl->getObjectiveCalibration((int)ii + 1).isReferenceObjective) {
+				return true;
+			}
+		}
+		return false;
+	}();
+	m_scaleCalibrationDialogUi.referenceObjectiveCombo->setEnabled(!hasGlobalReference && !running);
 	m_scaleCalibrationDialogUi.targetObjectiveCombo->setEnabled(!running);
 	m_scaleCalibrationDialogUi.cyclesSpinBox->setEnabled(!running);
 	m_scaleCalibrationDialogUi.zRetractDistanceUm->setEnabled(!running);
@@ -4320,6 +4324,7 @@ void BrillouinAcquisition::objectiveSetupReferenceToggled(int slotIndex, bool ch
 			"No reference objective set - FOV-center offsets for every objective are now unmeasured "
 			"relative to nothing in particular until a new reference is chosen.");
 		refreshScaleCalibrationObjectiveDisplay();
+		populateObjectivePickerCombos();
 		return;
 	}
 
@@ -4384,6 +4389,7 @@ void BrillouinAcquisition::objectiveSetupReferenceToggled(int slotIndex, bool ch
 			"and needs re-measuring.").arg(QString::fromStdString(name))
 		: QString("\"%1\" is now the reference objective (FOV-center offset 0, 0).").arg(QString::fromStdString(name)));
 	refreshScaleCalibrationObjectiveDisplay();
+	populateObjectivePickerCombos();
 }
 
 void BrillouinAcquisition::objectiveSetupButtonApply_clicked() {
@@ -4461,14 +4467,42 @@ void BrillouinAcquisition::populateObjectivePickerCombos() {
 	const QSignalBlocker b2(m_scaleCalibrationDialogUi.targetObjectiveCombo);
 	m_scaleCalibrationDialogUi.referenceObjectiveCombo->clear();
 	m_scaleCalibrationDialogUi.targetObjectiveCombo->clear();
+	// The global reference slot (Objective Setup's "Reference" checkbox - see
+	// ObjectiveCalibrationData::isReferenceObjective), found here rather than cached anywhere
+	// since it can change (objectiveSetupReferenceToggled()) independently of this dialog.
+	auto referenceSlot = -1;
+	if (m_scanControl) {
+		for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
+			if (m_scanControl->getObjectiveCalibration((int)ii + 1).isReferenceObjective) {
+				referenceSlot = (int)ii + 1;
+				break;
+			}
+		}
+	}
+	auto referenceComboIndex = -1;
 	for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
-		auto slot = QVariant((int)ii + 1);
+		auto slot = (int)ii + 1;
 		auto text = m_objectiveSlotNames[ii].empty()
 			? QString("Empty")
 			: QString::fromStdString(m_objectiveSlotNames[ii]);
-		m_scaleCalibrationDialogUi.referenceObjectiveCombo->addItem(text, slot);
-		m_scaleCalibrationDialogUi.targetObjectiveCombo->addItem(text, slot);
+		m_scaleCalibrationDialogUi.referenceObjectiveCombo->addItem(text, QVariant(slot));
+		m_scaleCalibrationDialogUi.targetObjectiveCombo->addItem(text, QVariant(slot));
+		if (slot == referenceSlot) {
+			referenceComboIndex = (int)ii;
+		}
 	}
+	// There is only ever one true reference objective (see Objective Setup's mutually-exclusive
+	// "Reference" checkbox) - measuring a NEW objective's FOV offset against anything else would
+	// just need composing back through that reference anyway (measureFovOffset() already does
+	// this automatically for an indirect chain), so picking any other objective here was never
+	// actually useful, only a source of operator error. Locked to the reference and disabled
+	// outright if one is set; left as an ordinary, operator-picked combo (same as before) if none
+	// is set yet, so an operator can still run the very first calibration cycle before any
+	// objective has been marked as the reference.
+	if (referenceComboIndex >= 0) {
+		m_scaleCalibrationDialogUi.referenceObjectiveCombo->setCurrentIndex(referenceComboIndex);
+	}
+	m_scaleCalibrationDialogUi.referenceObjectiveCombo->setDisabled(referenceComboIndex >= 0);
 }
 
 void BrillouinAcquisition::refreshScaleCalibrationObjectiveDisplay() {
@@ -4512,60 +4546,9 @@ void BrillouinAcquisition::refreshScaleCalibrationObjectiveDisplay() {
 	m_scaleCalibrationDialogUi.fovOffsetX->setDisabled(activeIsReference);
 	m_scaleCalibrationDialogUi.fovOffsetY->setDisabled(activeIsReference);
 	m_scaleCalibrationDialogUi.fovOffsetSigma->setDisabled(activeIsReference);
-
-	// Repopulate "compare to", excluding the active slot itself and any still-unnamed slot -
-	// there is nothing meaningful to compare an offset against without a name, and comparing an
-	// objective to itself is always zero.
-	auto combo = m_scaleCalibrationDialogUi.compareToObjectiveCombo;
-	const QSignalBlocker blocker3(combo);
-	auto previousData = combo->currentData();
-	combo->clear();
-	for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
-		auto slot = (int)ii + 1;
-		if (slot == activeSlot || m_objectiveSlotNames[ii].empty()) {
-			continue;
-		}
-		combo->addItem(QString::fromStdString(m_objectiveSlotNames[ii]), QVariant(slot));
-	}
-	auto restoreIndex = combo->findData(previousData);
-	combo->setCurrentIndex(restoreIndex >= 0 ? restoreIndex : (combo->count() > 0 ? 0 : -1));
-
-	scaleCalibrationCompareToObjectiveChanged();
-}
-
-void BrillouinAcquisition::scaleCalibrationCompareToObjectiveChanged() {
-	if (!m_scaleCalibrationDialog || !m_scanControl) {
-		return;
-	}
-	auto combo = m_scaleCalibrationDialogUi.compareToObjectiveCombo;
-	if (combo->count() == 0 || combo->currentIndex() < 0) {
-		m_scaleCalibrationDialogUi.compareToResultLabel->setText("No other named objective to compare to.");
-		return;
-	}
-	auto activeSlot = m_scanControl->getActiveObjectiveSlot();
-	auto otherSlot = combo->currentData().toInt();
-	auto activeCalibration = m_scanControl->getObjectiveCalibration(activeSlot);
-	auto otherCalibration = m_scanControl->getObjectiveCalibration(otherSlot);
-	if (!activeCalibration.hasFovOffset || !otherCalibration.hasFovOffset) {
-		m_scaleCalibrationDialogUi.compareToResultLabel->setText(
-			"Not calibrated yet - both objectives need a calibrated FOV-center offset (relative to the shared "
-			"reference) before a pairwise comparison is meaningful."
-		);
-		return;
-	}
-	// Both offsets are already relative to the same shared baseline (see
-	// ScaleCalibration::measureFovOffset()'s composition), so the pairwise difference is a
-	// pure subtraction - nothing is stored per-pair, this is a display-only calculation.
-	auto dx = activeCalibration.fovOffsetUm.x - otherCalibration.fovOffsetUm.x;
-	auto dy = activeCalibration.fovOffsetUm.y - otherCalibration.fovOffsetUm.y;
-	auto sigma = std::sqrt(
-		activeCalibration.fovOffsetSigmaUm * activeCalibration.fovOffsetSigmaUm +
-		otherCalibration.fovOffsetSigmaUm * otherCalibration.fovOffsetSigmaUm
-	);
-	m_scaleCalibrationDialogUi.compareToResultLabel->setText(
-		QString("FOV-center offset, this objective relative to the selected one: dx = %1 µm, dy = %2 µm, sigma = %3 µm")
-			.arg(dx, 0, 'f', 3).arg(dy, 0, 'f', 3).arg(sigma, 0, 'f', 3)
-	);
+	// The reference's own offset is locked at {0,0} - nothing to persist by re-saving it, and
+	// leaving Save enabled invited clicking it under the impression it did something here.
+	m_scaleCalibrationDialogUi.button_save->setDisabled(activeIsReference);
 }
 
 void BrillouinAcquisition::initBeampathButtons() {
