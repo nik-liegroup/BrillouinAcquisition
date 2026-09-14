@@ -138,17 +138,21 @@ public slots:
 	// (switchToObjectiveSlotAndVerify(), via ScanControl::setElement()) - a deliberate, confirmed
 	// exception to "the operator drives every switch", made because doing this by hand for M
 	// repeated cycles is exactly the kind of tedious, error-prone repetition automation is for.
-	// Each cycle: retract Z, switch
-	// to referenceSlot, capture a fresh reference image, retract Z again, switch to targetSlot,
-	// then PAUSES (returns to the caller/event loop - see runObjectiveCycleStep()) for the
-	// operator to manually refocus; continueObjectiveCycle() resumes from there, measures (via
-	// measureFovOffset(), accumulating into the same running mean/sigma exactly as repeated
-	// manual clicks would), and either starts the next cycle or finishes. Z is deliberately
-	// *not* restored after the run - see the .cpp comment on runObjectiveCycleStep(). No-op
-	// (emits a status and returns) if a run is already in progress.
+	// Each cycle pauses TWICE (returns to the caller/event loop - see beginCycleReferencePhase()/
+	// beginCycleTargetPhase()), once per objective, since the two objectives generally are not
+	// perfectly parfocal with each other and Z is deliberately never auto-restored (see the .cpp
+	// comment on beginCycleReferencePhase() for why): retract Z, switch to referenceSlot, PAUSE
+	// for the operator to refocus at the reference objective; on Continue, capture a fresh
+	// reference image, retract Z again, switch to targetSlot, PAUSE again for the operator to
+	// refocus at the target objective; on Continue, measure (via measureFovOffset(),
+	// accumulating into the same running mean/sigma exactly as repeated manual clicks would),
+	// and either start the next cycle's reference phase or finish. No-op (emits a status and
+	// returns) if a run is already in progress.
 	void startObjectiveCycleCalibration(int referenceSlot, int targetSlot, int cycles, double zRetractDistanceUm);
-	// Resumes after the operator has refocused at the target objective (see the pause above).
-	// No-op if not currently paused.
+	// Resumes from whichever of the two pauses above is currently active - after the operator has
+	// refocused at the reference objective (captures the reference image, then proceeds to the
+	// target phase), or after they have refocused at the target objective (measures, then starts
+	// the next cycle or finishes). No-op if not currently paused.
 	void continueObjectiveCycle();
 	// Aborts a run in progress or a paused run. Safe to call at any time (no-op if idle).
 	void abortObjectiveCycle();
@@ -265,15 +269,28 @@ private:
 	// __acquire()'s image-matrix construction).
 	cv::Mat readAsMat8U(const std::vector<std::byte>& image, int rows, int cols, const std::string& dataType) const;
 
+	// Writes a plain, human-viewable .tif copy of a just-captured FOV-offset reference/target
+	// image (same 8-bit conversion readAsMat8U() gives the actual matching code, so this is
+	// exactly what the algorithm saw) next to the active slot's linked calibration file
+	// (m_linkedCalibrationFilePath's own folder), or m_acquisition->getCurrentFolder() if no
+	// file is linked yet. Filenames are "<label>_<timestamp>.tif", timestamped so repeated
+	// cycles/measurements never overwrite each other. Best-effort/silent on failure (missing
+	// folder, not writable, etc.) - purely a debugging aid, never blocks the actual measurement.
+	void saveDebugCalibrationImage(const std::vector<std::byte>& image, const CAMERA_ROI& roi, const std::string& dataType, const std::string& label);
+
 	// Captures and caches the reference image (see measureFovOffset()'s doc comment above) -
-	// called by runObjectiveCycleStep() with resetAccumulatedSamples=(cycle == 1), so a fresh
+	// called by continueObjectiveCycle() with resetAccumulatedSamples=(cycle == 1), so a fresh
 	// reference image is captured every cycle without also wiping m_fovOffsetSamplesUm each
 	// time, which would defeat "M cycles average into one mean/sigma".
 	void captureFovOffsetReferenceImage(bool resetAccumulatedSamples);
 
 	// Automated multi-cycle FOV-offset calibration state (see startObjectiveCycleCalibration()
-	// in the public section above for the overall flow).
-	enum class ObjectiveCycleState { Idle, Running, WaitingForContinue };
+	// in the public section above for the overall flow). WaitingForReferenceFocus/
+	// WaitingForTargetFocus are the two pause points per cycle - kept distinct (rather than one
+	// shared "WaitingForContinue") so continueObjectiveCycle() knows which half of the cycle to
+	// resume: capture the reference image and move on to the target phase, or measure and move
+	// on to the next cycle/finish.
+	enum class ObjectiveCycleState { Idle, Running, WaitingForReferenceFocus, WaitingForTargetFocus };
 	ObjectiveCycleState m_objectiveCycleState{ ObjectiveCycleState::Idle };
 	int m_objectiveCycleReferenceSlot{ -1 };
 	int m_objectiveCycleTargetSlot{ -1 };
@@ -281,12 +298,18 @@ private:
 	int m_objectiveCycleIndex{ 0 };	// 1-based current cycle
 	double m_objectiveCycleRetractUm{ 0.0 };
 
-	// Runs one full cycle's worth of retract/switch/capture/retract/switch (steps (a)-(f) in
-	// startObjectiveCycleCalibration()'s doc comment), then sets state to WaitingForContinue and
-	// returns - see the .cpp definition for why this return is the only pause point, never a
-	// blocking wait on this object's own thread. Called for cycle 1 from
-	// startObjectiveCycleCalibration(), and for cycles 2..M from continueObjectiveCycle().
-	void runObjectiveCycleStep();
+	// Retracts Z, switches to the reference objective, then pauses (sets state to
+	// WaitingForReferenceFocus and returns to the caller/event loop - see the .cpp definition for
+	// why this return is the only pause point, never a blocking wait on this object's own thread)
+	// for the operator to refocus there before the reference image is captured. Called for cycle
+	// 1 from startObjectiveCycleCalibration(), and for cycles 2..M from continueObjectiveCycle()
+	// once the previous cycle's measurement is done.
+	void beginCycleReferencePhase();
+	// Captures the reference image (called from continueObjectiveCycle() once the operator has
+	// refocused at the reference objective - see beginCycleReferencePhase()), then retracts Z,
+	// switches to the target objective, and pauses again (WaitingForTargetFocus) for the operator
+	// to refocus there before measureFovOffset() runs.
+	void beginCycleTargetPhase();
 	// Finds the "Objective" DeviceElement the same way the beampath buttons do
 	// (m_scanControl->m_deviceElements, matched by name). Returns false (leaves *out untouched)
 	// if this backend has none.
@@ -352,9 +375,11 @@ signals:
 	void s_scaleCalibrationAcquisitionProgress(double);
 	void s_scaleCalibrationStatus(std::string title, std::string message);
 	// Automated multi-cycle FOV-offset calibration progress. currentCycle is 1-based, 0 while
-	// idle/just finished (see finishObjectiveCycle()). waitingForContinue mirrors
-	// m_objectiveCycleState == WaitingForContinue - drives the dialog's
-	// Start/Continue/Abort button enablement and status text.
+	// idle/just finished (see finishObjectiveCycle()). waitingForContinue is true for EITHER of
+	// the two pauses per cycle (WaitingForReferenceFocus or WaitingForTargetFocus) - it only
+	// drives the dialog's Start/Continue/Abort button enablement, which of the two pauses is
+	// currently active does not need extra plumbing here since the operator sees the specific
+	// "refocus at reference/target objective" instruction via s_scaleCalibrationStatus instead.
 	void s_objectiveCycleProgress(int currentCycle, int totalCycles, bool waitingForContinue);
 	// Automated multi-cycle scale-calibration progress (startScaleCalibrationCycle()).
 	// currentCycle is 1-based, 0 while idle/just finished - no "waiting for continue" state,

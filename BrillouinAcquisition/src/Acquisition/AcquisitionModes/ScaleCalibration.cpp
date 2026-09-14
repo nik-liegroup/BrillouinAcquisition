@@ -5,12 +5,17 @@
 
 #include "opencv2/core.hpp"
 #include "opencv2/highgui.hpp"
+#include "opencv2/imgcodecs.hpp"
+
+#include "filesystem"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <thread>
 #include <type_traits>
+
+using namespace std::filesystem;
 
 /*
  * Public definitions
@@ -880,8 +885,10 @@ void ScaleCalibration::setFovOffsetSigma(double value) {
  * a deliberate, confirmed exception to "the operator always drives the switch": doing this by
  * hand for M repeated reference<->target cycles is exactly the tedious, error-prone repetition
  * this automation exists to remove. A Z-retract safety step precedes every commanded switch
- * (see runObjectiveCycleStep()) as the mitigation for the collision risk that hand-driving the
- * changer avoided entirely before.
+ * (see beginCycleReferencePhase()/beginCycleTargetPhase()) as the mitigation for the collision
+ * risk that hand-driving the changer avoided entirely before. Each cycle pauses once per
+ * objective (not just once, at the target) for the operator to refocus, since the two
+ * objectives generally are not perfectly parfocal with each other.
  */
 
 void ScaleCalibration::configureCalibrationCameraRoi() {
@@ -974,6 +981,34 @@ cv::Mat ScaleCalibration::readAsMat8U(const std::vector<std::byte>& image, int r
 	// Direct, copy-free view onto image's own memory - matches the convention __acquire()'s
 	// image-matrix construction already uses for the 8-bit case.
 	return cv::Mat(rows, cols, CV_8UC1, (void*)image.data());
+}
+
+void ScaleCalibration::saveDebugCalibrationImage(const std::vector<std::byte>& image, const CAMERA_ROI& roi, const std::string& dataType, const std::string& label) {
+	if (image.empty()) {
+		return;
+	}
+	auto folder = std::string{};
+	if (!m_linkedCalibrationFilePath.empty()) {
+		folder = path(m_linkedCalibrationFilePath).parent_path().string();
+	} else if (m_acquisition) {
+		folder = m_acquisition->getCurrentFolder();
+	}
+	if (folder.empty()) {
+		return;
+	}
+	try {
+		create_directories(folder);
+	} catch (const filesystem_error&) {
+		return;
+	}
+
+	auto mat = readAsMat8U(image, roi.height_binned, roi.width_binned, dataType);
+	auto timestamp = QDateTime::currentDateTime().toString("yyyy-MM-ddTHHmmss.zzz").toStdString();
+	auto filepath = folder + "/" + label + "_" + timestamp + ".tif";
+	try {
+		cv::imwrite(filepath, mat);
+	} catch (const cv::Exception&) {
+	}
 }
 
 bool ScaleCalibration::computeFovOffsetShiftUm(
@@ -1144,6 +1179,8 @@ void ScaleCalibration::captureFovOffsetReferenceImage(bool resetAccumulatedSampl
 	}
 	m_fovReferenceRoi = m_cameraSettings.roi;
 	m_fovReferenceDataType = m_cameraSettings.readout.dataType;
+	saveDebugCalibrationImage(m_fovReferenceImage, m_fovReferenceRoi, m_fovReferenceDataType,
+		"fovReference_slot" + std::to_string(m_scanControl->getActiveObjectiveSlot()));
 	// Read directly from this slot's own stored calibration (ScanControl::m_objectiveCalibrations),
 	// not the "currently active" mirror (getScaleCalibration()) - the mirror is only guaranteed
 	// in sync immediately after a slot *change* observed via handleObjectiveSlotObserved(); reading
@@ -1195,6 +1232,7 @@ void ScaleCalibration::measureFovOffset() {
 	// see the identical comment in captureFovOffsetReferenceImage() for why.
 	auto targetScaleCalibration = m_scanControl->getObjectiveCalibration(targetSlot);
 	auto targetDataType = m_cameraSettings.readout.dataType;
+	saveDebugCalibrationImage(targetImage, m_cameraSettings.roi, targetDataType, "fovTarget_slot" + std::to_string(targetSlot));
 
 	auto shiftUm = POINT2{};
 	auto estimatedMagnificationChange = 0.0;
@@ -1337,25 +1375,39 @@ void ScaleCalibration::startObjectiveCycleCalibration(int referenceSlot, int tar
 	m_objectiveCycleIndex = 1;
 	m_objectiveCycleRetractUm = zRetractDistanceUm;
 
-	runObjectiveCycleStep();
+	beginCycleReferencePhase();
 }
 
 void ScaleCalibration::continueObjectiveCycle() {
-	if (m_objectiveCycleState != ObjectiveCycleState::WaitingForContinue) {
+	if (m_objectiveCycleState == ObjectiveCycleState::WaitingForReferenceFocus) {
+		// The operator has refocused at the reference objective - capture it now, at (hopefully)
+		// good focus, then move on to the target phase.
+		captureFovOffsetReferenceImage(m_objectiveCycleIndex == 1);
+		if (m_fovReferenceImage.empty()) {
+			emit(s_scaleCalibrationStatus("Objective cycle aborted", "Could not capture the reference image."));
+			finishObjectiveCycle(true);
+			return;
+		}
+		beginCycleTargetPhase();
 		return;
 	}
-	// Unmodified - m_objectiveCycleTargetSlot is the same slot across every cycle in this run,
-	// so measureFovOffset()'s own "different target than last time, reset samples" guard never
-	// fires mid-run, and repeated calls accumulate into m_fovOffsetSamplesUm exactly as
-	// repeated manual clicks already do (see its class-level doc comment).
-	measureFovOffset();
+	if (m_objectiveCycleState == ObjectiveCycleState::WaitingForTargetFocus) {
+		// The operator has refocused at the target objective - measure now, then start the next
+		// cycle's reference phase or finish. Unmodified from before this two-pause split:
+		// m_objectiveCycleTargetSlot is the same slot across every cycle in this run, so
+		// measureFovOffset()'s own "different target than last time, reset samples" guard never
+		// fires mid-run, and repeated calls accumulate into m_fovOffsetSamplesUm exactly as
+		// repeated manual clicks already do (see its class-level doc comment).
+		measureFovOffset();
 
-	if (m_objectiveCycleIndex >= m_objectiveCycleCount) {
-		finishObjectiveCycle(false);
+		if (m_objectiveCycleIndex >= m_objectiveCycleCount) {
+			finishObjectiveCycle(false);
+			return;
+		}
+		m_objectiveCycleIndex++;
+		beginCycleReferencePhase();
 		return;
 	}
-	m_objectiveCycleIndex++;
-	runObjectiveCycleStep();
 }
 
 void ScaleCalibration::abortObjectiveCycle() {
@@ -1365,48 +1417,61 @@ void ScaleCalibration::abortObjectiveCycle() {
 	finishObjectiveCycle(true);
 }
 
-void ScaleCalibration::runObjectiveCycleStep() {
+void ScaleCalibration::beginCycleReferencePhase() {
 	m_objectiveCycleState = ObjectiveCycleState::Running;
 	emit(s_objectiveCycleProgress(m_objectiveCycleIndex, m_objectiveCycleCount, false));
 
-	// (a) Retract Z before every commanded switch, as a safety margin against a collision
-	// between objectives of different parfocal length/working distance - see the class-level
-	// comment above startObjectiveCycleCalibration(). Relative move, sign/magnitude as entered
-	// by the operator (Automated calibration: run > "Z retract [um]").
+	// Retract Z before every commanded switch, as a safety margin against a collision between
+	// objectives of different parfocal length/working distance - see the class-level comment
+	// above startObjectiveCycleCalibration(). Relative move, sign/magnitude as entered by the
+	// operator (Automated calibration: FOV > "Z retract [um]").
 	m_scanControl->movePosition(POINT3{ 0, 0, m_objectiveCycleRetractUm });
-	// (b)(c) Switch to the reference objective and verify it landed.
+	// Switch to the reference objective and verify it landed.
 	if (!switchToObjectiveSlotAndVerify(m_objectiveCycleReferenceSlot)) {
 		finishObjectiveCycle(true);
 		return;
 	}
-	// (d) Capture a fresh reference image every cycle - only reset the accumulated samples on
-	// the very first cycle (see captureFovOffsetReferenceImage()'s own comment).
-	captureFovOffsetReferenceImage(m_objectiveCycleIndex == 1);
-	if (m_fovReferenceImage.empty()) {
-		emit(s_scaleCalibrationStatus("Objective cycle aborted", "Could not capture the reference image."));
-		finishObjectiveCycle(true);
-		return;
-	}
 
-	// (e) Retract again before the second switch of this cycle, for the same reason as (a).
-	m_scanControl->movePosition(POINT3{ 0, 0, m_objectiveCycleRetractUm });
-	// (f) Switch to the target objective and verify it landed.
-	if (!switchToObjectiveSlotAndVerify(m_objectiveCycleTargetSlot)) {
-		finishObjectiveCycle(true);
-		return;
-	}
-
-	// (g) Pause here for the operator to refocus - Z was just retracted twice and neither
-	// switch restores it (deliberately: this objective's parfocal plane is not the previous
-	// one's, so "restoring" the pre-retract Z here could reintroduce the very collision risk
-	// the retract exists to avoid - see continueObjectiveCycle()/finishObjectiveCycle(), Z is
-	// never auto-restored even once the whole run ends). This is a real return to the caller/
+	// Pause here for the operator to refocus at the REFERENCE objective before it is captured -
+	// an earlier version of this code captured the reference image immediately after switching,
+	// with no refocus step at all, relying purely on the Z-retract compensation. That is fine
+	// for cycle 1 (Z was wherever the operator had it focused at the reference objective before
+	// clicking Start), but from cycle 2 onward Z is wherever the operator last refocused for the
+	// TARGET objective (see beginCycleTargetPhase()) - not restored to the reference objective's
+	// own focus in between (deliberately: "restoring" a fixed pre-retract Z here could
+	// reintroduce the very collision risk the retract exists to avoid, since the two objectives'
+	// parfocal planes generally differ). Without this pause, every cycle after the first
+	// measured a defocused (and therefore less reliable, more scattered) reference image against
+	// a properly focused target image - consistent with reported results starting small and
+	// growing/becoming noisier over the course of a run. This is a real return to the caller/
 	// event loop, not a blocking wait - ScaleCalibration shares m_acquisitionThread with
 	// ScanControl and every other acquisition mode, so blocking here would freeze all of them,
 	// exactly like the earlier trigger-mode/ROI bugs in this class did. continueObjectiveCycle()
 	// (invoked from a GUI button click, via QMetaObject::invokeMethod like every other GUI ->
 	// ScaleCalibration call) is what resumes from here.
-	m_objectiveCycleState = ObjectiveCycleState::WaitingForContinue;
+	m_objectiveCycleState = ObjectiveCycleState::WaitingForReferenceFocus;
+	emit(s_objectiveCycleProgress(m_objectiveCycleIndex, m_objectiveCycleCount, true));
+	emit(s_scaleCalibrationStatus("Refocus and continue",
+		"Refocus at the reference objective, then click \"Continue\" (cycle " + std::to_string(m_objectiveCycleIndex)
+		+ " of " + std::to_string(m_objectiveCycleCount) + ")."));
+}
+
+void ScaleCalibration::beginCycleTargetPhase() {
+	m_objectiveCycleState = ObjectiveCycleState::Running;
+
+	// Retract again before the second switch of this cycle, for the same reason as in
+	// beginCycleReferencePhase().
+	m_scanControl->movePosition(POINT3{ 0, 0, m_objectiveCycleRetractUm });
+	// Switch to the target objective and verify it landed.
+	if (!switchToObjectiveSlotAndVerify(m_objectiveCycleTargetSlot)) {
+		finishObjectiveCycle(true);
+		return;
+	}
+
+	// Pause for the operator to refocus at the TARGET objective before measureFovOffset() runs -
+	// see beginCycleReferencePhase() for why this pause (and the matching one there) exist, and
+	// why Z is never auto-restored between them.
+	m_objectiveCycleState = ObjectiveCycleState::WaitingForTargetFocus;
 	emit(s_objectiveCycleProgress(m_objectiveCycleIndex, m_objectiveCycleCount, true));
 	emit(s_scaleCalibrationStatus("Refocus and continue",
 		"Refocus at the target objective, then click \"Continue\" (cycle " + std::to_string(m_objectiveCycleIndex)
