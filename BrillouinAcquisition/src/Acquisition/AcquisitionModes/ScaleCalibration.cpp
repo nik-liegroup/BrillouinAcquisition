@@ -770,10 +770,36 @@ void ScaleCalibration::setFovOffsetSigma(double value) {
 
 void ScaleCalibration::configureCalibrationCameraRoi() {
 	m_cameraSettings = m_camera->getSettings();
-	m_cameraSettings.roi.left = 1000;
-	m_cameraSettings.roi.top = 800;
-	m_cameraSettings.roi.width_physical = 1000;
-	m_cameraSettings.roi.height_physical = 1000;
+
+	// The previous unconditional left=1000/top=800/1000x1000 assumed a sensor of at least
+	// 2000x1800 px. On a smaller sensor that request is invalid; depending on the backend the
+	// SDK either silently rejects it (PointGrey's ValidateFormat7Settings failing, so the
+	// camera keeps its old, different AOI) or clamps it inconsistently, while width_binned/
+	// height_binned/bytesPerFrame below still got computed from the requested-but-never-applied
+	// 1000x1000 - so every buffer this class allocates ends up sized for a frame the camera
+	// was never actually delivering. This is the "referenced memory could not be
+	// written"/"could not be read" crash on both Acquire and the FOV-offset buttons, which
+	// share this same setup call. Live preview and the Fluorescence tab never hit this because
+	// they never request this fixed offset/size - only this dialog does.
+	//
+	// Fix: clamp the requested ROI to whatever the camera itself reports as its sensor limits
+	// (already populated by the time this dialog can be opened, since that requires an already-
+	// connected, already-previewed camera), instead of assuming a fixed sensor size.
+	const auto options = m_camera->getOptions();
+	const auto maxWidth = options.ROIWidthLimits.size() > 1 ? options.ROIWidthLimits[1] : 1000;
+	const auto maxHeight = options.ROIHeightLimits.size() > 1 ? options.ROIHeightLimits[1] : 1000;
+
+	const auto width = std::min<long long>(1000, maxWidth);
+	const auto height = std::min<long long>(1000, maxHeight);
+	// Keep the previous preferred offset where it still fits; pull it in just enough to keep
+	// left+width / top+height within the sensor otherwise.
+	const auto left = std::min<long long>(1000, std::max<long long>(0, maxWidth - width));
+	const auto top = std::min<long long>(800, std::max<long long>(0, maxHeight - height));
+
+	m_cameraSettings.roi.left = left;
+	m_cameraSettings.roi.top = top;
+	m_cameraSettings.roi.width_physical = width;
+	m_cameraSettings.roi.height_physical = height;
 	m_cameraSettings.frameCount = 1;
 	m_camera->setSettings(m_cameraSettings);
 	m_cameraSettings = m_camera->getSettings();

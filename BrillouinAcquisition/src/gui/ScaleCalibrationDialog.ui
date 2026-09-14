@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>441</width>
-    <height>422</height>
+    <height>530</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -438,13 +438,31 @@
      <x>8</x>
      <y>216</y>
      <width>425</width>
-     <height>136</height>
+     <height>240</height>
     </rect>
    </property>
    <property name="title">
     <string>Objective (applies to whichever slot is currently active)</string>
    </property>
    <layout class="QFormLayout" name="objectiveFormLayout">
+    <property name="verticalSpacing">
+     <number>10</number>
+    </property>
+    <property name="horizontalSpacing">
+     <number>6</number>
+    </property>
+    <property name="leftMargin">
+     <number>9</number>
+    </property>
+    <property name="topMargin">
+     <number>12</number>
+    </property>
+    <property name="rightMargin">
+     <number>9</number>
+    </property>
+    <property name="bottomMargin">
+     <number>9</number>
+    </property>
     <item row="0" column="0">
      <widget class="QLabel" name="objectiveName_label">
       <property name="text">
@@ -555,7 +573,7 @@
    <property name="geometry">
     <rect>
      <x>8</x>
-     <y>360</y>
+     <y>465</y>
      <width>425</width>
      <height>23</height>
     </rect>
@@ -568,7 +586,7 @@
    <property name="geometry">
     <rect>
      <x>8</x>
-     <y>390</y>
+     <y>497</y>
      <width>210</width>
      <height>23</height>
     </rect>
@@ -581,7 +599,7 @@
    <property name="geometry">
     <rect>
      <x>223</x>
-     <y>390</y>
+     <y>497</y>
      <width>210</width>
      <height>23</height>
     </rect>
