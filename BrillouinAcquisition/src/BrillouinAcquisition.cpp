@@ -3794,10 +3794,6 @@ void BrillouinAcquisition::updateObjectiveCalibrationData(ObjectiveCalibrationDa
 	// Read-only display of the scale calibration's own repeatability (see
 	// ScaleCalibration::startScaleCalibrationCycle()) inside "Automated calibration: Scale".
 	m_scaleCalibrationDialogUi.scaleCalibrationSigma->setValue(calibration.scaleCalibrationSigmaUm);
-
-	// The pairwise "compare to" display is derived from this same offset - keep it in sync
-	// whenever the active slot's own calibration changes (e.g. right after a measurement).
-	scaleCalibrationCompareToObjectiveChanged();
 }
 
 void BrillouinAcquisition::closeScaleCalibrationDialog() {
