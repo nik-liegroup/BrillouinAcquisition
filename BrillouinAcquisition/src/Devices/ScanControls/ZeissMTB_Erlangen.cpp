@@ -391,14 +391,8 @@ int ZeissMTB_Erlangen::getReflector() {
 }
 
 void ZeissMTB_Erlangen::setObjective(int position, bool block) {
-	// The MTB changer's own Position property is 0-based (position 0 = the nosepiece's first
-	// physical slot), while every other objective-slot number in this codebase (Objective Setup,
-	// ScaleCalibration's stored/registered slot, isValidObjectiveSlot()) is 1-based - same
-	// convention already applied to Beam Block/LED illumination just above via
-	// setBeamBlock()/setLEDLamp()'s "- 1". Objective never got that normalization, which is what
-	// let a correctly-calibrated slot 1 report back as raw slot 0 and fail every calibration
-	// lookup after a switch.
-	auto success = setElement(m_Objective, position - 1);
+	// Set the position
+	auto success = setElement(m_Objective, position);
 }
 
 void ZeissMTB_Erlangen::setSideport(int position, bool block) {
@@ -407,8 +401,7 @@ void ZeissMTB_Erlangen::setSideport(int position, bool block) {
 }
 
 int ZeissMTB_Erlangen::getObjective() {
-	// Inverse of the "- 1" in setObjective() - see that function's comment.
-	return getElement(m_Objective) + 1;
+	return getElement(m_Objective);
 }
 
 int ZeissMTB_Erlangen::getSideport() {
