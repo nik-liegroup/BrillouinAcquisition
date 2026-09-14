@@ -444,11 +444,14 @@ private slots:
 	void scaleCalibrationButtonAcquire_clicked();
 	void scaleCalibrationButtonSave_clicked();
 
-	// Refreshes the dialog's read-only "Objective" name/magnification (from m_objectiveSlotNames
-	// for whichever slot is physically/software-active right now - the operator can no longer
-	// type into these fields directly, Objective Setup is the only place that changes them) and
-	// the "compare to" pairwise FOV-offset display. Called once when the dialog is opened and
-	// again from objectiveSwitched() every time the active slot changes while it is open.
+	// Refreshes the dialog's read-only "Objective" name/magnification/calibration-file display
+	// (from m_objectiveSlotNames/m_objectiveSlotCalibrationPaths for whichever slot is
+	// physically/software-active right now - the operator can no longer type into these fields
+	// directly, Objective Setup is the only place that changes them) and the "compare to"
+	// pairwise FOV-offset display. Also pushes the active slot's linked calibration file path
+	// into m_scaleCalibration (setLinkedCalibrationFilePath()) so Apply/Save write into the
+	// same file. Called once when the dialog is opened and again from objectiveSwitched() every
+	// time the active slot changes while it is open.
 	void refreshScaleCalibrationObjectiveDisplay();
 	// scaleCalibrationCompareToObjectiveCombo's currentIndexChanged handler - recomputes and
 	// shows the pairwise FOV-offset between the active slot and whichever objective is selected
@@ -514,11 +517,9 @@ private slots:
 	void setTranslationDistanceX(double dx);
 	void setTranslationDistanceY(double dy);
 
-	void setMicrometerToPixX_x(double value);
-	void setMicrometerToPixX_y(double value);
-	void setMicrometerToPixY_x(double value);
-	void setMicrometerToPixY_y(double value);
-
+	// micrometerToPix is no longer shown/editable in the dialog (see updateScaleCalibrationData())
+	// - it is still tracked internally by ScaleCalibration, kept in sync from whichever
+	// pixToMicrometer field is edited below, so there are no GUI-facing setters for it here anymore.
 	void setPixToMicrometerX_x(double value);
 	void setPixToMicrometerX_y(double value);
 	void setPixToMicrometerY_x(double value);

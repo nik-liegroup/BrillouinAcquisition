@@ -3639,32 +3639,10 @@ void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 			[this](double dy) { setTranslationDistanceY(dy); }
 		);
 
-		// Connect scale calibration boxes
-		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-			m_scaleCalibrationDialogUi.micrometerToPixX_x,
-			&QDoubleSpinBox::valueChanged,
-			this,
-			[this](double value) { setMicrometerToPixX_x(value); }
-		);
-		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-			m_scaleCalibrationDialogUi.micrometerToPixX_y,
-			&QDoubleSpinBox::valueChanged,
-			this,
-			[this](double value) { setMicrometerToPixX_y(value); }
-		);
-		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-			m_scaleCalibrationDialogUi.micrometerToPixY_x,
-			&QDoubleSpinBox::valueChanged,
-			this,
-			[this](double value) { setMicrometerToPixY_x(value); }
-		);
-		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-			m_scaleCalibrationDialogUi.micrometerToPixY_y,
-			&QDoubleSpinBox::valueChanged,
-			this,
-			[this](double value) { setMicrometerToPixY_y(value); }
-		);
-
+		// Connect scale calibration boxes. Only pixToMicrometer is shown/editable in the dialog
+		// now (micrometerToPix is still stored internally - ScaleCalibrationHelper keeps both
+		// directions in sync from whichever one is edited - just not displayed twice) so there
+		// is no micrometerToPix wiring here anymore.
 		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
 			m_scaleCalibrationDialogUi.pixToMicrometerX_x,
 			&QDoubleSpinBox::valueChanged,
@@ -3780,21 +3758,13 @@ void BrillouinAcquisition::updateScaleCalibrationTranslationValue(POINT2 transla
 
 void BrillouinAcquisition::updateScaleCalibrationData(ScaleCalibrationData scaleCalibration) {
 	// We have to block the signals so that programmatically setting new values
-	// doesn't trigger a new round of calculations
-	const QSignalBlocker blocker1(m_scaleCalibrationDialogUi.micrometerToPixX_x);
-	const QSignalBlocker blocker2(m_scaleCalibrationDialogUi.micrometerToPixX_y);
-	const QSignalBlocker blocker3(m_scaleCalibrationDialogUi.micrometerToPixY_x);
-	const QSignalBlocker blocker4(m_scaleCalibrationDialogUi.micrometerToPixY_y);
-
+	// doesn't trigger a new round of calculations. Only pixToMicrometer is shown in the dialog -
+	// micrometerToPix is still tracked internally (see the .ui connect() comment above) but has
+	// no widget here to update.
 	const QSignalBlocker blocker5(m_scaleCalibrationDialogUi.pixToMicrometerX_x);
 	const QSignalBlocker blocker6(m_scaleCalibrationDialogUi.pixToMicrometerX_y);
 	const QSignalBlocker blocker7(m_scaleCalibrationDialogUi.pixToMicrometerY_x);
 	const QSignalBlocker blocker8(m_scaleCalibrationDialogUi.pixToMicrometerY_y);
-
-	m_scaleCalibrationDialogUi.micrometerToPixX_x->setValue(scaleCalibration.micrometerToPixX.x);
-	m_scaleCalibrationDialogUi.micrometerToPixX_y->setValue(scaleCalibration.micrometerToPixX.y);
-	m_scaleCalibrationDialogUi.micrometerToPixY_x->setValue(scaleCalibration.micrometerToPixY.x);
-	m_scaleCalibrationDialogUi.micrometerToPixY_y->setValue(scaleCalibration.micrometerToPixY.y);
 
 	m_scaleCalibrationDialogUi.pixToMicrometerX_x->setValue(scaleCalibration.pixToMicrometerX.x);
 	m_scaleCalibrationDialogUi.pixToMicrometerX_y->setValue(scaleCalibration.pixToMicrometerX.y);
@@ -3957,22 +3927,6 @@ void BrillouinAcquisition::setTranslationDistanceX(double dx) {
 
 void BrillouinAcquisition::setTranslationDistanceY(double dy) {
 	m_scaleCalibration->setTranslationDistanceY(dy);
-}
-
-void BrillouinAcquisition::setMicrometerToPixX_x(double value) {
-	m_scaleCalibration->setMicrometerToPixX_x(value);
-}
-
-void BrillouinAcquisition::setMicrometerToPixX_y(double value) {
-	m_scaleCalibration->setMicrometerToPixX_y(value);
-}
-
-void BrillouinAcquisition::setMicrometerToPixY_x(double value) {
-	m_scaleCalibration->setMicrometerToPixY_x(value);
-}
-
-void BrillouinAcquisition::setMicrometerToPixY_y(double value) {
-	m_scaleCalibration->setMicrometerToPixY_y(value);
 }
 
 void BrillouinAcquisition::setPixToMicrometerX_x(double value) {
@@ -4377,6 +4331,15 @@ void BrillouinAcquisition::refreshScaleCalibrationObjectiveDisplay() {
 	// name/magnification even though nothing in the dialog lets the operator type them anymore.
 	m_scaleCalibration->setObjectiveName(QString::fromStdString(activeName));
 	m_scaleCalibration->setMagnification(activeMagnification);
+
+	// Same idea for the linked calibration file - shown read-only so the operator can see which
+	// file Apply/Save will write into, and pushed into ScaleCalibration so they actually do.
+	auto activePath = (activeSlot >= 1 && activeSlot <= (int)m_objectiveSlotCalibrationPaths.size())
+		? m_objectiveSlotCalibrationPaths[activeSlot - 1] : std::string{};
+	m_scaleCalibrationDialogUi.objectiveCalibrationFile->setToolTip(QString::fromStdString(activePath));
+	m_scaleCalibrationDialogUi.objectiveCalibrationFile->setText(activePath.empty() ? "(none)"
+		: QFileInfo(QString::fromStdString(activePath)).fileName());
+	m_scaleCalibration->setLinkedCalibrationFilePath(activePath);
 
 	// Repopulate "compare to", excluding the active slot itself and any still-unnamed slot -
 	// there is nothing meaningful to compare an offset against without a name, and comparing an

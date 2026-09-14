@@ -48,11 +48,22 @@ public slots:
 	// same path once a real scale calibration/FOV offset has been measured for it.
 	void createEmptyCalibrationFile(int slot, std::string objectiveName, double magnification, std::string filepath);
 
+	// The active slot's linked calibration file path (BrillouinAcquisition::
+	// m_objectiveSlotCalibrationPaths, pushed in by refreshScaleCalibrationObjectiveDisplay()
+	// whenever the dialog opens or the active slot changes) - what apply()/saveCalibration()
+	// write into, so editing/measuring a calibration actually persists into the same file
+	// Objective Setup links for this slot, instead of only updating the in-memory registration.
+	// "" if this slot has no linked file yet.
+	void setLinkedCalibrationFilePath(std::string path);
+
 	// Writes the current calibration (scale + whatever objective-identity/FOV-offset fields
-	// are set) to a new file, the same way the acquire-based procedure's save() does - but
-	// without requiring an acquire to have run first (no images to write, no dependency on
-	// m_cameraSettings ever having been populated this session). For entering a known
-	// FOV-center offset by hand without re-running the translation measurement.
+	// are set) into the active slot's linked calibration file (see setLinkedCalibrationFilePath()),
+	// without requiring an acquire to have run first. Also registers it live, exactly like
+	// apply() (minus closing the dialog) - so a measured FOV offset takes effect immediately
+	// without needing a separate Apply click. Tolerant of a still-degenerate (not yet
+	// "Acquire"d) scale calibration, unlike apply() - this button's whole point is entering/
+	// saving just an FOV-center offset for an objective that may not have a pixel-scale
+	// calibration yet.
 	void saveCalibration();
 
 	void acquire(std::unique_ptr <StorageWrapper>& storage) override;
@@ -133,16 +144,25 @@ private:
 	// fields (date, scale calibration, objective-identity/FOV-offset) - keeping this in one
 	// place instead of two independent copies is what avoids the two ever drifting apart.
 	void writeCalibrationMetadata(H5::Group& root);
-	// Folder (from m_acquisition->getCurrentFolder()) + timestamped filename, shared by
-	// save() and saveCalibration().
+	// Folder (from m_acquisition->getCurrentFolder()) + timestamped filename, used by save()
+	// for the raw-image diagnostic dump the acquire-based procedure writes.
 	std::string newCalibrationFilePath() const;
+	// Overwrites m_linkedCalibrationFilePath with the current m_scaleCalibration (via
+	// writeCalibrationMetadata()) - shared by apply()/saveCalibration(). Emits
+	// s_scaleCalibrationStatus() instead of writing if no file is linked for this slot, or if
+	// the linked file is not writable.
+	void writeLinkedCalibrationFile();
 
 	// Reads one calibration file's fields into *out (scale calibration + objective-identity/
 	// FOV-offset + objectiveSlot), without touching m_scaleCalibration or emitting any dialog-
 	// refresh signals - used by loadCalibrationForSlot(). Throws H5::Exception if filepath is
-	// not a readable HDF5 file or lacks the required scale-calibration datasets (origin/
-	// pixToMicrometerX/Y/micrometerToPixX/Y) - the caller decides what "invalid calibration
-	// file" means for its own context.
+	// not a readable HDF5 file, lacks the scale-calibration datasets (origin/pixToMicrometerX/Y/
+	// micrometerToPixX/Y), or lacks any of the objective-identity/FOV-offset attributes
+	// (objectiveName/magnification/hasFovOffset/fovOffsetX/Y/Sigma/referenceObjectiveName/
+	// calibrationDate/objectiveSlot) - only "new"-format files (written by writeCalibrationMetadata()/
+	// createEmptyCalibrationFile(), i.e. by this version of the software) are accepted; an older
+	// legacy file missing these is rejected rather than silently backfilled with defaults. The
+	// caller decides what "invalid calibration file" means for its own context.
 	void readCalibrationFile(const std::string& filepath, ObjectiveCalibrationData* out);
 
 	void writePoint(H5::Group group, std::string name, POINT2 point);
@@ -150,12 +170,11 @@ private:
 
 	void writeAttribute(H5::H5Object& parent, std::string name, double value);
 	void writeAttribute(H5::H5Object& parent, std::string name, std::string value);
+	// Both throw (H5::Exception) if the attribute is missing - readCalibrationFile() relies on
+	// this to reject a file missing any of the "new"-format objective-identity/FOV-offset
+	// attributes.
 	void readAttribute(const H5::H5Object& parent, std::string name, double* value);
-	// Missing attribute (older calibration file, saved before the objective fields existed)
-	// leaves *value untouched rather than throwing - callers pre-set it to the desired
-	// default before calling.
-	void readAttributeOptional(const H5::H5Object& parent, std::string name, double* value);
-	void readAttributeOptional(const H5::H5Object& parent, std::string name, std::string* value);
+	void readAttribute(const H5::H5Object& parent, std::string name, std::string* value);
 
 	template <typename T>
 	void __acquire();
@@ -278,6 +297,9 @@ private:
 	// identity/FOV-offset fields declared on top of it are new.
 	ObjectiveCalibrationData m_scaleCalibration;
 	POINT2 m_Ds{ 10.0, 10.0 };	// [µm]	shift in x- and y-direction
+
+	// See setLinkedCalibrationFilePath()/writeLinkedCalibrationFile().
+	std::string m_linkedCalibrationFilePath;
 
 signals:
 	void s_Ds_changed(POINT2);

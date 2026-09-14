@@ -64,11 +64,21 @@ void ScaleCalibration::loadCalibrationForSlot(int slot, std::string filepath, st
 	ObjectiveCalibrationData data{};
 	try {
 		readCalibrationFile(filepath, &data);
-		// Also throws on a degenerate/non-basis calibration, not just an unreadable file.
-		ScaleCalibrationHelper::initializeCalibrationFromPixel(&data);
+		// A freshly-created ("New") file legitimately has an all-zero scale calibration until a
+		// real "Acquire" has been run and applied for it - that is not the same as the file
+		// being corrupt/invalid, so only recompute (and validate) micrometerToPix when
+		// pixToMicrometer actually forms a basis; otherwise leave the all-zero matrices as read,
+		// exactly like createEmptyCalibrationFile() itself never runs
+		// initializeCalibrationFromPixel() either. Linking such a file just means "no scale
+		// calibration yet for this slot", not a rejected file.
+		if (ScaleCalibrationHelper::isBasis(data.pixToMicrometerX, data.pixToMicrometerY)) {
+			ScaleCalibrationHelper::initializeCalibrationFromPixel(&data);
+		}
 	} catch (...) {
 		emit(s_scaleCalibrationStatus("Could not link calibration file",
-			"\"" + filepath + "\" is not a valid scale calibration file."));
+			"\"" + filepath + "\" is not a valid scale calibration file - only files written by "
+			"this version of the software (Apply/Save, or Objective Setup's \"New\" button) are "
+			"accepted."));
 		return;
 	}
 
@@ -185,21 +195,20 @@ void ScaleCalibration::readCalibrationFile(const std::string& filepath, Objectiv
 	out->micrometerToPixX = readPoint(root, "micrometerToPixX");
 	out->micrometerToPixY = readPoint(root, "micrometerToPixY");
 
-	// Objective-identity/FOV-offset/slot fields - absent on a calibration file saved before
-	// they existed, in which case whatever *out already had (its defaults, if freshly
-	// constructed) is left as-is.
-	readAttributeOptional(root, "objectiveName", &out->objectiveName);
-	readAttributeOptional(root, "magnification", &out->magnification);
-	readAttributeOptional(root, "referenceObjectiveName", &out->referenceObjectiveName);
-	readAttributeOptional(root, "calibrationDate", &out->calibrationDate);
-	auto hasFovOffsetValue = out->hasFovOffset ? 1.0 : 0.0;
-	readAttributeOptional(root, "hasFovOffset", &hasFovOffsetValue);
+	// Objective-identity/FOV-offset/slot fields - required now (throws if any is missing, e.g.
+	// an old legacy file saved before they existed). See this function's header doc comment.
+	readAttribute(root, "objectiveName", &out->objectiveName);
+	readAttribute(root, "magnification", &out->magnification);
+	readAttribute(root, "referenceObjectiveName", &out->referenceObjectiveName);
+	readAttribute(root, "calibrationDate", &out->calibrationDate);
+	auto hasFovOffsetValue = 0.0;
+	readAttribute(root, "hasFovOffset", &hasFovOffsetValue);
 	out->hasFovOffset = hasFovOffsetValue != 0.0;
-	readAttributeOptional(root, "fovOffsetX", &out->fovOffsetUm.x);
-	readAttributeOptional(root, "fovOffsetY", &out->fovOffsetUm.y);
-	readAttributeOptional(root, "fovOffsetSigma", &out->fovOffsetSigmaUm);
-	auto objectiveSlotValue = (double)out->objectiveSlot;
-	readAttributeOptional(root, "objectiveSlot", &objectiveSlotValue);
+	readAttribute(root, "fovOffsetX", &out->fovOffsetUm.x);
+	readAttribute(root, "fovOffsetY", &out->fovOffsetUm.y);
+	readAttribute(root, "fovOffsetSigma", &out->fovOffsetSigmaUm);
+	auto objectiveSlotValue = 0.0;
+	readAttribute(root, "objectiveSlot", &objectiveSlotValue);
 	out->objectiveSlot = (int)objectiveSlotValue;
 }
 
@@ -234,15 +243,39 @@ void ScaleCalibration::writeCalibrationMetadata(H5::Group& root) {
 	writeAttribute(root, "objectiveSlot", (double)m_scaleCalibration.objectiveSlot);
 }
 
-void ScaleCalibration::saveCalibration() {
-	auto filepath = newCalibrationFilePath();
+void ScaleCalibration::setLinkedCalibrationFilePath(std::string path) {
+	m_linkedCalibrationFilePath = path;
+}
+
+void ScaleCalibration::writeLinkedCalibrationFile() {
+	if (m_linkedCalibrationFilePath.empty()) {
+		emit(s_scaleCalibrationStatus("Calibration not saved to a file",
+			"This slot has no linked calibration file yet - link or create one first "
+			"(Devices > Objective Setup), then Apply/Save again to persist this calibration to disk."));
+		return;
+	}
 	try {
-		auto file = H5::H5File(&filepath[0], H5F_ACC_TRUNC);
+		auto file = H5::H5File(&m_linkedCalibrationFilePath[0], H5F_ACC_TRUNC);
 		auto root = file.openGroup("/");
 		writeCalibrationMetadata(root);
 	} catch (H5::Exception& exception) {
-		emit(s_scaleCalibrationStatus("Could not save the scale calibration", "Please select a writable working directory."));
+		emit(s_scaleCalibrationStatus("Could not save the scale calibration",
+			"\"" + m_linkedCalibrationFilePath + "\" is not writable."));
 	}
+}
+
+void ScaleCalibration::saveCalibration() {
+	try {
+		// Keeps micrometerToPix in sync with a possibly-just-edited pixToMicrometer field, same
+		// validation apply() performs - but unlike apply(), a still-degenerate (not yet
+		// "Acquire"d) scale calibration must not block this: this button's whole point is
+		// entering/saving just a measured FOV-center offset for an objective that may not have
+		// its pixel-scale calibration done yet.
+		ScaleCalibrationHelper::initializeCalibrationFromPixel(&m_scaleCalibration);
+	} catch (std::exception&) {
+	}
+	m_scanControl->setObjectiveCalibration(m_scanControl->getActiveObjectiveSlot(), m_scaleCalibration);
+	writeLinkedCalibrationFile();
 }
 
 template <typename T>
@@ -358,34 +391,20 @@ void ScaleCalibration::readAttribute(const H5::H5Object& parent, std::string nam
 	attr.close();
 }
 
-void ScaleCalibration::readAttributeOptional(const H5::H5Object& parent, std::string name, double* value) {
-	// Missing on a calibration file saved before the objective fields existed - leave the
-	// caller's pre-set default untouched rather than throwing and aborting the whole load()
-	// (which would otherwise also lose the still-valid scale calibration fields read before
-	// this point).
-	if (!parent.attrExists(name.c_str())) {
-		return;
+void ScaleCalibration::readAttribute(const H5::H5Object& parent, std::string name, std::string* value) {
+	// openAttribute() throws (H5::AttributeIException) if the attribute is missing -
+	// readCalibrationFile() relies on this to reject a file missing any "new"-format field
+	// rather than silently defaulting it.
+	auto attr = parent.openAttribute(name.c_str());
+	auto type = attr.getDataType();
+	auto size = type.getSize();
+	auto buffer = std::string(size, '\0');
+	if (size > 0) {
+		attr.read(type, &buffer[0]);
 	}
-	readAttribute(parent, name, value);
-}
-
-void ScaleCalibration::readAttributeOptional(const H5::H5Object& parent, std::string name, std::string* value) {
-	if (!parent.attrExists(name.c_str())) {
-		return;
-	}
-	try {
-		auto attr = parent.openAttribute(name.c_str());
-		auto type = attr.getDataType();
-		auto size = type.getSize();
-		auto buffer = std::string(size, '\0');
-		if (size > 0) {
-			attr.read(type, &buffer[0]);
-		}
-		*value = buffer;
-		type.close();
-		attr.close();
-	} catch (H5::Exception&) {
-	}
+	*value = buffer;
+	type.close();
+	attr.close();
 }
 
 template <typename T>
@@ -595,7 +614,10 @@ void ScaleCalibration::initialize() {
 
 void ScaleCalibration::apply() {
 	try {
-		ScaleCalibrationHelper::initializeCalibrationFromMicrometer(&m_scaleCalibration);
+		// Pixel-to-micrometer is the only direction the dialog still shows/lets the operator
+		// edit (see setPixToMicrometerX_x() etc.) - micrometerToPix is kept in sync live by
+		// those setters already, this is just the final validation pass (throws on a
+		// degenerate/non-basis calibration).
 		ScaleCalibrationHelper::initializeCalibrationFromPixel(&m_scaleCalibration);
 		// Registers against whichever objective slot is currently active (see
 		// ScanControl::setObjectiveCalibration()) - the operator is expected to have already
@@ -605,6 +627,10 @@ void ScaleCalibration::apply() {
 		// that itself when the slot matches the active one), so a separate
 		// setScaleCalibration() call is no longer needed here.
 		m_scanControl->setObjectiveCalibration(m_scanControl->getActiveObjectiveSlot(), m_scaleCalibration);
+		// Persist into the slot's linked calibration file - previously Apply only updated the
+		// live, in-memory registration, so the change was lost on the next app restart/reload
+		// unless "Save calibration" was also clicked separately.
+		writeLinkedCalibrationFile();
 		emit(s_closeScaleCalibrationDialog());
 	} catch (std::exception& e) {
 		emit(s_scaleCalibrationStatus("Cannot apply scale calibration", "The provided scale calibration is invalid."));
@@ -981,8 +1007,14 @@ void ScaleCalibration::captureFovOffsetReferenceImage(bool resetAccumulatedSampl
 	}
 	m_fovReferenceRoi = m_cameraSettings.roi;
 	m_fovReferenceDataType = m_cameraSettings.readout.dataType;
-	m_fovReferenceScaleCalibration = m_scanControl->getScaleCalibration();
-	auto activeCalibration = m_scanControl->getActiveObjectiveCalibration();
+	// Read directly from this slot's own stored calibration (ScanControl::m_objectiveCalibrations),
+	// not the "currently active" mirror (getScaleCalibration()) - the mirror is only guaranteed
+	// in sync immediately after a slot *change* observed via handleObjectiveSlotObserved(); reading
+	// it here made this measurement depend on that timing/backend-specific signal path instead of
+	// on the actually-registered per-slot calibration, which is what previously caused a spurious
+	// "no pixel-scale calibration" failure even when one had genuinely been loaded for this slot.
+	auto activeCalibration = m_scanControl->getObjectiveCalibration(m_scanControl->getActiveObjectiveSlot());
+	m_fovReferenceScaleCalibration = activeCalibration;
 	m_fovReferenceObjectiveName = activeCalibration.objectiveName;
 	m_fovReferenceObjectiveSlot = m_scanControl->getActiveObjectiveSlot();
 	m_fovReferenceMagnification = activeCalibration.magnification;
@@ -994,9 +1026,6 @@ void ScaleCalibration::captureFovOffsetReferenceImage(bool resetAccumulatedSampl
 		m_fovOffsetTargetSlot = -1;
 		m_fovOffsetSamplesUm.clear();
 	}
-
-	emit(s_scaleCalibrationStatus("FOV-offset reference captured",
-		"Reference image captured at slot " + std::to_string(m_fovReferenceObjectiveSlot) + "."));
 }
 
 void ScaleCalibration::measureFovOffset() {
@@ -1025,7 +1054,9 @@ void ScaleCalibration::measureFovOffset() {
 		emit(s_scaleCalibrationStatus("Could not capture target image", "Please make sure a brightfield camera is connected."));
 		return;
 	}
-	auto targetScaleCalibration = m_scanControl->getScaleCalibration();
+	// Read directly from this slot's own stored calibration, not the "currently active" mirror -
+	// see the identical comment in captureFovOffsetReferenceImage() for why.
+	auto targetScaleCalibration = m_scanControl->getObjectiveCalibration(targetSlot);
 	auto targetDataType = m_cameraSettings.readout.dataType;
 
 	auto shiftUm = POINT2{};
