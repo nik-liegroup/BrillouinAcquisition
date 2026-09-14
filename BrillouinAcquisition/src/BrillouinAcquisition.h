@@ -440,12 +440,19 @@ private slots:
 	void showScaleCalibrationStatus(std::string title, std::string message);
 
 	void closeScaleCalibrationDialog();
-	void scaleCalibrationButtonSave_clicked();
+	// The FOV box's "Save calibration (no acquire needed)" (button_save) and the Scale box's
+	// same-labeled button (button_saveScale) are deliberately separate handlers, not one shared
+	// slot - each dispatches to the matching ScaleCalibration::saveFovOffsetCalibration()/
+	// saveScaleCalibration(), which persist only their own half of the calibration (see the
+	// rationale on those two in ScaleCalibration.h) - so saving one never also commits an
+	// in-progress, not-yet-decided edit sitting in the other box.
+	void scaleCalibrationButtonSaveScale_clicked();
+	void scaleCalibrationButtonSaveFov_clicked();
 	// "Automated calibration: Scale" box's Start button - reads scaleCyclesSpinBox and dispatches
 	// to ScaleCalibration::startScaleCalibrationCycle(). Replaces the former single-shot
 	// "Acquire" (now cycles=1 degenerates back to the same single-measurement behavior) and the
 	// former separate Apply button, whose only distinct behavior (closing the dialog) was
-	// dropped - saveCalibration() (button_save/button_saveScale) is now the sole persist action.
+	// dropped - the two Save buttons above are now the sole persist actions.
 	void scaleCalibrationButtonStartScaleCycle_clicked();
 	// s_scaleCalibrationCycleProgress() receiver - toggles Start/Cycles enablement and updates
 	// the "Automated calibration: Scale" status label. No "waiting for continue" state, unlike

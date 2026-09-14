@@ -3616,13 +3616,13 @@ void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 			m_scaleCalibrationDialogUi.button_save,
 			&QPushButton::clicked,
 			this,
-			[this]() { scaleCalibrationButtonSave_clicked(); }
+			[this]() { scaleCalibrationButtonSaveFov_clicked(); }
 		);
 		connection = QWidget::connect(
 			m_scaleCalibrationDialogUi.button_saveScale,
 			&QPushButton::clicked,
 			this,
-			[this]() { scaleCalibrationButtonSave_clicked(); }
+			[this]() { scaleCalibrationButtonSaveScale_clicked(); }
 		);
 		connection = QWidget::connect(
 			m_scaleCalibration,
@@ -3829,11 +3829,21 @@ void BrillouinAcquisition::showScaleCalibrationStatus(std::string title, std::st
 	msgBox.exec();
 }
 
-void BrillouinAcquisition::scaleCalibrationButtonSave_clicked() {
+void BrillouinAcquisition::scaleCalibrationButtonSaveScale_clicked() {
 	QMetaObject::invokeMethod(
 		m_scaleCalibration,
 		[&m_scaleCalibration = m_scaleCalibration]() {
-			m_scaleCalibration->saveCalibration();
+			m_scaleCalibration->saveScaleCalibration();
+		},
+		Qt::AutoConnection
+	);
+}
+
+void BrillouinAcquisition::scaleCalibrationButtonSaveFov_clicked() {
+	QMetaObject::invokeMethod(
+		m_scaleCalibration,
+		[&m_scaleCalibration = m_scaleCalibration]() {
+			m_scaleCalibration->saveFovOffsetCalibration();
 		},
 		Qt::AutoConnection
 	);

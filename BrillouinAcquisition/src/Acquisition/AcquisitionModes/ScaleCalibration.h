@@ -50,21 +50,31 @@ public slots:
 
 	// The active slot's linked calibration file path (BrillouinAcquisition::
 	// m_objectiveSlotCalibrationPaths, pushed in by refreshScaleCalibrationObjectiveDisplay()
-	// whenever the dialog opens or the active slot changes) - what apply()/saveCalibration()
-	// write into, so editing/measuring a calibration actually persists into the same file
-	// Objective Setup links for this slot, instead of only updating the in-memory registration.
-	// "" if this slot has no linked file yet.
+	// whenever the dialog opens or the active slot changes) - what saveScaleCalibration()/
+	// saveFovOffsetCalibration() write into, so editing/measuring a calibration actually
+	// persists into the same file Objective Setup links for this slot, instead of only updating
+	// the in-memory registration. "" if this slot has no linked file yet.
 	void setLinkedCalibrationFilePath(std::string path);
 
-	// Writes the current calibration (scale + whatever objective-identity/FOV-offset fields
-	// are set) into the active slot's linked calibration file (see setLinkedCalibrationFilePath()),
-	// without requiring an acquire to have run first. Also registers it live immediately - the
-	// sole way to persist/apply a calibration now (the former, near-duplicate apply() - whose
-	// only difference was also closing the dialog - was removed once this covered its role too).
-	// Tolerant of a still-degenerate (not yet "Acquire"d) scale calibration - this button's whole
-	// point is entering/saving just an FOV-center offset for an objective that may not have a
-	// pixel-scale calibration yet.
-	void saveCalibration();
+	// The two "Save" buttons (one in each box) are deliberately independent - each commits only
+	// its own half of the calibration, starting from whatever is currently stored for the active
+	// slot (already registered in ScanControl / on disk) and overwriting only the fields it owns.
+	// This matters because m_scaleCalibration is one shared live edit buffer for the whole
+	// dialog: without this split, clicking either button would persist BOTH halves together,
+	// silently committing an in-progress, not-yet-decided edit sitting in the *other* box (e.g.
+	// clicking "Save calibration" in the FOV box right after running an automated Scale cycle you
+	// hadn't decided to keep yet would have saved that new scale calibration too). Both also
+	// re-read the merged, actually-saved result back into m_scaleCalibration and emit change
+	// signals, so the dialog visually reverts any abandoned edit in the box that was NOT saved.
+
+	// Persists only the scale-calibration (pix<->um) fields into the active slot's linked file
+	// and live registration - leaves whatever FOV-offset fields are currently stored untouched.
+	void saveScaleCalibration();
+	// Persists only the FOV-offset fields into the active slot's linked file and live
+	// registration - leaves whatever scale-calibration fields are currently stored untouched.
+	// Tolerant of a still-degenerate (not yet "Acquire"d) scale calibration, since it never
+	// touches that half at all.
+	void saveFovOffsetCalibration();
 
 	void acquire(std::unique_ptr <StorageWrapper>& storage) override;
 	void acquire();
@@ -102,7 +112,7 @@ public slots:
 	// not free-text editable here), and referenceObjectiveName is set internally by
 	// measureFovOffset() - neither has a dedicated GUI input anymore. Saved/loaded alongside the
 	// rest of this calibration file, and registered against whichever objective slot is active
-	// when saveCalibration() runs.
+	// when saveFovOffsetCalibration()/saveScaleCalibration() run.
 	void setObjectiveName(QString name);
 	void setMagnification(double value);
 	void setHasFovOffset(bool hasFovOffset);
@@ -150,18 +160,30 @@ private:
 	template <typename T>
 	void save(std::vector<std::vector<T>> images, std::vector<POINT2> positions);
 
-	// Shared by save() and saveCalibration() so both write exactly the same calibration
-	// fields (date, scale calibration, objective-identity/FOV-offset) - keeping this in one
-	// place instead of two independent copies is what avoids the two ever drifting apart.
+	// Shared by save() and writeLinkedCalibrationFile() so both write exactly the same
+	// calibration fields (date, scale calibration, objective-identity/FOV-offset) - keeping this
+	// in one place instead of two independent copies is what avoids the two ever drifting apart.
 	void writeCalibrationMetadata(H5::Group& root);
 	// Folder (from m_acquisition->getCurrentFolder()) + timestamped filename, used by save()
 	// for the raw-image diagnostic dump the acquire-based procedure writes.
 	std::string newCalibrationFilePath() const;
 	// Overwrites m_linkedCalibrationFilePath with the current m_scaleCalibration (via
-	// writeCalibrationMetadata()) - shared by apply()/saveCalibration(). Emits
-	// s_scaleCalibrationStatus() instead of writing if no file is linked for this slot, or if
-	// the linked file is not writable.
+	// writeCalibrationMetadata()) - called by persistPartial() once it has merged in only the
+	// half of the calibration the caller (saveScaleCalibration()/saveFovOffsetCalibration())
+	// actually owns. Emits s_scaleCalibrationStatus() instead of writing if no file is linked
+	// for this slot, or if the linked file is not writable.
 	void writeLinkedCalibrationFile();
+	// Shared by saveScaleCalibration()/saveFovOffsetCalibration(): reads the active slot's
+	// currently-stored calibration (m_scanControl->getObjectiveCalibration()) as the baseline,
+	// overlays only the scale-calibration fields (includeScale) and/or FOV-offset fields
+	// (includeFov) from the live edit buffer (m_scaleCalibration) on top of it, registers the
+	// merged result live, writes it to the linked file, and re-reads it back into
+	// m_scaleCalibration (emitting the usual change signals) so the dialog reflects exactly what
+	// was actually saved - including reverting any abandoned edit in the half that was NOT
+	// included. objectiveName/magnification are always carried over from the live edit buffer
+	// (identity fields, not "owned" by either half - always kept correct by
+	// refreshScaleCalibrationObjectiveDisplay(), so always safe to include).
+	void persistPartial(bool includeScale, bool includeFov);
 
 	// Reads one calibration file's fields into *out (scale calibration + objective-identity/
 	// FOV-offset + objectiveSlot), without touching m_scaleCalibration or emitting any dialog-
@@ -276,10 +298,10 @@ private:
 	// requested slot).
 	bool switchToObjectiveSlotAndVerify(int slot);
 	// Ends a run (cycles exhausted, or aborted): resets state to Idle, emits a final status and
-	// s_objectiveCycleProgress(0, ...). Deliberately does not call saveCalibration() itself -
-	// persisting the result stays an explicit, operator-clicked step (the dialog's existing Save
-	// button already reads the up-to-date m_scaleCalibration this leaves behind, exactly as it
-	// does after a manual measureFovOffset() click).
+	// s_objectiveCycleProgress(0, ...). Deliberately does not call saveFovOffsetCalibration()
+	// itself - persisting the result stays an explicit, operator-clicked step (the dialog's
+	// existing Save button already reads the up-to-date m_scaleCalibration this leaves behind,
+	// exactly as it does after a manual measureFovOffset() click).
 	void finishObjectiveCycle(bool aborted);
 
 	CAMERA_SETTINGS m_cameraSettings;

@@ -311,7 +311,7 @@ void ScaleCalibration::readCalibrationFile(const std::string& filepath, Objectiv
 
 void ScaleCalibration::writeCalibrationMetadata(H5::Group& root) {
 	// Record which slot this calibration is being saved from - both callers (save(), the
-	// acquire-based procedure, and writeLinkedCalibrationFile(), used by saveCalibration())
+	// acquire-based procedure, and writeLinkedCalibrationFile(), used by persistPartial())
 	// already assume the operator is standing at the objective being calibrated, so the
 	// currently active slot is exactly the right value to persist (informational -
 	// loadCalibrationForSlot() overwrites it with whatever slot the file is explicitly linked
@@ -363,18 +363,58 @@ void ScaleCalibration::writeLinkedCalibrationFile() {
 	}
 }
 
-void ScaleCalibration::saveCalibration() {
+void ScaleCalibration::persistPartial(bool includeScale, bool includeFov) {
+	if (!m_scanControl) {
+		return;
+	}
+	auto slot = m_scanControl->getActiveObjectiveSlot();
+	// Start from whatever is currently stored for this slot (already registered in ScanControl,
+	// i.e. whatever the linked file last held) - not from m_scaleCalibration wholesale - so the
+	// half the caller does NOT own is left exactly as it was, regardless of what might currently
+	// be sitting, not-yet-committed, in that half of the dialog's shared edit buffer.
+	auto data = m_scanControl->getObjectiveCalibration(slot);
+	// Identity fields are not "owned" by either half - refreshScaleCalibrationObjectiveDisplay()
+	// always keeps these correct on m_scaleCalibration, so always safe (and necessary, since a
+	// blank "New" file's stored copy may still be empty) to carry them over.
+	data.objectiveName = m_scaleCalibration.objectiveName;
+	data.magnification = m_scaleCalibration.magnification;
+	if (includeScale) {
+		static_cast<ScaleCalibrationData&>(data) = static_cast<ScaleCalibrationData&>(m_scaleCalibration);
+		data.scaleCalibrationSigmaUm = m_scaleCalibration.scaleCalibrationSigmaUm;
+	}
+	if (includeFov) {
+		data.hasFovOffset = m_scaleCalibration.hasFovOffset;
+		data.fovOffsetUm = m_scaleCalibration.fovOffsetUm;
+		data.fovOffsetSigmaUm = m_scaleCalibration.fovOffsetSigmaUm;
+		data.referenceObjectiveName = m_scaleCalibration.referenceObjectiveName;
+	}
+
+	m_scanControl->setObjectiveCalibration(slot, data);
+	// Re-read the merged, actually-saved result back into the edit buffer (rather than leaving
+	// whatever was there before) and re-emit the change signals, so the dialog visually reverts
+	// any abandoned edit in the half that was NOT included - it did not get saved, so it should
+	// not keep appearing to be.
+	m_scaleCalibration = data;
+	writeLinkedCalibrationFile();
+	emit(s_scaleCalibrationChanged(m_scaleCalibration));
+	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
+}
+
+void ScaleCalibration::saveScaleCalibration() {
 	try {
-		// Keeps micrometerToPix in sync with a possibly-just-edited pixToMicrometer field, same
-		// validation apply() performs - but unlike apply(), a still-degenerate (not yet
-		// "Acquire"d) scale calibration must not block this: this button's whole point is
-		// entering/saving just a measured FOV-center offset for an objective that may not have
-		// its pixel-scale calibration done yet.
+		// Keeps micrometerToPix in sync with a possibly-just-edited pixToMicrometer field - the
+		// same validation the former apply() performed.
 		ScaleCalibrationHelper::initializeCalibrationFromPixel(&m_scaleCalibration);
 	} catch (std::exception&) {
 	}
-	m_scanControl->setObjectiveCalibration(m_scanControl->getActiveObjectiveSlot(), m_scaleCalibration);
-	writeLinkedCalibrationFile();
+	persistPartial(true, false);
+}
+
+void ScaleCalibration::saveFovOffsetCalibration() {
+	// No scale-calibration validation here at all - this half never touches those fields, so a
+	// still-degenerate (not yet "Acquire"d) scale calibration must not block saving just an
+	// FOV-center offset.
+	persistPartial(false, true);
 }
 
 template <typename T>
@@ -1019,21 +1059,22 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 		return false;
 	}
 
-	// Crop a padded, centered region out of the template so the search has room to find a
-	// shift in any direction (same trick __acquire() uses for the scale-calibration match).
-	auto padding = std::min(templateMat.rows, templateMat.cols) / 5;
-	if (padding < 1 || templateMat.rows <= 2 * padding || templateMat.cols <= 2 * padding) {
-		*failureReason = "The smaller of the two captured images is too small to search for a match "
-			"in (after rescaling to a common pixel scale) - capture at a larger ROI, or check both "
-			"objectives' pixel-scale calibrations for a gross error.";
-		return false;
-	}
-	cv::Rect templateROI(padding, padding, templateMat.cols - 2 * padding, templateMat.rows - 2 * padding);
-	cv::Mat templ = templateMat(templateROI);
-
-	if (searchMat.rows < templ.rows || searchMat.cols < templ.cols) {
-		*failureReason = "The search region ended up smaller than the template after cropping - "
-			"this should not happen given the size check above; please report this.";
+	// The smaller (already rescaled-to-a-common-pixel-pitch) image is used as the template in
+	// full - no additional crop/margin. An earlier version of this code cropped a padded,
+	// centered region out of it first, copying the trick __acquire() uses for the (same-size-
+	// image) scale-calibration match, where cropping is what creates room to slide at all. Here
+	// searchMat and templateMat are already different sizes (that is the whole point - the
+	// reference objective's real field of view is physically bigger), so that size difference
+	// alone already provides all the room matchTemplate needs; cropping on top of it only threw
+	// away real image content for no benefit, which is the actual/main cause of the large,
+	// genuinely-different cycle-to-cycle results you saw - a smaller, less distinctive template
+	// window is more prone to a locally-similar-but-wrong best match. Using the full image
+	// gives the match the most real content to work with.
+	cv::Mat templ = templateMat;
+	if (templ.rows < 1 || templ.cols < 1 || searchMat.rows < templ.rows || searchMat.cols < templ.cols) {
+		*failureReason = "The smaller of the two captured images is empty, or no longer fits inside "
+			"the larger one after rescaling to a common pixel scale - capture at a larger ROI, or "
+			"check both objectives' pixel-scale calibrations for a gross error.";
 		return false;
 	}
 
@@ -1047,23 +1088,18 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	auto maxLoc = cv::Point{};
 	cv::minMaxLoc(matchResult, &minVal, &maxVal, &minLoc, &maxLoc, cv::Mat());
 
-	// minLoc is where templ's top-left corner best matches inside searchMat. searchMat and
-	// templateMat/templ are NOT generally the same size here (that only holds for the
-	// __acquire() scale-calibration match above, which this was copied from) - after rescaling
-	// to a common pixel pitch, the reference's real field of view is still a different physical
-	// size than the target's (e.g. a lower-mag objective genuinely sees more of the sample), so
-	// searchMat (the bigger one) and templ (cropped from the smaller one) differ in size too.
-	// The correct "zero shift" expected location is therefore where templ's own center would
-	// coincide with searchMat's own center - (searchMat.cols - templ.cols) / 2 horizontally,
-	// (searchMat.rows - templ.rows) / 2 vertically - NOT simply (padding, padding), which is
-	// only templ's un-cropped position within templateMat, a different, generally
-	// differently-sized image. Using (padding, padding) here (the previous bug) baked in a
-	// large, spurious, systematic offset - on the order of half the size difference between
-	// searchMat and templ, i.e. hundreds of pixels/um for a ~2x magnification difference -
-	// regardless of how well-aligned the two objectives' optical centers actually were. This
-	// expression reduces to exactly (padding, padding) in the degenerate case where searchMat
-	// and templateMat happen to be the same size (confirming it is a strict generalization, not
-	// a behavior change for that case).
+	// minLoc is where templ's top-left corner best matches inside searchMat. searchMat and templ
+	// are NOT the same size here (unlike the __acquire() scale-calibration match this pipeline
+	// was originally adapted from) - after rescaling to a common pixel pitch, the reference's
+	// real field of view is still a different physical size than the target's (e.g. a lower-mag
+	// objective genuinely sees more of the sample), so searchMat (the bigger one) and templ (the
+	// full smaller one) differ in size. The correct "zero shift" expected location is therefore
+	// where templ's own center would coincide with searchMat's own center -
+	// (searchMat.cols - templ.cols) / 2 horizontally, (searchMat.rows - templ.rows) / 2
+	// vertically. An earlier version of this code got this reference point wrong (assumed the
+	// two images were the same size) and then additionally cropped a margin off templ for no
+	// real benefit, discarding image content in a way that made repeated measurements
+	// noticeably inconsistent - both are fixed now.
 	auto expectedLoc = cv::Point((searchMat.cols - templ.cols) / 2, (searchMat.rows - templ.rows) / 2);
 	auto pixelShift = minLoc - expectedLoc;
 	if (!referenceIsSearch) {
