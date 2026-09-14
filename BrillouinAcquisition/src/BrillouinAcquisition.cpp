@@ -4061,6 +4061,11 @@ void BrillouinAcquisition::on_action_Objective_setup_triggered() {
 			m_objectiveSetupDialogUi.button_clearCalibration_3, m_objectiveSetupDialogUi.button_clearCalibration_4,
 			m_objectiveSetupDialogUi.button_clearCalibration_5, m_objectiveSetupDialogUi.button_clearCalibration_6
 		};
+		std::array<QCheckBox*, 6> referenceCheckboxes{
+			m_objectiveSetupDialogUi.objectiveReference_1, m_objectiveSetupDialogUi.objectiveReference_2,
+			m_objectiveSetupDialogUi.objectiveReference_3, m_objectiveSetupDialogUi.objectiveReference_4,
+			m_objectiveSetupDialogUi.objectiveReference_5, m_objectiveSetupDialogUi.objectiveReference_6
+		};
 
 		auto connection = QWidget::connect(
 			m_objectiveSetupDialog,
@@ -4099,6 +4104,12 @@ void BrillouinAcquisition::on_action_Objective_setup_triggered() {
 				this,
 				[this, ii]() { objectiveSetupClearCalibration_clicked(ii); }
 			);
+			connection = QWidget::connect(
+				referenceCheckboxes[ii],
+				&QCheckBox::toggled,
+				this,
+				[this, ii](bool checked) { objectiveSetupReferenceToggled(ii, checked); }
+			);
 		}
 	}
 
@@ -4132,6 +4143,11 @@ void BrillouinAcquisition::on_action_Objective_setup_triggered() {
 		m_objectiveSetupDialogUi.button_clearCalibration_3, m_objectiveSetupDialogUi.button_clearCalibration_4,
 		m_objectiveSetupDialogUi.button_clearCalibration_5, m_objectiveSetupDialogUi.button_clearCalibration_6
 	};
+	std::array<QCheckBox*, 6> referenceCheckboxes{
+		m_objectiveSetupDialogUi.objectiveReference_1, m_objectiveSetupDialogUi.objectiveReference_2,
+		m_objectiveSetupDialogUi.objectiveReference_3, m_objectiveSetupDialogUi.objectiveReference_4,
+		m_objectiveSetupDialogUi.objectiveReference_5, m_objectiveSetupDialogUi.objectiveReference_6
+	};
 
 	auto hasObjectiveElement = !m_objectiveSlotNames.empty();
 	m_objectiveSetupDialogUi.noObjectiveElementLabel->setVisible(!hasObjectiveElement);
@@ -4154,6 +4170,7 @@ void BrillouinAcquisition::on_action_Objective_setup_triggered() {
 		browseButtons[ii]->setVisible(rowExists);
 		newButtons[ii]->setVisible(rowExists);
 		clearButtons[ii]->setVisible(rowExists);
+		referenceCheckboxes[ii]->setVisible(rowExists);
 		if (rowExists) {
 			nameFields[ii]->setText(QString::fromStdString(m_objectiveSlotNames[ii]));
 			auto path = m_objectiveSlotCalibrationPaths[ii];
@@ -4163,6 +4180,13 @@ void BrillouinAcquisition::on_action_Objective_setup_triggered() {
 			calibrationPathLabels[ii]->setToolTip(QString::fromStdString(path));
 			calibrationPathLabels[ii]->setText(path.empty() ? "(none)"
 				: QFileInfo(QString::fromStdString(path)).fileName());
+			// Reflects whatever is currently registered live (loadLinkedObjectiveCalibrations()
+			// already populated every linked slot at startup, not just the active one - see its
+			// own doc comment) - blocked so re-populating the dialog never itself triggers
+			// objectiveSetupReferenceToggled().
+			const QSignalBlocker blocker(*referenceCheckboxes[ii]);
+			referenceCheckboxes[ii]->setChecked(
+				m_scanControl && m_scanControl->getObjectiveCalibration((int)ii + 1).isReferenceObjective);
 		}
 	}
 
@@ -4255,6 +4279,111 @@ void BrillouinAcquisition::objectiveSetupClearCalibration_clicked(int slotIndex)
 	};
 	calibrationPathLabels[slotIndex]->setToolTip("");
 	calibrationPathLabels[slotIndex]->setText("(none)");
+}
+
+void BrillouinAcquisition::objectiveSetupReferenceToggled(int slotIndex, bool checked) {
+	if (!m_scanControl || slotIndex < 0 || slotIndex >= (int)m_objectiveSlotCalibrationPaths.size()) {
+		return;
+	}
+	auto slot = slotIndex + 1;
+	std::array<QLineEdit*, 6> nameFields{
+		m_objectiveSetupDialogUi.objectiveName_1, m_objectiveSetupDialogUi.objectiveName_2,
+		m_objectiveSetupDialogUi.objectiveName_3, m_objectiveSetupDialogUi.objectiveName_4,
+		m_objectiveSetupDialogUi.objectiveName_5, m_objectiveSetupDialogUi.objectiveName_6
+	};
+	std::array<QCheckBox*, 6> referenceCheckboxes{
+		m_objectiveSetupDialogUi.objectiveReference_1, m_objectiveSetupDialogUi.objectiveReference_2,
+		m_objectiveSetupDialogUi.objectiveReference_3, m_objectiveSetupDialogUi.objectiveReference_4,
+		m_objectiveSetupDialogUi.objectiveReference_5, m_objectiveSetupDialogUi.objectiveReference_6
+	};
+
+	if (!checked) {
+		// Only reachable by unchecking the row that currently IS the reference (every other row
+		// is already unchecked - see the mutual-exclusion loop below) - demote it back to
+		// "unmeasured" (see this function's own doc comment in the header for why demotion
+		// resets rather than tries to guess a value relative to some other objective).
+		auto data = m_scanControl->getObjectiveCalibration(slot);
+		data.isReferenceObjective = false;
+		data.hasFovOffset = false;
+		data.fovOffsetUm = POINT2{ 0, 0 };
+		data.fovOffsetSigmaUm = 0.0;
+		data.referenceObjectiveName = "";
+		auto path = m_objectiveSlotCalibrationPaths[slotIndex];
+		QMetaObject::invokeMethod(
+			m_scaleCalibration,
+			[&m_scaleCalibration = m_scaleCalibration, slot, path, data]() {
+				m_scaleCalibration->writeCalibrationToSlot(slot, path, data);
+			},
+			Qt::AutoConnection
+		);
+		m_objectiveSetupDialogUi.statusLabel->setText(
+			"No reference objective set - FOV-center offsets for every objective are now unmeasured "
+			"relative to nothing in particular until a new reference is chosen.");
+		refreshScaleCalibrationObjectiveDisplay();
+		return;
+	}
+
+	// Demote whichever OTHER slot currently holds the flag (if any) - only one reference at a
+	// time. A demoted objective's own fovOffsetUm was only ever valid relative to the OLD
+	// reference, so it is reset to "unmeasured" (not silently kept as a now-wrong value) -
+	// see this function's own doc comment in the header.
+	auto demotedAny = false;
+	for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
+		auto otherSlot = (int)ii + 1;
+		if (otherSlot == slot) {
+			continue;
+		}
+		auto otherData = m_scanControl->getObjectiveCalibration(otherSlot);
+		if (!otherData.isReferenceObjective) {
+			continue;
+		}
+		demotedAny = true;
+		otherData.isReferenceObjective = false;
+		otherData.hasFovOffset = false;
+		otherData.fovOffsetUm = POINT2{ 0, 0 };
+		otherData.fovOffsetSigmaUm = 0.0;
+		otherData.referenceObjectiveName = "";
+		auto otherPath = m_objectiveSlotCalibrationPaths[ii];
+		QMetaObject::invokeMethod(
+			m_scaleCalibration,
+			[&m_scaleCalibration = m_scaleCalibration, otherSlot, otherPath, otherData]() {
+				m_scaleCalibration->writeCalibrationToSlot(otherSlot, otherPath, otherData);
+			},
+			Qt::AutoConnection
+		);
+		const QSignalBlocker blocker(*referenceCheckboxes[ii]);
+		referenceCheckboxes[ii]->setChecked(false);
+	}
+
+	auto data = m_scanControl->getObjectiveCalibration(slot);
+	data.isReferenceObjective = true;
+	data.hasFovOffset = true;
+	data.fovOffsetUm = POINT2{ 0, 0 };
+	data.fovOffsetSigmaUm = 0.0;
+	// The reference IS the baseline everything else is measured relative to - it has no
+	// reference of its own.
+	data.referenceObjectiveName = "";
+	// The row's current (possibly not-yet-Applied) name, same convention
+	// objectiveSetupNewCalibration_clicked() already uses - only affects this file's own
+	// recorded identity metadata, not m_objectiveSlotNames.
+	auto name = nameFields[slotIndex]->text().trimmed().toStdString();
+	data.objectiveName = name;
+	data.magnification = magnificationFromObjectiveName(name);
+	auto path = m_objectiveSlotCalibrationPaths[slotIndex];
+	QMetaObject::invokeMethod(
+		m_scaleCalibration,
+		[&m_scaleCalibration = m_scaleCalibration, slot, path, data]() {
+			m_scaleCalibration->writeCalibrationToSlot(slot, path, data);
+		},
+		Qt::AutoConnection
+	);
+
+	m_objectiveSetupDialogUi.statusLabel->setText(demotedAny
+		? QString("\"%1\" is now the reference objective (FOV-center offset 0, 0). Any other "
+			"objective's previously-saved FOV offset was measured relative to the OLD reference "
+			"and needs re-measuring.").arg(QString::fromStdString(name))
+		: QString("\"%1\" is now the reference objective (FOV-center offset 0, 0).").arg(QString::fromStdString(name)));
+	refreshScaleCalibrationObjectiveDisplay();
 }
 
 void BrillouinAcquisition::objectiveSetupButtonApply_clicked() {
@@ -4372,6 +4501,17 @@ void BrillouinAcquisition::refreshScaleCalibrationObjectiveDisplay() {
 	m_scaleCalibrationDialogUi.objectiveCalibrationFile->setText(activePath.empty() ? "(none)"
 		: QFileInfo(QString::fromStdString(activePath)).fileName());
 	m_scaleCalibration->setLinkedCalibrationFilePath(activePath);
+
+	// The reference objective's FOV-center offset is locked at {0,0}, sigma 0 - see
+	// ObjectiveCalibrationData::isReferenceObjective's own doc comment. Editing it here would be
+	// meaningless (it is set exclusively via Objective Setup's "Reference" checkbox); grey the
+	// fields out rather than let the operator type a value that the next objectiveSetupReference
+	// Toggled()/switch would just overwrite anyway.
+	auto activeIsReference = m_scanControl->getObjectiveCalibration(activeSlot).isReferenceObjective;
+	m_scaleCalibrationDialogUi.hasFovOffsetCheckbox->setDisabled(activeIsReference);
+	m_scaleCalibrationDialogUi.fovOffsetX->setDisabled(activeIsReference);
+	m_scaleCalibrationDialogUi.fovOffsetY->setDisabled(activeIsReference);
+	m_scaleCalibrationDialogUi.fovOffsetSigma->setDisabled(activeIsReference);
 
 	// Repopulate "compare to", excluding the active slot itself and any still-unnamed slot -
 	// there is nothing meaningful to compare an offset against without a name, and comparing an

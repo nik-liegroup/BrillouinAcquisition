@@ -53,6 +53,22 @@ struct ObjectiveCalibrationData : public ScaleCalibrationData {
 	// objective right now - the existing manual load()/apply() workflow ignores this field
 	// entirely and keeps registering against whichever slot is physically active.
 	int objectiveSlot{ -1 };
+
+	// True for exactly one objective across the whole nosepiece - the one every other
+	// objective's fovOffsetUm is ultimately relative to (composed through, if measured
+	// indirectly - see ScaleCalibration::measureFovOffset()'s composition). Distinct from
+	// hasFovOffset==false: hasFovOffset==false means "never measured, not a validated value at
+	// all" (callers must not treat it as a validated zero); a reference objective instead
+	// explicitly HAS hasFovOffset==true with fovOffsetUm=={0,0} and fovOffsetSigmaUm==0 - a
+	// real, deliberately-locked value, not an absent one. This is what lets objectiveSwitched()
+	// treat a switch to/from the reference exactly like any other calibrated switch (offset
+	// {0,0}, sigma 0) instead of raising the "no FOV-center offset" warning on every single
+	// switch involving it. Set exclusively via BrillouinAcquisition's Objective Setup dialog
+	// ("Reference" checkbox, mutually exclusive across slots - see
+	// ScaleCalibration::writeCalibrationToSlot()), never by measureFovOffset() itself. Optional/
+	// existence-checked on read (like scaleCalibrationSigma) - an older file predating this
+	// field is read as false, not rejected.
+	bool isReferenceObjective{ false };
 };
 
 struct Matrix2{

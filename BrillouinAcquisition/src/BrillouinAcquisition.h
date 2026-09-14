@@ -500,6 +500,16 @@ private slots:
 	// no FOV offset, name/magnification pre-filled from that row's own name field so it is
 	// self-consistent even before Apply), and links it exactly like Browse would.
 	void objectiveSetupNewCalibration_clicked(int slotIndex);
+	// "Reference" checkbox per row - marks that slot as THE objective every other slot's
+	// fovOffsetUm is measured relative to (hasFovOffset=true, fovOffsetUm={0,0},
+	// fovOffsetSigmaUm=0 - a real, locked value, not an absent one; see
+	// ObjectiveCalibrationData::isReferenceObjective's own doc comment for why that distinction
+	// matters). Mutually exclusive across slots: checking one unchecks (and demotes back to
+	// "unmeasured" - not a silently-wrong leftover value) whichever other slot currently has it.
+	// Writes straight to each affected slot's own live registration and linked file via
+	// ScaleCalibration::writeCalibrationToSlot(), so this works regardless of which objective is
+	// physically active right now.
+	void objectiveSetupReferenceToggled(int slotIndex, bool checked);
 	// Loads m_objectiveSlotCalibrationPaths into ScanControl for every slot that has one
 	// configured (ScaleCalibration::loadCalibrationForSlot() per slot) - called once at startup
 	// (initScanControl()) and again from objectiveSetupButtonApply_clicked() whenever a link

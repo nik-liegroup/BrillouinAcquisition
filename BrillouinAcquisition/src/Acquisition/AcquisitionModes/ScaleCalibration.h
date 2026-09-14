@@ -48,6 +48,20 @@ public slots:
 	// same path once a real scale calibration/FOV offset has been measured for it.
 	void createEmptyCalibrationFile(int slot, std::string objectiveName, double magnification, std::string filepath);
 
+	// Writes `data` verbatim to `slot`'s live registration and, if `filepath` is non-empty, to
+	// that file on disk (H5F_ACC_TRUNC, the same schema writeCalibrationMetadata() uses) - a
+	// slot- and file-explicit primitive, unlike the rest of this class's save path (persistPartial()/
+	// saveScaleCalibration()/saveFovOffsetCalibration()), which always targets whichever slot/file
+	// the dialog currently has open (the physically active objective). Used by
+	// BrillouinAcquisition's "Reference" checkbox handling (Objective Setup dialog) to promote/
+	// demote a slot's isReferenceObjective flag without requiring the operator to physically
+	// switch to it first - both the newly-promoted and any newly-demoted slot need writing, and
+	// at most one of the two can be the physically active one. Emits s_scaleCalibrationStatus()
+	// (does not throw) on a write failure; a blank filepath is tolerated silently (live
+	// registration still happens - same "not linked to a file yet" tolerance
+	// writeLinkedCalibrationFile() has for the active slot).
+	void writeCalibrationToSlot(int slot, std::string filepath, ObjectiveCalibrationData data);
+
 	// The active slot's linked calibration file path (BrillouinAcquisition::
 	// m_objectiveSlotCalibrationPaths, pushed in by refreshScaleCalibrationObjectiveDisplay()
 	// whenever the dialog opens or the active slot changes) - what saveScaleCalibration()/

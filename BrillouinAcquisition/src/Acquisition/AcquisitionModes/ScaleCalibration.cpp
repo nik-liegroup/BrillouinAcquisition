@@ -231,12 +231,64 @@ void ScaleCalibration::createEmptyCalibrationFile(int slot, std::string objectiv
 		writeAttribute(root, "fovOffsetSigma", data.fovOffsetSigmaUm);
 		writeAttribute(root, "scaleCalibrationSigma", data.scaleCalibrationSigmaUm);
 		writeAttribute(root, "objectiveSlot", (double)data.objectiveSlot);
+		writeAttribute(root, "isReferenceObjective", data.isReferenceObjective ? 1.0 : 0.0);
 	} catch (H5::Exception&) {
 		emit(s_scaleCalibrationStatus("Could not create calibration file", "\"" + filepath + "\" is not writable."));
 		return;
 	}
 
 	m_scanControl->setObjectiveCalibration(slot, data);
+}
+
+void ScaleCalibration::writeCalibrationToSlot(int slot, std::string filepath, ObjectiveCalibrationData data) {
+	if (!m_scanControl) {
+		return;
+	}
+	if (!m_scanControl->isValidObjectiveSlot(slot)) {
+		emit(s_scaleCalibrationStatus("Could not update calibration",
+			"Slot " + std::to_string(slot) + " is not a physically-possible objective position on this device."));
+		return;
+	}
+
+	data.objectiveSlot = slot;
+	data.calibrationDate = QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc())
+		.toString(Qt::ISODateWithMs).toStdString();
+
+	if (!filepath.empty()) {
+		try {
+			auto file = H5::H5File(&filepath[0], H5F_ACC_TRUNC);
+			auto root = file.openGroup("/");
+			writeAttribute(root, "date", data.calibrationDate);
+			writePoint(root, "origin", data.originPix);
+			writePoint(root, "pixToMicrometerX", data.pixToMicrometerX);
+			writePoint(root, "pixToMicrometerY", data.pixToMicrometerY);
+			writePoint(root, "micrometerToPixX", data.micrometerToPixX);
+			writePoint(root, "micrometerToPixY", data.micrometerToPixY);
+			writeAttribute(root, "objectiveName", data.objectiveName);
+			writeAttribute(root, "magnification", data.magnification);
+			writeAttribute(root, "referenceObjectiveName", data.referenceObjectiveName);
+			writeAttribute(root, "calibrationDate", data.calibrationDate);
+			writeAttribute(root, "hasFovOffset", data.hasFovOffset ? 1.0 : 0.0);
+			writeAttribute(root, "fovOffsetX", data.fovOffsetUm.x);
+			writeAttribute(root, "fovOffsetY", data.fovOffsetUm.y);
+			writeAttribute(root, "fovOffsetSigma", data.fovOffsetSigmaUm);
+			writeAttribute(root, "scaleCalibrationSigma", data.scaleCalibrationSigmaUm);
+			writeAttribute(root, "objectiveSlot", (double)data.objectiveSlot);
+			writeAttribute(root, "isReferenceObjective", data.isReferenceObjective ? 1.0 : 0.0);
+		} catch (H5::Exception&) {
+			emit(s_scaleCalibrationStatus("Could not save calibration", "\"" + filepath + "\" is not writable."));
+			return;
+		}
+	}
+
+	m_scanControl->setObjectiveCalibration(slot, data);
+	// If this happens to be the active slot (and/or its edit buffer is currently showing on the
+	// dialog), keep both in sync exactly like persistPartial() does.
+	if (slot == m_scanControl->getActiveObjectiveSlot()) {
+		m_scaleCalibration = data;
+		emit(s_scaleCalibrationChanged(m_scaleCalibration));
+		emit(s_objectiveCalibrationChanged(m_scaleCalibration));
+	}
 }
 
 /*
@@ -312,6 +364,15 @@ void ScaleCalibration::readCalibrationFile(const std::string& filepath, Objectiv
 	auto objectiveSlotValue = 0.0;
 	readAttribute(root, "objectiveSlot", &objectiveSlotValue);
 	out->objectiveSlot = (int)objectiveSlotValue;
+	// Added after the fields above - same optional/existence-checked treatment as
+	// scaleCalibrationSigma, for the same reason (an older file predating this field is not a
+	// reference objective, not an invalid file).
+	out->isReferenceObjective = false;
+	if (root.attrExists("isReferenceObjective")) {
+		auto isReferenceObjectiveValue = 0.0;
+		readAttribute(root, "isReferenceObjective", &isReferenceObjectiveValue);
+		out->isReferenceObjective = isReferenceObjectiveValue != 0.0;
+	}
 }
 
 void ScaleCalibration::writeCalibrationMetadata(H5::Group& root) {
@@ -345,6 +406,7 @@ void ScaleCalibration::writeCalibrationMetadata(H5::Group& root) {
 	writeAttribute(root, "fovOffsetSigma", m_scaleCalibration.fovOffsetSigmaUm);
 	writeAttribute(root, "scaleCalibrationSigma", m_scaleCalibration.scaleCalibrationSigmaUm);
 	writeAttribute(root, "objectiveSlot", (double)m_scaleCalibration.objectiveSlot);
+	writeAttribute(root, "isReferenceObjective", m_scaleCalibration.isReferenceObjective ? 1.0 : 0.0);
 }
 
 void ScaleCalibration::setLinkedCalibrationFilePath(std::string path) {
