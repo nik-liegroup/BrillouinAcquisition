@@ -1154,6 +1154,10 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	m_surfacePreScanFoundMask.clear();
 	m_surfacePreScanZUm.clear();
 	m_surfacePreScanMetric.clear();
+	m_surfaceCurveZUm.clear();
+	m_surfaceCurveMetric.clear();
+	m_surfaceCurveSampleCounts.clear();
+	m_surfaceCurveMaxSamples = 0;
 	m_surfaceBoundaryPointsUm.clear();
 	m_surfaceReferenceThreshold = std::numeric_limits<double>::quiet_NaN();
 
@@ -1178,6 +1182,13 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 
 	std::vector<std::vector<double>> zMetric(ySamples.size(),
 		std::vector<double>(xSamples.size(), std::numeric_limits<double>::quiet_NaN()));
+	// Full (z, metric) trace per column, in measurement order - see recordMetricSample()
+	// below and m_surfaceCurveZUm/Metric's own comment for why this is kept alongside the
+	// single-value zMetric above.
+	std::vector<std::vector<std::vector<double>>> curveZ(
+		ySamples.size(), std::vector<std::vector<double>>(xSamples.size()));
+	std::vector<std::vector<std::vector<double>>> curveMetric(
+		ySamples.size(), std::vector<std::vector<double>>(xSamples.size()));
 	std::vector<std::vector<double>> zSurface(ySamples.size(), std::vector<double>(xSamples.size(), 0.0));
 	std::vector<std::vector<bool>> zSurfaceValid(ySamples.size(), std::vector<bool>(xSamples.size(), false));
 	// Order each column was found in (-1 = not found yet), used to break seed-distance ties
@@ -1230,7 +1241,9 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		if (m_abort) {
 			return {};
 		}
-		m_andor->getImageForAcquisition(frame.data());
+		// Back-to-back frames at the same (reference) position - open once before the
+		// first, close once after the last, not between every one.
+		acquireAndorFrame(frame.data(), i == 0, i == refFrames - 1);
 		const auto refMetric = estimateFrameMetric(frame);
 		refSum += refMetric;
 		const auto refProgress = 5.0 * (double)(i + 1) / refFrames;
@@ -1283,7 +1296,9 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			if (m_abort) {
 				return std::nullopt;
 			}
-			m_andor->getImageForAcquisition(frame.data());
+			// Back-to-back frames at the same position - open once before the first, close
+			// once after the last, not between every one.
+			acquireAndorFrame(frame.data(), f == 0, f == frames - 1);
 			sum += estimateFrameMetric(frame);
 		}
 		return sum / frames;
@@ -1326,6 +1341,17 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		return found ? std::optional<double>(bestZ) : std::nullopt;
 	};
 
+	// Records one (z, metric) measurement for column (xi, yi): updates zMetric (the
+	// single "current/last" value the rest of this function already reads) and appends to
+	// that column's full trace (curveZ/curveMetric), in the order samples are actually
+	// taken - so the trace reconstructs the real search path (seed, rewind, forward walk,
+	// verification), not just the outcome.
+	auto recordMetricSample = [&](gsl::index xi, gsl::index yi, double zRel, double metricValue) {
+		zMetric[yi][xi] = metricValue;
+		curveZ[yi][xi].push_back(zRel);
+		curveMetric[yi][xi].push_back(metricValue);
+	};
+
 	// Searches one coarse column for the surface, seeded from the nearest already-found
 	// neighbor instead of always starting at z = 0. If the seed is already past the
 	// interface (metric at/below threshold), first "rewinds" back towards water until
@@ -1347,7 +1373,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		if (!metric) {
 			return false;
 		}
-		zMetric[yi][xi] = *metric;
+		recordMetricSample(xi, yi, zRel, *metric);
 		emitSurfaceProgress(QString("Surface scan: x %1/%2, y %3/%4, seeded z %5 um, metric %6, threshold %7")
 			.arg((int)xi + 1).arg((int)xSamples.size())
 			.arg((int)yi + 1).arg((int)ySamples.size())
@@ -1368,7 +1394,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			if (!metric) {
 				return false;
 			}
-			zMetric[yi][xi] = *metric;
+			recordMetricSample(xi, yi, zRel, *metric);
 			emitSurfaceProgress(QString("Surface scan (rewind): x %1/%2, y %3/%4, z %5 um, metric %6, threshold %7")
 				.arg((int)xi + 1).arg((int)xSamples.size())
 				.arg((int)yi + 1).arg((int)ySamples.size())
@@ -1385,7 +1411,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 				if (!candidateAvg) {
 					return false;
 				}
-				zMetric[yi][xi] = *candidateAvg;
+				recordMetricSample(xi, yi, candidateZ, *candidateAvg);
 				window.push_back(*candidateAvg);
 
 				auto verified = true;
@@ -1399,7 +1425,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 					if (!mk) {
 						return false;
 					}
-					zMetric[yi][xi] = *mk;
+					recordMetricSample(xi, yi, zk, *mk);
 					emitSurfaceProgress(QString("Surface verification %1/%2 at x %3/%4, y %5/%6: metric %7, threshold %8")
 						.arg(k).arg(m_settings.surfaceVerificationSteps)
 						.arg((int)xi + 1).arg((int)xSamples.size())
@@ -1428,7 +1454,10 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 						zSurfaceValid[yi][xi] = true;
 						processOrder[yi][xi] = processCounter++;
 						// The metric at the found surface itself, not whatever the
-						// verification loop above last measured deeper into the tissue.
+						// verification loop above last measured deeper into the tissue. Not
+						// recordMetricSample() - candidateZ's sample is already in the curve
+						// from the verification block above; this only restores zMetric's
+						// "current" value, it doesn't add a second curve entry for it.
 						zMetric[yi][xi] = *candidateAvg;
 						emitSurfaceProgress(QString("Surface found at x %1/%2, y %3/%4, z %5 um: metric %6 <= threshold %7, verified")
 							.arg((int)xi + 1).arg((int)xSamples.size())
@@ -1452,7 +1481,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			if (!metric) {
 				return false;
 			}
-			zMetric[yi][xi] = *metric;
+			recordMetricSample(xi, yi, zRel, *metric);
 			emitSurfaceProgress(QString("Surface scan: x %1/%2, y %3/%4, z %5 um, metric %6, threshold %7")
 				.arg((int)xi + 1).arg((int)xSamples.size())
 				.arg((int)yi + 1).arg((int)ySamples.size())
@@ -1569,6 +1598,40 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 				? 1.0 : (zSurfaceInterpolatedCoarse[yi][xi] ? 2.0 : 0.0);
 			m_surfacePreScanZUm[flat] = zSurface[yi][xi];
 			m_surfacePreScanMetric[flat] = zMetric[yi][xi];
+		}
+	}
+
+	// Flatten the per-column traces recorded above (curveZ/curveMetric) into
+	// m_surfaceCurveZUm/Metric - see their own declarations for the exact layout. Sized to
+	// the longest trace any column actually needed, not a fixed worst-case bound.
+	{
+		gsl::index maxSamples = 0;
+		for (gsl::index yi{ 0 }; yi < (gsl::index)ySamples.size(); yi++) {
+			for (gsl::index xi{ 0 }; xi < (gsl::index)xSamples.size(); xi++) {
+				maxSamples = std::max(maxSamples, (gsl::index)curveZ[yi][xi].size());
+			}
+		}
+		m_surfaceCurveMaxSamples = (int)maxSamples;
+		if (maxSamples > 0) {
+			const auto cellCount = xSamples.size() * ySamples.size();
+			m_surfaceCurveZUm.assign(
+				cellCount * (size_t)maxSamples, std::numeric_limits<double>::quiet_NaN());
+			m_surfaceCurveMetric.assign(
+				cellCount * (size_t)maxSamples, std::numeric_limits<double>::quiet_NaN());
+			m_surfaceCurveSampleCounts.assign(cellCount, 0.0);
+			for (gsl::index yi{ 0 }; yi < (gsl::index)ySamples.size(); yi++) {
+				for (gsl::index xi{ 0 }; xi < (gsl::index)xSamples.size(); xi++) {
+					const auto flat = xi * (gsl::index)ySamples.size() + yi;
+					const auto& zs = curveZ[yi][xi];
+					const auto& ms = curveMetric[yi][xi];
+					m_surfaceCurveSampleCounts[flat] = (double)zs.size();
+					for (size_t k = 0; k < zs.size(); k++) {
+						const auto flat3 = (size_t)flat * (size_t)maxSamples + k;
+						m_surfaceCurveZUm[flat3] = zs[k];
+						m_surfaceCurveMetric[flat3] = ms[k];
+					}
+				}
+			}
 		}
 	}
 
@@ -2738,6 +2801,28 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		// compared against surface-reference-threshold-computed.
 		storage->setPositions(
 			"surface-prescan-metric", m_surfacePreScanMetric, 2, preScanGridDims);
+
+		// Full (z, metric) drop curve behind each column above - not just the single found/
+		// last-measured value surface-prescan-metric keeps, but every sample actually taken
+		// while searching that column (seed, rewind, forward walk, verification), in
+		// measurement order. Lets a reader reconstruct and plot the real intensity-drop
+		// curve per column, e.g. to sanity-check surface-drop-fraction-used/
+		// surface-reference-threshold-computed against what was actually measured. Rank-3,
+		// [x, y, sample] shaped; NaN-padded past each column's own
+		// surface-curve-sample-counts (a column's real samples always come first, so a
+		// reader can just take the first N of that column's row rather than filtering NaN
+		// out of the middle). Skipped entirely if the pre-scan aborted before a single
+		// sample was ever recorded (m_surfaceCurveMaxSamples == 0).
+		if (!m_surfaceCurveZUm.empty()) {
+			const hsize_t curveDims[3] = {
+				(hsize_t)m_surfacePreScanXUm.size(), (hsize_t)m_surfacePreScanYUm.size(),
+				(hsize_t)m_surfaceCurveMaxSamples
+			};
+			storage->setPositions("surface-curve-z-um", m_surfaceCurveZUm, 3, curveDims);
+			storage->setPositions("surface-curve-metric", m_surfaceCurveMetric, 3, curveDims);
+			storage->setPositions(
+				"surface-curve-sample-counts", m_surfaceCurveSampleCounts, 2, preScanGridDims);
+		}
 	}
 
 	// Additional boundary points that found a surface (additionalBoundaryPoints - see
