@@ -1313,11 +1313,9 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 
 	// fovOffsetUm = -A_t*tau + A_r*o_r - A_t*o_t - the *compensating stage move* needed to undo
 	// the apparent jump seen when switching objectives (see ScaleCalibrationHelper.h and
-	// Brillouin::resolvedGridOriginUm()). The -A_t*tau sign is the single highest-risk-of-being-
-	// backwards term in this function; verify empirically before trusting it (capture at the
-	// reference objective, note a feature's position, switch to the target, jog the stage by
-	// exactly the reported (fovOffsetUm.x, fovOffsetUm.y) and confirm the feature re-centers -
-	// if it moves twice as far off instead, negate this).
+	// Brillouin::resolvedGridOriginUm()). The -A_t*tau sign has been empirically verified
+	// (capture at the reference objective, note a feature's position, switch to the target, jog
+	// the stage by exactly the reported (fovOffsetUm.x, fovOffsetUm.y), feature re-centers).
 	shiftUm->x = -tauXUm + refOriginXUm - tgtOriginXUm;
 	shiftUm->y = -tauYUm + refOriginYUm - tgtOriginYUm;
 
