@@ -4881,6 +4881,8 @@ border: none;</string>
     <addaction name="actionOpen_Acquisition"/>
     <addaction name="actionClose_Acquisition"/>
     <addaction name="separator"/>
+    <addaction name="actionSetDefaultAcquisitionFolder"/>
+    <addaction name="separator"/>
     <addaction name="actionQuit"/>
    </widget>
    <addaction name="menuFile"/>
@@ -4960,6 +4962,14 @@ border: none;</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+W</string>
+   </property>
+  </action>
+  <action name="actionSetDefaultAcquisitionFolder">
+   <property name="text">
+    <string>Set Default Save Folder...</string>
+   </property>
+   <property name="toolTip">
+    <string>Folder proposed by default for a new acquisition file, whenever nothing has been saved yet this session.</string>
    </property>
   </action>
   <action name="action_Voltage_calibration_acquire">

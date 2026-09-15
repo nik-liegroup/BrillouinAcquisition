@@ -6686,15 +6686,24 @@ void BrillouinAcquisition::on_actionNew_Acquisition_triggered() {
 
 	StoragePath tmpStorage = m_storagePath;
 
-	if (tmpStorage.filename.length() == 0) {
-		tmpStorage.filename = StoragePath{}.filename;
+	// A brand new acquisition gets a fresh, timestamped name by default, rather than
+	// reusing whatever the last one this session was called - checkFilename() below would
+	// otherwise just dedupe that against the existing file with a trailing "-0", "-1", ...,
+	// which is far less informative than a timestamp and easy to mix up between runs.
+	tmpStorage.filename = "Brillouin_"
+		+ QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss").toStdString()
+		+ ".h5";
+
+	// Folder: whatever was last used this session, or the configured default save folder
+	// (File > Set Default Save Folder...) if nothing has been saved yet, or "." (the
+	// StoragePath default) if neither is set.
+	if (tmpStorage.folder == "." && !m_defaultAcquisitionFolder.empty()) {
+		tmpStorage.folder = m_defaultAcquisitionFolder;
 	}
 
 	QString proposedFileName = QString::fromStdString(tmpStorage.fullPath());
 
 	proposedFileName = checkFilename(proposedFileName);
-
-	// TODO: Check if filename already exsists and increment accordingly
 
 	QString fullPath = QFileDialog::getSaveFileName(this, tr("Save new Acquisition as"),
 		proposedFileName, tr("Brillouin data (*.h5)"));
@@ -6712,6 +6721,23 @@ void BrillouinAcquisition::on_actionNew_Acquisition_triggered() {
 		},
 		Qt::AutoConnection
 	);
+}
+
+void BrillouinAcquisition::on_actionSetDefaultAcquisitionFolder_triggered() {
+	const auto startDir = m_defaultAcquisitionFolder.empty()
+		? QString::fromStdString(m_storagePath.folder)
+		: QString::fromStdString(m_defaultAcquisitionFolder);
+	const auto folder = QFileDialog::getExistingDirectory(
+		this, tr("Set Default Save Folder"), startDir);
+	if (folder.isEmpty()) {
+		return;
+	}
+	m_defaultAcquisitionFolder = folder.toStdString();
+	// Persisted immediately (not batched into saveSettings()'s "Apply"-triggered write) -
+	// this is a standalone File-menu action, not a settings-dialog field, so there is no
+	// "Apply" click for it to wait for.
+	QSettings settings(QSettings::IniFormat, QSettings::UserScope, kSettingsOrg, kSettingsApp);
+	settings.setValue("default-acquisition-folder", QString::fromStdString(m_defaultAcquisitionFolder));
 }
 
 void BrillouinAcquisition::on_actionOpen_Acquisition_triggered() {
@@ -6774,6 +6800,8 @@ void BrillouinAcquisition::applyColorMap(QCPColorGradient* gradient, const std::
 void BrillouinAcquisition::writeSettings() {
 	QSettings settings(QSettings::IniFormat, QSettings::UserScope,
 		kSettingsOrg, kSettingsApp);
+
+	settings.setValue("default-acquisition-folder", QString::fromStdString(m_defaultAcquisitionFolder));
 
 	auto brillouinCamera = QString{};
 	switch (m_cameraBrillouinType) {
@@ -6939,6 +6967,8 @@ void BrillouinAcquisition::writeSettings() {
 void BrillouinAcquisition::readSettings() {
 	QSettings settings(QSettings::IniFormat, QSettings::UserScope,
 		kSettingsOrg, kSettingsApp);
+
+	m_defaultAcquisitionFolder = settings.value("default-acquisition-folder", "").toString().toStdString();
 
 	settings.beginGroup("devices");
 	QVariant BrillouinCam = settings.value("brillouin-camera");
