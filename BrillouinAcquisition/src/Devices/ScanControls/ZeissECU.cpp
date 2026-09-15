@@ -223,7 +223,12 @@ void ZeissECU::connectDevice() {
 			m_isCompatible = focus && stand && mcu;
 
 			if (m_isConnected && m_isCompatible) {
-				setPreset(ScanPreset::SCAN_BRILLOUIN);
+				// Start in Brightfield rather than Brillouin - purely cosmetic (what the
+				// operator sees on connect); every routine that actually needs a specific
+				// preset (calibration, acquire()) sets it explicitly on entry regardless of
+				// this starting state, so this has no effect on calibration or measurement
+				// behavior.
+				setPreset(ScanPreset::SCAN_BRIGHTFIELD);
 				getElements();
 				m_homePosition = getPosition();
 				startAnnouncingPosition();
