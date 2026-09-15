@@ -12,6 +12,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <thread>
 #include <type_traits>
 
@@ -1104,6 +1107,20 @@ void ScaleCalibration::saveDebugCalibrationImage(const std::vector<std::byte>& i
 	saveDebugCalibrationMat(mat, label);
 }
 
+void ScaleCalibration::saveDebugCalibrationText(const std::string& text, const std::string& label) {
+	auto folder = debugCalibrationFolder();
+	if (folder.empty()) {
+		return;
+	}
+	auto timestamp = QDateTime::currentDateTime().toString("yyyy-MM-ddTHHmmss.zzz").toStdString();
+	auto filepath = folder + "/" + label + "_" + timestamp + ".txt";
+	try {
+		std::ofstream file(filepath);
+		file << text;
+	} catch (const std::exception&) {
+	}
+}
+
 bool ScaleCalibration::computeFovOffsetShiftUm(
 	const std::vector<std::byte>& referenceImage, const CAMERA_ROI& referenceRoi, const ScaleCalibrationData& referenceScale, const std::string& referenceDataType,
 	const std::vector<std::byte>& targetImage, const CAMERA_ROI& targetRoi, const ScaleCalibrationData& targetScale, const std::string& targetDataType,
@@ -1290,6 +1307,35 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	// if it moves twice as far off instead, negate this).
 	shiftUm->x = -shiftXUm;
 	shiftUm->y = -shiftYUm;
+
+	// Plain-text dump of every number this measurement is built from, alongside the reference/
+	// target/overlay .tif debug images - lets the operator check the matrices themselves (e.g.
+	// for an obviously wrong sign, a near-singular determinant, or an X/Y swap) without having
+	// to reopen the .h5 calibration files.
+	{
+		std::ostringstream text;
+		text << std::fixed << std::setprecision(6);
+		text << "Reference objective calibration:\n";
+		text << "  originPix:        (" << referenceScale.originPix.x << ", " << referenceScale.originPix.y << ")\n";
+		text << "  pixToMicrometerX: (" << referenceScale.pixToMicrometerX.x << ", " << referenceScale.pixToMicrometerX.y << ")\n";
+		text << "  pixToMicrometerY: (" << referenceScale.pixToMicrometerY.x << ", " << referenceScale.pixToMicrometerY.y << ")\n";
+		text << "  micrometerToPixX: (" << referenceScale.micrometerToPixX.x << ", " << referenceScale.micrometerToPixX.y << ")\n";
+		text << "  micrometerToPixY: (" << referenceScale.micrometerToPixY.x << ", " << referenceScale.micrometerToPixY.y << ")\n";
+		text << "\n";
+		text << "Target objective calibration:\n";
+		text << "  originPix:        (" << targetScale.originPix.x << ", " << targetScale.originPix.y << ")\n";
+		text << "  pixToMicrometerX: (" << targetScale.pixToMicrometerX.x << ", " << targetScale.pixToMicrometerX.y << ")\n";
+		text << "  pixToMicrometerY: (" << targetScale.pixToMicrometerY.x << ", " << targetScale.pixToMicrometerY.y << ")\n";
+		text << "  micrometerToPixX: (" << targetScale.micrometerToPixX.x << ", " << targetScale.micrometerToPixX.y << ")\n";
+		text << "  micrometerToPixY: (" << targetScale.micrometerToPixY.x << ", " << targetScale.micrometerToPixY.y << ")\n";
+		text << "\n";
+		text << "FOV-offset measurement:\n";
+		text << "  rescaleFactor (reference->target, applied to reference before matching): " << rescaleFactor << "\n";
+		text << "  estimatedMagnificationChange (same value, exposed for the caller's sanity check): " << *estimatedMagnificationChange << "\n";
+		text << "  pixelShift (target relative to reference, common pixel scale, px): (" << pixelShift.x << ", " << pixelShift.y << ")\n";
+		text << "  fovOffsetUm (compensating stage move, um): (" << shiftUm->x << ", " << shiftUm->y << ")\n";
+		saveDebugCalibrationText(text.str(), "fovOffsetDebug");
+	}
 
 	return true;
 }

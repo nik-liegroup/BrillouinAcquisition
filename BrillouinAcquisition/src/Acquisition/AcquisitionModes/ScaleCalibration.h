@@ -302,6 +302,10 @@ private:
 	// constructed debug visualization) rather than a just-captured raw image buffer.
 	void saveDebugCalibrationMat(const cv::Mat& mat, const std::string& label);
 
+	// Same folder/naming convention as saveDebugCalibrationImage()/saveDebugCalibrationMat(),
+	// but writes `text` verbatim to a "<label>_<timestamp>.txt" file instead of an image.
+	void saveDebugCalibrationText(const std::string& text, const std::string& label);
+
 	// Captures and caches the reference image (see measureFovOffset()'s doc comment above) -
 	// called by continueObjectiveCycle() with resetAccumulatedSamples=(cycle == 1), so a fresh
 	// reference image is captured every cycle without also wiping m_fovOffsetSamplesUm each
