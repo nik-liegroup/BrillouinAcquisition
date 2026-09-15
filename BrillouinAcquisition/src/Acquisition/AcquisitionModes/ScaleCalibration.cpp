@@ -229,6 +229,7 @@ void ScaleCalibration::createEmptyCalibrationFile(int slot, std::string objectiv
 		writeAttribute(root, "referenceObjectiveName", data.referenceObjectiveName);
 		writeAttribute(root, "calibrationDate", data.calibrationDate);
 		writeAttribute(root, "hasFovOffset", data.hasFovOffset ? 1.0 : 0.0);
+		writeAttribute(root, "fovOffsetConvention", 1.0); // originPix-based image translation
 		writeAttribute(root, "fovOffsetX", data.fovOffsetUm.x);
 		writeAttribute(root, "fovOffsetY", data.fovOffsetUm.y);
 		writeAttribute(root, "fovOffsetSigma", data.fovOffsetSigmaUm);
@@ -272,6 +273,7 @@ void ScaleCalibration::writeCalibrationToSlot(int slot, std::string filepath, Ob
 			writeAttribute(root, "referenceObjectiveName", data.referenceObjectiveName);
 			writeAttribute(root, "calibrationDate", data.calibrationDate);
 			writeAttribute(root, "hasFovOffset", data.hasFovOffset ? 1.0 : 0.0);
+			writeAttribute(root, "fovOffsetConvention", 1.0); // originPix-based image translation
 			writeAttribute(root, "fovOffsetX", data.fovOffsetUm.x);
 			writeAttribute(root, "fovOffsetY", data.fovOffsetUm.y);
 			writeAttribute(root, "fovOffsetSigma", data.fovOffsetSigmaUm);
@@ -376,6 +378,20 @@ void ScaleCalibration::readCalibrationFile(const std::string& filepath, Objectiv
 		readAttribute(root, "isReferenceObjective", &isReferenceObjectiveValue);
 		out->isReferenceObjective = isReferenceObjectiveValue != 0.0;
 	}
+	// Unversioned files may use image-centre offsets. Their image dimensions were not
+	// stored, so conversion to the originPix frame cannot be reconstructed safely.
+	double offsetConvention = 0.0;
+	if (root.attrExists("fovOffsetConvention")) {
+		readAttribute(root, "fovOffsetConvention", &offsetConvention);
+	}
+	if (out->hasFovOffset && offsetConvention != 1.0 && !out->isReferenceObjective) {
+		out->hasFovOffset = false;
+		out->fovOffsetUm = POINT2{};
+		out->fovOffsetSigmaUm = 0.0;
+		emit(s_scaleCalibrationStatus("FOV offset needs recalibration",
+			"The pixel scale for " + out->objectiveName + " was loaded, but its FOV offset uses an older "
+			"coordinate convention. Repeat and save the FOV-offset calibration against the reference objective."));
+	}
 }
 
 void ScaleCalibration::writeCalibrationMetadata(H5::Group& root) {
@@ -404,6 +420,7 @@ void ScaleCalibration::writeCalibrationMetadata(H5::Group& root) {
 	writeAttribute(root, "referenceObjectiveName", m_scaleCalibration.referenceObjectiveName);
 	writeAttribute(root, "calibrationDate", m_scaleCalibration.calibrationDate);
 	writeAttribute(root, "hasFovOffset", m_scaleCalibration.hasFovOffset ? 1.0 : 0.0);
+	writeAttribute(root, "fovOffsetConvention", 1.0); // originPix-based image translation
 	writeAttribute(root, "fovOffsetX", m_scaleCalibration.fovOffsetUm.x);
 	writeAttribute(root, "fovOffsetY", m_scaleCalibration.fovOffsetUm.y);
 	writeAttribute(root, "fovOffsetSigma", m_scaleCalibration.fovOffsetSigmaUm);
@@ -1290,14 +1307,6 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 		}
 	}
 
-	// A_t * tau - convert the raw pixel shift to um using the target's own exact calibration
-	// (both images are now at approximately the target's pixel scale after the rescale step
-	// above). Matches the same [[pixToMicrometerX.x, pixToMicrometerY.x], [pixToMicrometerX.y,
-	// pixToMicrometerY.y]] convention ScaleCalibrationHelper::initializeCalibrationFromPixel()
-	// builds its Matrix2 from.
-	auto tauXUm = targetScale.pixToMicrometerX.x * tau.x + targetScale.pixToMicrometerY.x * tau.y;
-	auto tauYUm = targetScale.pixToMicrometerX.y * tau.x + targetScale.pixToMicrometerY.y * tau.y;
-
 	// A_r * o_r and A_t * o_t - each objective's own calibrated originPix, converted through its
 	// own pixToMicrometer matrix. (0,0) today for both (originPix is never actually calibrated -
 	// see the comment above tau's definition), which makes both of these (0,0) too and the
@@ -1308,15 +1317,10 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	auto tgtOriginXUm = targetScale.pixToMicrometerX.x * targetScale.originPix.x + targetScale.pixToMicrometerY.x * targetScale.originPix.y;
 	auto tgtOriginYUm = targetScale.pixToMicrometerX.y * targetScale.originPix.x + targetScale.pixToMicrometerY.y * targetScale.originPix.y;
 
-	// fovOffsetUm = -A_t*tau + A_r*o_r - A_t*o_t - the *compensating stage move* needed to undo
-	// the apparent jump seen when switching objectives (see ScaleCalibrationHelper.h and
-	// Brillouin::resolvedGridOriginUm()). The -A_t*tau sign is the single highest-risk-of-being-
-	// backwards term in this function; verify empirically before trusting it (capture at the
-	// reference objective, note a feature's position, switch to the target, jog the stage by
-	// exactly the reported (fovOffsetUm.x, fovOffsetUm.y) and confirm the feature re-centers -
-	// if it moves twice as far off instead, negate this).
-	shiftUm->x = -tauXUm + refOriginXUm - tgtOriginXUm;
-	shiftUm->y = -tauYUm + refOriginYUm - tgtOriginYUm;
+	// The runtime adds this translation before projecting through the target scale.
+	// A physical stage jog also depends on the laser marker's old/new um coordinates;
+	// the image-frame offset alone must not be described as a compensating stage move.
+	*shiftUm = ScaleCalibrationHelper::fovOffsetFromTranslation(referenceScale, targetScale, POINT2{ (double)tau.x, (double)tau.y });
 
 	// Plain-text dump of every number this measurement is built from, alongside the reference/
 	// target/overlay .tif debug images - lets the operator check the matrices themselves (e.g.
@@ -1344,7 +1348,7 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 		text << "  estimatedMagnificationChange (same value, exposed for the caller's sanity check): " << *estimatedMagnificationChange << "\n";
 		text << "  tau (raw match shift, target relative to reference, common pixel scale, px): (" << tau.x << ", " << tau.y << ")\n";
 		text << "  A_r*originPix_r - A_t*originPix_t (origin-consistency correction term, um): (" << (refOriginXUm - tgtOriginXUm) << ", " << (refOriginYUm - tgtOriginYUm) << ")\n";
-		text << "  fovOffsetUm (compensating stage move, um): (" << shiftUm->x << ", " << shiftUm->y << ")\n";
+		text << "  fovOffsetUm (image-frame translation, um): (" << shiftUm->x << ", " << shiftUm->y << ")\n";
 		saveDebugCalibrationText(text.str(), "fovOffsetDebug");
 	}
 

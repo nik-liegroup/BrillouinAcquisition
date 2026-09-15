@@ -232,11 +232,14 @@ public slots:
 	int getActiveObjectiveSlot() const;
 	// Empty/default (hasFovOffset == false) if the active slot has no registered calibration.
 	ObjectiveCalibrationData getActiveObjectiveCalibration() const;
-	// This objective's FOV-center offset relative to the reference objective, or {0,0} if
+	// Image-frame translation relative to the reference objective, or {0,0} if
 	// none is calibrated - always safe to add unconditionally to a grid origin (see
 	// Brillouin::resolvedGridOriginUm()), since "no calibration" and "calibrated zero
 	// offset" must resolve to the same harmless no-op.
 	POINT2 getActiveObjectiveFovOffsetUm() const;
+	// Live relative-grid anchor in the active image's micrometre frame. Scale changes
+	// preserve its scanner contribution independently of the fixed-pixel laser marker.
+	POINT2 getRelativeGridAnchorUm() const;
 
 	// Whether `slot` is a physically-possible position of this backend's "Objective" device
 	// element (1..maxOptions) - false if this backend has no "Objective" element at all (e.g.
@@ -298,6 +301,7 @@ protected:
 	double m_positionFocus{ 0 };			// [um]	position of the focus (z-position)
 	POINT2 m_positionStage{ 0, 0 };			// [um]	position of the stage (x-y-position)
 	POINT2 m_positionScanner{ 0, 0 };		// [um]	position of the scanner (x-y-position)
+	RelativeGridAnchor m_relativeGridAnchor;
 
 	bool m_isCompatible{ false };
 	POINT3 m_homePosition{ 0, 0, 0 };

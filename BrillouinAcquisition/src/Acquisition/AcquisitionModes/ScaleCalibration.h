@@ -212,7 +212,8 @@ private:
 	// calibrationDate/objectiveSlot) - only "new"-format files (written by writeCalibrationMetadata()/
 	// createEmptyCalibrationFile(), i.e. by this version of the software) are accepted; an older
 	// legacy file missing these is rejected rather than silently backfilled with defaults. The
-	// caller decides what "invalid calibration file" means for its own context.
+	// caller decides what "invalid calibration file" means for its own context. Unversioned
+	// non-reference FOV offsets are disabled with a status message; their scales still load.
 	void readCalibrationFile(const std::string& filepath, ObjectiveCalibrationData* out);
 
 	void writePoint(H5::Group group, std::string name, POINT2 point);

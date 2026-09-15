@@ -171,21 +171,12 @@ void ScanControl::setPositionInPix(POINT2 positionPix) {
 }
 
 void ScanControl::enableMeasurementMode(bool enabled) {
-	// When enabling the measurement mode, we have to safe the start position,
+	// When enabling measurement mode, capture the start position,
 	// so the AOI positions display has the correct origin.
 	if (enabled) {
-		auto pos = getPosition();
-		// Fold in the active objective's own FOV-center offset at capture time - relative-mode
-		// targets are "current stage position, translated by the active objective's FOV offset,
-		// plus the grid offset" (one formula, always), not "current stage position" alone with
-		// the FOV term only ever applied as a later correction on a subsequent switch. Without
-		// this, a grid defined and started while already sitting on a non-reference objective
-		// (no switch involved at all) would silently target the wrong physical location by
-		// exactly that objective's own offset. adjustStartPositionForFovOffsetChange() keeps this
-		// invariant (m_startPosition == stage position + active objective's FOV offset) intact
-		// across any later switch/FOV-offset save.
-		auto fovOffsetUm = getActiveObjectiveFovOffsetUm();
-		m_startPosition = POINT2{ pos.x + fovOffsetUm.x, pos.y + fovOffsetUm.y };
+		auto pos = getPosition(PositionType::STAGE);
+		auto anchor = getRelativeGridAnchorUm();
+		m_startPosition = POINT2{ pos.x + anchor.x, pos.y + anchor.y };
 	}
 	m_measurementMode = enabled;
 }
@@ -360,12 +351,22 @@ void ScanControl::setScaleCalibration(const ScaleCalibrationData& scaleCalibrati
 	 * we convert the scanner position to pixel using the old scale calibration
 	 * and back to micro meter using the new scale.
 	 */
+	const auto oldScanner = m_positionScanner;
+	const auto oldScaleValid = ScaleCalibrationHelper::isBasis(
+		m_scaleCalibration.pixToMicrometerX, m_scaleCalibration.pixToMicrometerY);
 	auto posScanner = microMeterToPix(m_positionScanner);
 	m_scaleCalibration = scaleCalibration;
 	m_positionScanner = pixToMicroMeter(posScanner);
+	if (oldScaleValid && ScaleCalibrationHelper::isBasis(
+		m_scaleCalibration.pixToMicrometerX, m_scaleCalibration.pixToMicrometerY)) {
+		// The laser marker stays at its calibrated screen pixel, but its new um value
+		// must not become a new anchor for an already drawn relative grid.
+		m_relativeGridAnchor.preserveAcrossScaleChange(oldScanner, m_positionScanner);
+	}
 
 	calculateBounds();
 	calculateHomePositionBounds();
+	emit(s_gridOffsetChanged(getPositionOffset(m_AOI_positionsAbsolute), m_AOI_positionsAbsolute));
 	emit(s_scaleCalibrationChanged(convertPositionsToPix()));
 }
 
@@ -408,6 +409,10 @@ POINT2 ScanControl::getActiveObjectiveFovOffsetUm() const {
 		return POINT2{ 0, 0 };
 	}
 	return calibration.fovOffsetUm;
+}
+
+POINT2 ScanControl::getRelativeGridAnchorUm() const {
+	return m_relativeGridAnchor.resolve(m_positionScanner, getActiveObjectiveFovOffsetUm());
 }
 
 void ScanControl::acceptMissingObjectiveOffset() {
@@ -520,6 +525,8 @@ void ScanControl::adjustStartPositionForFovOffsetChange(POINT2 deltaUm) {
 	if (m_measurementMode) {
 		m_startPosition.x += deltaUm.x;
 		m_startPosition.y += deltaUm.y;
+		emit(s_gridOffsetChanged(getPositionOffset(m_AOI_positionsAbsolute), m_AOI_positionsAbsolute));
+		emit(s_scaleCalibrationChanged(convertPositionsToPix()));
 	}
 }
 
@@ -542,22 +549,9 @@ POINT2 ScanControl::getPositionPix(POINT3 positionMicrometer, bool positionIsAbs
 }
 
 POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
-	// This is the mechanism from commit 0c70d11: the grid itself pans with the current
-	// stage position, so that whichever point is currently being measured always lands at
-	// the same fixed screen pixel - coinciding with the laser marker, which is a static
-	// calibration reference (see announcePositionScanner()) and does NOT itself track the
-	// stage. What looks like "the marker moving through the grid" is actually the grid
-	// sliding past a fixed marker.
-	//
-	// In normal (live-preview) mode, the positions are shown relative to the scanner
-	// position, so they track wherever the laser currently points within the FOV - plus the
-	// active objective's own FOV-center offset, so a relative-mode grid visibly shifts (relative
-	// to the fixed marker) on an objective switch, exactly like it needs to physically shift once
-	// a measurement is actually started (see enableMeasurementMode()'s identical formula for the
-	// measurement-mode case below, and Brillouin::acquire()'s analogous capture of its own
-	// m_startPosition) - without this, switching objectives only ever rescaled the preview, never
-	// translated it, even with a real, saved FOV offset.
-	auto offset = m_positionScanner + getActiveObjectiveFovOffsetUm();
+	// Relative grids follow deliberate scanner moves, but retain their micrometre
+	// anchor across scale changes. The objective translation is applied exactly once.
+	auto offset = getRelativeGridAnchorUm();
 	if (positionIsAbsolute) {
 		// Absolute positions are stored as the raw target stage+scanner position directly
 		// (absoluteGridOriginUm + gridOffset, see gridOffsetToAbsoluteTarget()), so the
@@ -569,12 +563,8 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	}
 	// In measurement mode, the positions are shown relative to the start position.
 	else if (m_measurementMode) {
-		// m_startPosition is captured as getPosition(BOTH) (stage + scanner) in
-		// enableMeasurementMode(), but the scanner term cancels exactly the same way as
-		// above - only stage needs to be subtracted here. This is the literal formula from
-		// commit 0c70d11; adding a "- m_positionScanner" term here (as a previous revision
-		// of this function did) shifts the whole grid by the scanner offset instead of
-		// leaving it centered on the marker.
+		// The captured anchor already contains scanner, scale correction and objective
+		// translation. Only stage motion pans the grid during a measurement.
 		offset = m_startPosition - m_positionStage;
 	}
 	return offset;

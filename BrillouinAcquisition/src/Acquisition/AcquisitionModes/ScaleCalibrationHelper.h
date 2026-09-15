@@ -1,10 +1,10 @@
 #ifndef SCALECALIBRATIONHELPER_H
 #define SCALECALIBRATIONHELPER_H
 
-#include "../../lib/math/points.h"
-
 #include <cmath>
+#include <exception>
 #include <string>
+#include "../../lib/math/points.h"
 
 struct ScaleCalibrationData {
 	POINT2 micrometerToPixX{ 0, 0 };	// [pix/micrometer]
@@ -16,8 +16,20 @@ struct ScaleCalibrationData {
 	POINT2 originPix{ 0, 0 };			// [pix] origin on the camera image
 };
 
+// Keep the grid's scanner anchor independent of the marker's pixel-preserving
+// rescaling. Deliberate scanner moves still move a live relative grid.
+struct RelativeGridAnchor {
+	POINT2 correctionUm{ 0, 0 };
+	void preserveAcrossScaleChange(POINT2 oldScanner, POINT2 newScanner) {
+		correctionUm += oldScanner - newScanner;
+	}
+	POINT2 resolve(POINT2 scanner, POINT2 objectiveOffset) const {
+		return scanner + correctionUm + objectiveOffset;
+	}
+};
+
 // A per-objective calibration profile: the existing scale calibration (px<->um, unchanged),
-// plus the FOV-center translation needed to keep grids/ROIs/overview tiles pointing at the
+// plus the image-origin translation needed to keep grids/ROIs/overview tiles pointing at the
 // same physical sample location after switching to this objective. Deliberately does NOT
 // include the laser-position marker (ScanControl::m_positionScanner / the "blue circle") -
 // that is sample/dish-dependent, not a property of the objective's optical path, and is
@@ -26,13 +38,14 @@ struct ObjectiveCalibrationData : public ScaleCalibrationData {
 	std::string objectiveName{ "" };
 	double magnification{ 0.0 };
 
-	// This objective's FOV center relative to a declared reference objective, measured by
-	// repeated switch-and-locate round trips (see the objective offset calibration
-	// procedure). hasFovOffset is false until a value has actually been measured - callers
+	// Translation from the reference image's um frame into this objective's um frame:
+	// A_target*(p_target-origin_target) = A_reference*(p_reference-origin_reference) + offset.
+	// It includes the image-origin contribution; it is not simply a centre displacement
+	// or a stage jog. hasFovOffset is false until a value has actually been measured - callers
 	// must treat that as "no correction available", never silently apply {0,0} as if it
 	// were a validated zero offset.
 	bool hasFovOffset{ false };
-	POINT2 fovOffsetUm{ 0, 0 };			// [um] this objective's FOV center minus the reference objective's
+	POINT2 fovOffsetUm{ 0, 0 };			// [um] translation between calibrated image frames
 	double fovOffsetSigmaUm{ 0.0 };		// [um] measured repeatability (std dev) of fovOffsetUm across calibration round trips
 	std::string referenceObjectiveName{ "" };
 	std::string calibrationDate{ "" };
@@ -81,6 +94,19 @@ struct Matrix2{
 class ScaleCalibrationHelper {
 
 public:
+	// Registration gives p_target = M*p_reference - translation, where M is
+	// the scale transform. Convert its translation using the stored pixel origins.
+	static POINT2 fovOffsetFromTranslation(const ScaleCalibrationData& reference,
+		const ScaleCalibrationData& target, POINT2 translation) {
+		return POINT2{
+			-target.pixToMicrometerX.x * translation.x - target.pixToMicrometerY.x * translation.y
+			+ reference.pixToMicrometerX.x * reference.originPix.x + reference.pixToMicrometerY.x * reference.originPix.y
+			- target.pixToMicrometerX.x * target.originPix.x - target.pixToMicrometerY.x * target.originPix.y,
+			-target.pixToMicrometerX.y * translation.x - target.pixToMicrometerY.y * translation.y
+			+ reference.pixToMicrometerX.y * reference.originPix.x + reference.pixToMicrometerY.y * reference.originPix.y
+			- target.pixToMicrometerX.y * target.originPix.x - target.pixToMicrometerY.y * target.originPix.y
+		};
+	}
 	static void initializeCalibrationFromMicrometer(ScaleCalibrationData* calibration) {
 		// Check that the given vectors are actually a basis
 		if (!isBasis(calibration->micrometerToPixX, calibration->micrometerToPixY)) {
