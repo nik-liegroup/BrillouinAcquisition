@@ -292,6 +292,16 @@ private:
 	// folder, not writable, etc.) - purely a debugging aid, never blocks the actual measurement.
 	void saveDebugCalibrationImage(const std::vector<std::byte>& image, const CAMERA_ROI& roi, const std::string& dataType, const std::string& label);
 
+	// Shared folder-resolution logic behind saveDebugCalibrationImage()/saveDebugCalibrationMat()
+	// - see saveDebugCalibrationImage()'s own doc comment for what folder this resolves to.
+	// Returns an empty string (nothing should be written) if no folder is available yet, or it
+	// could not be created.
+	std::string debugCalibrationFolder() const;
+
+	// Same as saveDebugCalibrationImage(), but for a cv::Mat already in memory (e.g. a
+	// constructed debug visualization) rather than a just-captured raw image buffer.
+	void saveDebugCalibrationMat(const cv::Mat& mat, const std::string& label);
+
 	// Captures and caches the reference image (see measureFovOffset()'s doc comment above) -
 	// called by continueObjectiveCycle() with resetAccumulatedSamples=(cycle == 1), so a fresh
 	// reference image is captured every cycle without also wiping m_fovOffsetSamplesUm each

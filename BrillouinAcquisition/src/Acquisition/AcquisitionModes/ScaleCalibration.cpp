@@ -1062,10 +1062,7 @@ cv::Mat ScaleCalibration::readAsMat8U(const std::vector<std::byte>& image, int r
 	return cv::Mat(rows, cols, CV_8UC1, (void*)image.data());
 }
 
-void ScaleCalibration::saveDebugCalibrationImage(const std::vector<std::byte>& image, const CAMERA_ROI& roi, const std::string& dataType, const std::string& label) {
-	if (image.empty()) {
-		return;
-	}
+std::string ScaleCalibration::debugCalibrationFolder() const {
 	auto folder = std::string{};
 	if (!m_linkedCalibrationFilePath.empty()) {
 		folder = path(m_linkedCalibrationFilePath).parent_path().string();
@@ -1073,21 +1070,38 @@ void ScaleCalibration::saveDebugCalibrationImage(const std::vector<std::byte>& i
 		folder = m_acquisition->getCurrentFolder();
 	}
 	if (folder.empty()) {
-		return;
+		return {};
 	}
 	try {
 		create_directories(folder);
 	} catch (const filesystem_error&) {
+		return {};
+	}
+	return folder;
+}
+
+void ScaleCalibration::saveDebugCalibrationMat(const cv::Mat& mat, const std::string& label) {
+	if (mat.empty()) {
 		return;
 	}
-
-	auto mat = readAsMat8U(image, roi.height_binned, roi.width_binned, dataType);
+	auto folder = debugCalibrationFolder();
+	if (folder.empty()) {
+		return;
+	}
 	auto timestamp = QDateTime::currentDateTime().toString("yyyy-MM-ddTHHmmss.zzz").toStdString();
 	auto filepath = folder + "/" + label + "_" + timestamp + ".tif";
 	try {
 		cv::imwrite(filepath, mat);
 	} catch (const cv::Exception&) {
 	}
+}
+
+void ScaleCalibration::saveDebugCalibrationImage(const std::vector<std::byte>& image, const CAMERA_ROI& roi, const std::string& dataType, const std::string& label) {
+	if (image.empty()) {
+		return;
+	}
+	auto mat = readAsMat8U(image, roi.height_binned, roi.width_binned, dataType);
+	saveDebugCalibrationMat(mat, label);
 }
 
 bool ScaleCalibration::computeFovOffsetShiftUm(
@@ -1230,6 +1244,32 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 		// reference" (searchMat = reference case), so flip it to keep one consistent meaning
 		// regardless of which image happened to be larger.
 		pixelShift = -pixelShift;
+	}
+
+	// Visual sanity check for the operator: the (common-pixel-scale) target image blended at
+	// 50% opacity onto the (common-pixel-scale) reference image, positioned exactly where the
+	// match above placed it - so misalignment is visible directly, independent of trusting the
+	// numeric shift computed below. targetTopLeftInRef = centeredExpectedLocInRef + pixelShift
+	// holds regardless of which of refMatRescaled/tgtMat ended up as searchMat/templateMat
+	// above: expectedLoc (used to derive pixelShift) is symmetric in the two images' sizes, and
+	// the referenceIsSearch sign-flip already applied to pixelShift exactly cancels the sign
+	// flip in expectedLoc's own definition between the two branches.
+	{
+		auto centeredExpectedLocInRef = cv::Point(
+			(refMatRescaled.cols - tgtMat.cols) / 2,
+			(refMatRescaled.rows - tgtMat.rows) / 2
+		);
+		auto targetTopLeftInRef = centeredExpectedLocInRef + pixelShift;
+
+		auto refRect = cv::Rect(0, 0, refMatRescaled.cols, refMatRescaled.rows);
+		auto targetRectInRef = cv::Rect(targetTopLeftInRef, tgtMat.size());
+		auto visibleRect = refRect & targetRectInRef;
+		if (visibleRect.area() > 0) {
+			auto overlay = refMatRescaled.clone();
+			auto sourceRect = cv::Rect(visibleRect.tl() - targetTopLeftInRef, visibleRect.size());
+			cv::addWeighted(overlay(visibleRect), 0.5, tgtMat(sourceRect), 0.5, 0.0, overlay(visibleRect));
+			saveDebugCalibrationMat(overlay, "fovOverlay");
+		}
 	}
 
 	// Convert to um using the target's own exact calibration (both images are now at
