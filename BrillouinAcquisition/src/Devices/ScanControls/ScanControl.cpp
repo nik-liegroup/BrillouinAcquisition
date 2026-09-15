@@ -601,8 +601,19 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 		// scanner contribution is already baked into the stored value itself - subtracting
 		// it again here would double-count it and shift the whole grid by that amount.
 		// Only the stage position (which is what actually changes as the grid is scanned)
-		// needs to be undone, exactly like the measurement-mode branch below.
-		offset = POINT2{} - m_positionStage;
+		// needs to be undone, exactly like the measurement-mode branch below - PLUS the
+		// active objective's own FOV-center offset, for the same reason the live-preview
+		// branch above and the measurement-mode branch below both need it (m_startPosition
+		// there already has it baked in, see enableMeasurementMode()). resolvedGridOriginUm()
+		// bakes fovOffsetUm into every absolute target (see Brillouin::resolvedGridOriginUm()),
+		// but m_positionStage never does - every backend's setPosition() only ever subtracts
+		// m_positionScanner, which is stored objective-invariant (see locatePositionScanner()).
+		// Without this term, the point currently at the absolute target drew at
+		// m_positionScanner instead of m_positionScanner + fovOffsetUm - i.e. exactly
+		// fovOffsetUm away from where announcePositionScanner() draws the blue marker itself,
+		// so on any non-reference objective the grid/overview-tile preview never quite lines
+		// up with the marker, even though the stage is already at the correct physical target.
+		offset = POINT2{} - m_positionStage + getActiveObjectiveFovOffsetUm();
 	}
 	// In measurement mode, the positions are shown relative to the start position.
 	else if (m_measurementMode) {
