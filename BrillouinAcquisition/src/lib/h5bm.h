@@ -72,9 +72,10 @@ struct FLUOIMAGE {
 public:
 	FLUOIMAGE(int ind, int rank, hsize_t *dims, const std::string& date, const std::string& channel, const std::vector<T>& data,
 		double exposure = 0, double gain = 1, const CAMERA_ROI& roi = CAMERA_ROI{},
-		POINT3 targetPosition = POINT3{ 0, 0, 0 }, bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 }) :
+		POINT3 targetPosition = POINT3{ 0, 0, 0 }, bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 },
+		bool compress = false) :
 		ind(ind), rank(rank), dims(dims), date(date), channel(channel), data(data), exposure(exposure), gain(gain), roi(roi),
-		targetPosition(targetPosition), hasStagePosition(hasStagePosition), stagePosition(stagePosition) {};
+		targetPosition(targetPosition), hasStagePosition(hasStagePosition), stagePosition(stagePosition), compress(compress) {};
 
 	const int ind;
 	const int rank;
@@ -93,6 +94,14 @@ public:
 	const POINT3 targetPosition;
 	const bool hasStagePosition;
 	const POINT3 stagePosition;
+	// Chunked + gzip-deflated dataset layout instead of the default contiguous, uncompressed
+	// one - see setDataset()'s own comment. Opt-in (false elsewhere) since it only makes
+	// sense for a write-once dataset with a stable name (never reopened/rewritten) - every
+	// FLUOIMAGE satisfies that already, so this is really about which ones are numerous
+	// enough that the file-size savings are worth it (Brillouin::capturePerPointBrightfieldImage()/
+	// finishPerPointBrightfieldDuring() set this true; the per-z overview does not, by request -
+	// see their own call sites).
+	const bool compress{ false };
 };
 
 struct ScaleCalibrationDataExtended : ScaleCalibrationData {
@@ -375,7 +384,7 @@ private:
 	T getAttribute(std::string attrName);
 
 	template <typename T>
-	hid_t setDataset(hid_t parent, std::vector<T> data, std::string name, const int rank, const hsize_t* dims);
+	hid_t setDataset(hid_t parent, std::vector<T> data, std::string name, const int rank, const hsize_t* dims, bool compress = false);
 	void getDataset(std::vector<double>* data, hid_t parent, std::string name);
 
 	template <typename T>
@@ -383,7 +392,7 @@ private:
 		std::string date, const std::string& sample = "", double shift = NULL, const std::string& channel = "",
 		double exposure = 0, double gain = 1, CAMERA_ROI roi = CAMERA_ROI{},
 		bool hasPosition = false, POINT3 position = POINT3{ 0, 0, 0 },
-		bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 });
+		bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 }, bool compress = false);
 
 	std::vector<double> getData(const std::string& name, hid_t parent);
 	std::string getDate(std::string name, hid_t parent);
@@ -394,7 +403,7 @@ private:
 };
 
 template <typename T>
-hid_t H5BM::setDataset(hid_t parent, std::vector<T> data, std::string name, const int rank, const hsize_t *dims) {
+hid_t H5BM::setDataset(hid_t parent, std::vector<T> data, std::string name, const int rank, const hsize_t *dims, bool compress) {
 	hid_t type_id = get_memtype<T>();
 	// For compatibility with MATLAB respect Fortran-style ordering: z, x, y
 	hid_t space_id = H5Screate_simple(rank, dims, dims);
@@ -402,7 +411,22 @@ hid_t H5BM::setDataset(hid_t parent, std::vector<T> data, std::string name, cons
 	hid_t dset_id;
 	dset_id = H5Dopen2(parent, name.c_str(), H5P_DEFAULT);
 	if (dset_id < 0) {
-		dset_id = H5Dcreate2(parent, name.c_str(), type_id, space_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+		// compress: chunked (one chunk = the whole dataset - these are single standalone
+		// images, never accessed by a sub-region, so there is no benefit to splitting
+		// further) + gzip deflate, instead of the default contiguous/uncompressed layout.
+		// Chunking must be set on the property list BEFORE H5Dcreate2() - it cannot be
+		// added to an already-created dataset, which is why this branches here rather than
+		// after the existing H5P_DEFAULT create call below.
+		hid_t dcpl_id = H5P_DEFAULT;
+		if (compress) {
+			dcpl_id = H5Pcreate(H5P_DATASET_CREATE);
+			H5Pset_chunk(dcpl_id, rank, dims);
+			H5Pset_deflate(dcpl_id, 6);
+		}
+		dset_id = H5Dcreate2(parent, name.c_str(), type_id, space_id, H5P_DEFAULT, dcpl_id, H5P_DEFAULT);
+		if (compress) {
+			H5Pclose(dcpl_id);
+		}
 	}
 
 	H5Dwrite(dset_id, get_memtype<T>(), H5S_ALL, H5S_ALL, H5P_DEFAULT, data.data());
@@ -416,7 +440,7 @@ hid_t H5BM::setDataset(hid_t parent, std::vector<T> data, std::string name, cons
 template <typename T>
 void H5BM::setData(const std::vector<T>& data, const std::string& name, hid_t parent, const int rank, const hsize_t *dims,
 	std::string date, const std::string& sample, double shift, const std::string& channel, double exposure, double gain, CAMERA_ROI roi,
-	bool hasPosition, POINT3 position, bool hasStagePosition, POINT3 stagePosition) {
+	bool hasPosition, POINT3 position, bool hasStagePosition, POINT3 stagePosition, bool compress) {
 	if (!m_fileWritable) {
 		return;
 	}
@@ -426,7 +450,7 @@ void H5BM::setData(const std::vector<T>& data, const std::string& name, hid_t pa
 	}
 
 	// write data
-	hid_t dset_id = setDataset(parent, data, name, rank, dims);
+	hid_t dset_id = setDataset(parent, data, name, rank, dims, compress);
 
 	// write date
 	setAttribute("date", date, dset_id);
@@ -541,7 +565,7 @@ void H5BM::setPayloadData(FLUOIMAGE<T>* image) {
 
 	setData(image->data, name, m_Fluorescence.groups->payloadData, image->rank, image->dims, image->date, "", NULL, image->channel,
 		image->exposure, image->gain, image->roi,
-		true, image->targetPosition, image->hasStagePosition, image->stagePosition);
+		true, image->targetPosition, image->hasStagePosition, image->stagePosition, image->compress);
 }
 
 #endif // H5BM_H

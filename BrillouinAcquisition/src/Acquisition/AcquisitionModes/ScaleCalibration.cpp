@@ -1092,7 +1092,10 @@ void ScaleCalibration::saveDebugCalibrationMat(const cv::Mat& mat, const std::st
 		return;
 	}
 	auto timestamp = QDateTime::currentDateTime().toString("yyyy-MM-ddTHHmmss.zzz").toStdString();
-	auto filepath = folder + "/" + label + "_" + timestamp + ".tif";
+	// .png rather than .tif - lossless either way, but PNG's compression keeps these small
+	// debug dumps from piling up disk usage across repeated calibration cycles. cv::imwrite
+	// picks the codec from the extension, so this is the only line that needs to change.
+	auto filepath = folder + "/" + label + "_" + timestamp + ".png";
 	try {
 		cv::imwrite(filepath, mat);
 	} catch (const cv::Exception&) {
