@@ -1241,42 +1241,43 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	cv::minMaxLoc(matchResult, &minVal, &maxVal, &minLoc, &maxLoc, cv::Mat());
 
 	// maxLoc (not minLoc - TM_CCOEFF_NORMED's best match is the highest score, the opposite
-	// convention from TM_SQDIFF) is where templ's top-left corner best matches inside searchMat.
-	// searchMat and templ are NOT the same size here (unlike the __acquire() scale-calibration
-	// match this pipeline was originally adapted from) - after rescaling to a common pixel pitch,
-	// the reference's real field of view is still a different physical size than the target's
-	// (e.g. a lower-mag objective genuinely sees more of the sample), so searchMat (the bigger
-	// one) and templ (the full smaller one) differ in size. The correct "zero shift" expected
-	// location is therefore where templ's own center would coincide with searchMat's own center -
-	// (searchMat.cols - templ.cols) / 2 horizontally, (searchMat.rows - templ.rows) / 2
-	// vertically. An earlier version of this code got this reference point wrong (assumed the
-	// two images were the same size) and then additionally cropped a margin off templ for no
-	// real benefit, discarding image content in a way that made repeated measurements
-	// noticeably inconsistent - both are fixed now.
-	auto expectedLoc = cv::Point((searchMat.cols - templ.cols) / 2, (searchMat.rows - templ.rows) / 2);
-	auto pixelShift = maxLoc - expectedLoc;
+	// convention from TM_SQDIFF) is where templ's top-left corner best matches inside searchMat -
+	// i.e. the RAW match location, with no "expected/zero-shift" reference point subtracted here.
+	// Earlier versions of this code subtracted a geometric-image-centre-based expectedLoc at this
+	// point, implicitly assuming each image's optical centre is its own geometric centre
+	// (originPix == width/2,height/2). That is a DIFFERENT assumption than what the runtime
+	// consumer of fovOffsetUm actually uses (ScanControl::pixToMicroMeter()/microMeterToPix(),
+	// which use the real, stored originPix - (0,0) in practice, since scale calibration never
+	// computes it). Mixing the two produced a constant, wrong bias (A_target * expectedLoc) baked
+	// into every measurement. Fixed by deriving fovOffsetUm directly from the ACTUAL originPix of
+	// both objectives (whatever it is, even if that's (0,0)) instead of assuming a value for it:
+	//
+	//   p_t = s*p_r - tau   (image registration: tau = maxLoc, s = rescaleFactor)
+	//   p_t = A_t^-1[A_r(p_r-o_r) + fovOffsetUm] + o_t   (runtime, assuming A_t^-1*A_r == s*I)
+	//   => fovOffsetUm = -A_t*tau + A_r*o_r - A_t*o_t
+	//
+	// which reduces to the old formula exactly when o_r=o_t=width/2,height/2, and to plain
+	// -A_t*tau when o_r=o_t=(0,0) (the actual case today) - see the derivation this was worked
+	// out from for the general case and the s*I approximation's own limits (assumes no relative
+	// rotation/shear between the two objectives' images beyond the isotropic rescale below).
+	auto tau = maxLoc;
 	if (!referenceIsSearch) {
 		// templ came from the (rescaled) reference and searchMat is the target - the above
 		// then measures "reference relative to target", the opposite of "target relative to
 		// reference" (searchMat = reference case), so flip it to keep one consistent meaning
 		// regardless of which image happened to be larger.
-		pixelShift = -pixelShift;
+		tau = -tau;
 	}
 
 	// Visual sanity check for the operator: the (common-pixel-scale) target image blended at
 	// 50% opacity onto the (common-pixel-scale) reference image, positioned exactly where the
 	// match above placed it - so misalignment is visible directly, independent of trusting the
-	// numeric shift computed below. targetTopLeftInRef = centeredExpectedLocInRef + pixelShift
-	// holds regardless of which of refMatRescaled/tgtMat ended up as searchMat/templateMat
-	// above: expectedLoc (used to derive pixelShift) is symmetric in the two images' sizes, and
-	// the referenceIsSearch sign-flip already applied to pixelShift exactly cancels the sign
-	// flip in expectedLoc's own definition between the two branches.
+	// numeric shift computed below. targetTopLeftInRef == tau always (both branches - in the
+	// referenceIsSearch case maxLoc already IS target's top-left within refMatRescaled; in the
+	// other case it's the negation of reference's top-left within target, i.e. target's top-left
+	// within reference's own frame under a pure-translation assumption).
 	{
-		auto centeredExpectedLocInRef = cv::Point(
-			(refMatRescaled.cols - tgtMat.cols) / 2,
-			(refMatRescaled.rows - tgtMat.rows) / 2
-		);
-		auto targetTopLeftInRef = centeredExpectedLocInRef + pixelShift;
+		auto targetTopLeftInRef = tau;
 
 		auto refRect = cv::Rect(0, 0, refMatRescaled.cols, refMatRescaled.rows);
 		auto targetRectInRef = cv::Rect(targetTopLeftInRef, tgtMat.size());
@@ -1289,24 +1290,33 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 		}
 	}
 
-	// Convert to um using the target's own exact calibration (both images are now at
-	// approximately the target's pixel scale after the rescale step above). Matches the same
-	// [[pixToMicrometerX.x, pixToMicrometerY.x], [pixToMicrometerX.y, pixToMicrometerY.y]]
-	// convention ScaleCalibrationHelper::initializeCalibrationFromPixel() builds its Matrix2 from.
-	auto shiftXUm = targetScale.pixToMicrometerX.x * pixelShift.x + targetScale.pixToMicrometerY.x * pixelShift.y;
-	auto shiftYUm = targetScale.pixToMicrometerX.y * pixelShift.x + targetScale.pixToMicrometerY.y * pixelShift.y;
+	// A_t * tau - convert the raw pixel shift to um using the target's own exact calibration
+	// (both images are now at approximately the target's pixel scale after the rescale step
+	// above). Matches the same [[pixToMicrometerX.x, pixToMicrometerY.x], [pixToMicrometerX.y,
+	// pixToMicrometerY.y]] convention ScaleCalibrationHelper::initializeCalibrationFromPixel()
+	// builds its Matrix2 from.
+	auto tauXUm = targetScale.pixToMicrometerX.x * tau.x + targetScale.pixToMicrometerY.x * tau.y;
+	auto tauYUm = targetScale.pixToMicrometerX.y * tau.x + targetScale.pixToMicrometerY.y * tau.y;
 
-	// (shiftXUm, shiftYUm) is "target optical center minus reference optical center", both
-	// observed at the same, unmoved stage position - i.e. how far the view apparently jumped
-	// when switching objectives. fovOffsetUm is defined as the *compensating stage move*
-	// needed to undo that jump (see ScaleCalibrationHelper.h and Brillouin::resolvedGridOriginUm())
-	// - the negative of the observed jump. This sign is the single highest-risk-of-being-
-	// backwards line in this function; verify empirically before trusting it (capture at the
+	// A_r * o_r and A_t * o_t - each objective's own calibrated originPix, converted through its
+	// own pixToMicrometer matrix. (0,0) today for both (originPix is never actually calibrated -
+	// see the comment above tau's definition), which makes both of these (0,0) too and the
+	// formula below collapse to fovOffsetUm = -A_t*tau - but this stays correct automatically if
+	// originPix is ever given a real per-objective calibration later, with no further code change.
+	auto refOriginXUm = referenceScale.pixToMicrometerX.x * referenceScale.originPix.x + referenceScale.pixToMicrometerY.x * referenceScale.originPix.y;
+	auto refOriginYUm = referenceScale.pixToMicrometerX.y * referenceScale.originPix.x + referenceScale.pixToMicrometerY.y * referenceScale.originPix.y;
+	auto tgtOriginXUm = targetScale.pixToMicrometerX.x * targetScale.originPix.x + targetScale.pixToMicrometerY.x * targetScale.originPix.y;
+	auto tgtOriginYUm = targetScale.pixToMicrometerX.y * targetScale.originPix.x + targetScale.pixToMicrometerY.y * targetScale.originPix.y;
+
+	// fovOffsetUm = -A_t*tau + A_r*o_r - A_t*o_t - the *compensating stage move* needed to undo
+	// the apparent jump seen when switching objectives (see ScaleCalibrationHelper.h and
+	// Brillouin::resolvedGridOriginUm()). The -A_t*tau sign is the single highest-risk-of-being-
+	// backwards term in this function; verify empirically before trusting it (capture at the
 	// reference objective, note a feature's position, switch to the target, jog the stage by
 	// exactly the reported (fovOffsetUm.x, fovOffsetUm.y) and confirm the feature re-centers -
 	// if it moves twice as far off instead, negate this).
-	shiftUm->x = -shiftXUm;
-	shiftUm->y = -shiftYUm;
+	shiftUm->x = -tauXUm + refOriginXUm - tgtOriginXUm;
+	shiftUm->y = -tauYUm + refOriginYUm - tgtOriginYUm;
 
 	// Plain-text dump of every number this measurement is built from, alongside the reference/
 	// target/overlay .tif debug images - lets the operator check the matrices themselves (e.g.
@@ -1332,7 +1342,8 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 		text << "FOV-offset measurement:\n";
 		text << "  rescaleFactor (reference->target, applied to reference before matching): " << rescaleFactor << "\n";
 		text << "  estimatedMagnificationChange (same value, exposed for the caller's sanity check): " << *estimatedMagnificationChange << "\n";
-		text << "  pixelShift (target relative to reference, common pixel scale, px): (" << pixelShift.x << ", " << pixelShift.y << ")\n";
+		text << "  tau (raw match shift, target relative to reference, common pixel scale, px): (" << tau.x << ", " << tau.y << ")\n";
+		text << "  A_r*originPix_r - A_t*originPix_t (origin-consistency correction term, um): (" << (refOriginXUm - tgtOriginXUm) << ", " << (refOriginYUm - tgtOriginYUm) << ")\n";
 		text << "  fovOffsetUm (compensating stage move, um): (" << shiftUm->x << ", " << shiftUm->y << ")\n";
 		saveDebugCalibrationText(text.str(), "fovOffsetDebug");
 	}
