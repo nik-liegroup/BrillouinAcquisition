@@ -140,7 +140,15 @@ void ScanControl::locatePositionScanner(POINT2 positionLaserPix) {
 		return;
 	}
 
-	m_positionScanner = pixToMicroMeter(positionLaserPix);
+	// Stored with the active objective's own FOV-center offset subtracted back out, so
+	// m_positionScanner itself stays an objective-invariant quantity (the real beam alignment
+	// relative to the stage, not tied to whichever objective happened to be active when this
+	// was last located) - see announcePositionScanner()/getPositionOffset() for the matching
+	// "+ fovOffsetUm(active)" used everywhere this gets converted back to a pixel/raw-frame
+	// value. On the reference objective (fovOffsetUm == {0,0}) this is a no-op, which is why
+	// the previous, uncorrected version of this line looked fine there and only broke down on
+	// every other objective.
+	m_positionScanner = pixToMicroMeter(positionLaserPix) - getActiveObjectiveFovOffsetUm();
 
 	announcePositionScanner();
 	announcePositions();
@@ -155,6 +163,17 @@ void ScanControl::setPositionInPix(POINT2 positionPix) {
 	auto positionMicrometer = pixToMicroMeter(positionPix);
 	// We have to subtract the position of the scanner to get to the relative movement
 	positionMicrometer -= m_positionScanner;
+	// ...and the active objective's own FOV-center offset - m_positionScanner is stored
+	// objective-invariant (see locatePositionScanner()), so recovering "distance from the
+	// marker's own drawn pixel, in this objective's raw pixel frame" needs the same
+	// "+ fovOffsetUm(active)" announcePositionScanner() adds back when drawing that pixel in
+	// the first place. Clicking exactly on the marker's own drawn pixel is the sanity check
+	// this must satisfy (must always be a true no-op, for any fovOffsetUm) - it only holds
+	// once announcePositionScanner() and locatePositionScanner() apply the matching
+	// correction too, which they now do. For the same reason, getPositionOffset() adds this
+	// term on top of m_positionScanner when displaying grids/AOI markers, and
+	// Brillouin::acquire() folds it into m_startPosition at Start.
+	positionMicrometer -= getActiveObjectiveFovOffsetUm();
 	/**
 	 * Prevent moving more than 1 cm at a time
 	 *
@@ -367,6 +386,16 @@ void ScanControl::setScaleCalibration(const ScaleCalibrationData& scaleCalibrati
 	calculateBounds();
 	calculateHomePositionBounds();
 	emit(s_scaleCalibrationChanged(convertPositionsToPix()));
+	// The marker's own drawn pixel (announcePositionScanner()'s microMeterToPix(m_positionScanner))
+	// is calibration-dependent too, exactly like the AOI/grid positions convertPositionsToPix()
+	// just re-emitted above - but unlike those, nothing was re-announcing it here. Without this,
+	// the blue marker stayed frozen at its PRE-switch screen position (still reflecting the old
+	// calibration) until something unrelated happened to call announcePositionScanner() again
+	// (e.g. manually re-locating it), even though m_positionScanner's own [um] value and every
+	// click-to-move/grid computation using it were already correct immediately after the switch.
+	// That stale on-screen marker is what made a correctly-targeted click-to-move look wrong -
+	// the operator was aiming at a pixel the software no longer agreed was the marker's location.
+	announcePositionScanner();
 }
 
 ScaleCalibrationData ScanControl::getScaleCalibration() {
@@ -671,7 +700,14 @@ void ScanControl::announcePositionScanner() {
 	// A static calibration reference (see locatePositionScanner()), not something that
 	// tracks the stage - the grid itself is what pans past this fixed point during a scan
 	// (see getPositionOffset()/announcePositions()).
-	const auto positionScannerPix = microMeterToPix(m_positionScanner);
+	//
+	// + the active objective's own FOV-center offset, to convert m_positionScanner (stored
+	// objective-invariant - see locatePositionScanner()) back into this objective's own raw
+	// pixel frame - the same "m_positionScanner + fovOffsetUm(active)" getPositionOffset()
+	// already uses for grids. Without this the marker was drawn correctly only on the
+	// reference objective (fovOffsetUm == {0,0}) and landed off by fovOffsetUm on every other
+	// one - exactly the "close but not exact" / clicking-misses-only-on-20x symptom.
+	const auto positionScannerPix = microMeterToPix(m_positionScanner + getActiveObjectiveFovOffsetUm());
 	emit(s_positionScannerChanged(positionScannerPix));
 }
 
