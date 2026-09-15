@@ -656,8 +656,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_saveOverviewBrightfieldPerZCheckbox = ui->saveOverviewBrightfieldPerZCheckbox;
 			m_overviewSingleImageRadio = ui->overviewSingleImageRadio;
 			m_overviewFullGridRadio = ui->overviewFullGridRadio;
-			m_overviewFullStackSingleCheckbox = ui->overviewFullStackSingleCheckbox;
-			m_overviewFullStackMosaicCheckbox = ui->overviewFullStackMosaicCheckbox;
+			m_overviewFullStackCheckbox = ui->overviewFullStackCheckbox;
 			m_capturePerPointBrightfieldCheckbox = ui->capturePerPointBrightfieldCheckbox;
 			m_perPointBrightfieldEveryNSpinBox = ui->perPointBrightfieldEveryNSpinBox;
 			m_perPointBrightfieldDuringAcquisitionCheckbox = ui->perPointBrightfieldDuringAcquisitionCheckbox;
@@ -810,9 +809,10 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 					return;
 				}
 				m_Brillouin->settings.overviewBrightfieldFullGrid = false;
-				// Refreshes which of the two full-z-stack checkboxes is enabled (see
-				// updateBrillouinSettings()) - they're mode-scoped, so switching coverage
-				// mode changes which one currently applies.
+				// Refreshes the full-z-stack checkbox's checked state (see
+				// updateBrillouinSettings()) - it's mode-scoped internally (separate
+				// single-image/mosaic settings), so switching coverage mode changes
+				// which underlying setting it now shows/writes.
 				updateBrillouinSettings();
 				updateEstimatedAcquisitionTime();
 				updateOverviewTileOutlines();
@@ -828,13 +828,14 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				updateOverviewTileOutlines();
 			});
 
-			connect(m_overviewFullStackSingleCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
-				m_Brillouin->settings.overviewBrightfieldFullStackSingle = enabled;
-				updateEstimatedAcquisitionTime();
-			});
-
-			connect(m_overviewFullStackMosaicCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
-				m_Brillouin->settings.overviewBrightfieldFullStackMosaic = enabled;
+			connect(m_overviewFullStackCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				// Writes into whichever coverage mode is currently active - see
+				// overviewFullStackCheckbox's tooltip and updateBrillouinSettings().
+				if (m_Brillouin->settings.overviewBrightfieldFullGrid) {
+					m_Brillouin->settings.overviewBrightfieldFullStackMosaic = enabled;
+				} else {
+					m_Brillouin->settings.overviewBrightfieldFullStackSingle = enabled;
+				}
 				updateEstimatedAcquisitionTime();
 			});
 
@@ -5881,15 +5882,14 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 			m_overviewFullGridRadio->setChecked(m_Brillouin->settings.overviewBrightfieldFullGrid);
 			m_overviewFullGridRadio->setEnabled(overviewPossible);
 		}
-		if (m_overviewFullStackSingleCheckbox) {
-			const QSignalBlocker blocker(*m_overviewFullStackSingleCheckbox);
-			m_overviewFullStackSingleCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldFullStackSingle);
-			m_overviewFullStackSingleCheckbox->setEnabled(overviewPossible && !m_Brillouin->settings.overviewBrightfieldFullGrid);
-		}
-		if (m_overviewFullStackMosaicCheckbox) {
-			const QSignalBlocker blocker(*m_overviewFullStackMosaicCheckbox);
-			m_overviewFullStackMosaicCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldFullStackMosaic);
-			m_overviewFullStackMosaicCheckbox->setEnabled(overviewPossible && m_Brillouin->settings.overviewBrightfieldFullGrid);
+		if (m_overviewFullStackCheckbox) {
+			const QSignalBlocker blocker(*m_overviewFullStackCheckbox);
+			m_overviewFullStackCheckbox->setChecked(
+				m_Brillouin->settings.overviewBrightfieldFullGrid
+				? m_Brillouin->settings.overviewBrightfieldFullStackMosaic
+				: m_Brillouin->settings.overviewBrightfieldFullStackSingle
+			);
+			m_overviewFullStackCheckbox->setEnabled(overviewPossible);
 		}
 		updateOverviewTileOutlines();
 	}

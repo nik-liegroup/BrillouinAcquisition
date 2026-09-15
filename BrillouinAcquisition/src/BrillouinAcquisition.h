@@ -160,8 +160,7 @@ private:
 	QCheckBox* m_saveOverviewBrightfieldPerZCheckbox{ nullptr };
 	QRadioButton* m_overviewSingleImageRadio{ nullptr };
 	QRadioButton* m_overviewFullGridRadio{ nullptr };
-	QCheckBox* m_overviewFullStackSingleCheckbox{ nullptr };
-	QCheckBox* m_overviewFullStackMosaicCheckbox{ nullptr };
+	QCheckBox* m_overviewFullStackCheckbox{ nullptr };
 	QCheckBox* m_capturePerPointBrightfieldCheckbox{ nullptr };
 	QSpinBox* m_perPointBrightfieldEveryNSpinBox{ nullptr };
 	QCheckBox* m_perPointBrightfieldDuringAcquisitionCheckbox{ nullptr };

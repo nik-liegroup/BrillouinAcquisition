@@ -1639,13 +1639,13 @@ QTabBar::tab:!selected {
                       <x>0</x>
                       <y>0</y>
                      <width>280</width>
-                     <height>663</height>
+                     <height>690</height>
                      </rect>
                     </property>
                     <property name="minimumSize">
                      <size>
                       <width>280</width>
-                      <height>663</height>
+                      <height>690</height>
                      </size>
                     </property>
                     <widget class="QGroupBox" name="acquisitionAOI">
@@ -1654,7 +1654,7 @@ QTabBar::tab:!selected {
                       <x>8</x>
                       <y>28</y>
                       <width>264</width>
-                       <height>356</height>
+                       <height>390</height>
                       </rect>
                      </property>
                      <property name="title">
@@ -2197,7 +2197,7 @@ QTabBar::tab:!selected {
                        <x>8</x>
                        <y>224</y>
                        <width>248</width>
-                       <height>124</height>
+                       <height>160</height>
                       </rect>
                      </property>
                      <layout class="QGridLayout" name="advancedPlanningGrid">
@@ -2227,7 +2227,7 @@ QTabBar::tab:!selected {
                         <property name="maximumSize">
                          <size>
                           <width>16777215</width>
-                          <height>120</height>
+                          <height>155</height>
                          </size>
                         </property>
                         <property name="title">
@@ -2317,7 +2317,7 @@ QTabBar::tab:!selected {
                             <string>Keep the beam block closed by default and only open it for a short margin around each actual camera exposure - not just during stage travel, but between frames at the same point, during a per-point brightfield capture, and everywhere else nothing is integrating. No-op if this scan controller has no Beam Block element.</string>
                            </property>
                            <property name="text">
-                            <string>Dose protection (beam off except while integrating)</string>
+                            <string>Dose protection</string>
                            </property>
                            <property name="checked">
                             <bool>false</bool>
@@ -2347,7 +2347,7 @@ QTabBar::tab:!selected {
                      <property name="geometry">
                        <rect>
                         <x>8</x>
-                       <y>498</y>
+                       <y>538</y>
                         <width>264</width>
                         <height>137</height>
                       </rect>
@@ -2593,7 +2593,7 @@ QTabBar::tab:!selected {
                      <property name="geometry">
                        <rect>
                         <x>8</x>
-                       <y>403</y>
+                       <y>443</y>
                         <width>264</width>
                         <height>89</height>
                       </rect>
@@ -3568,7 +3568,7 @@ QTabBar::tab:!selected {
                    <x>0</x>
                    <y>0</y>
                    <width>236</width>
-                   <height>430</height>
+                   <height>460</height>
                   </rect>
                  </property>
                  <property name="minimumSize">
@@ -3598,13 +3598,13 @@ QTabBar::tab:!selected {
                     <x>0</x>
                     <y>0</y>
                     <width>234</width>
-                    <height>430</height>
+                    <height>460</height>
                    </rect>
                   </property>
                   <property name="minimumSize">
                    <size>
                     <width>234</width>
-                    <height>430</height>
+                    <height>460</height>
                    </size>
                   </property>
                   <widget class="QPushButton" name="acquisitionStartFluorescence">
@@ -3866,7 +3866,7 @@ QTabBar::tab:!selected {
                      <x>8</x>
                      <y>250</y>
                      <width>218</width>
-                     <height>230</height>
+                     <height>195</height>
                     </rect>
                    </property>
                    <property name="title">
@@ -3925,26 +3925,16 @@ QTabBar::tab:!selected {
                      </widget>
                     </item>
                     <item row="3" column="0" colspan="2">
-                     <widget class="QCheckBox" name="overviewFullStackSingleCheckbox">
+                     <widget class="QCheckBox" name="overviewFullStackCheckbox">
                       <property name="toolTip">
-                       <string>When "Single image" above is the active coverage mode: capture a full brightfield z-stack per finished z slice instead of one flat image. Spans zMin..zMax (surface mapping off), or the global lowest-to-highest found surface offset by zMin/zMax (surface mapping on). Remembered independently of the mosaic's own z-stack toggle below.</string>
+                       <string>Capture a full brightfield z-stack per finished z slice instead of one flat image, at whichever coverage mode above is currently active (single image or mosaic tiles) - each mode remembers its own setting independently, so switching modes above may change this checkbox's state. Spans zMin..zMax (surface mapping off), or the global lowest-to-highest found surface offset by zMin/zMax (surface mapping on).</string>
                       </property>
                       <property name="text">
-                       <string>Full z-stack (single image)</string>
+                       <string>Full z-stack</string>
                       </property>
                      </widget>
                     </item>
                     <item row="4" column="0" colspan="2">
-                     <widget class="QCheckBox" name="overviewFullStackMosaicCheckbox">
-                      <property name="toolTip">
-                       <string>When "Full grid (mosaic)" above is the active coverage mode: capture a full brightfield z-stack per finished z slice at every tile instead of one flat image each. Spans zMin..zMax (surface mapping off), or the global lowest-to-highest found surface offset by zMin/zMax (surface mapping on). Remembered independently of the single image's own z-stack toggle above.</string>
-                      </property>
-                      <property name="text">
-                       <string>Full z-stack (mosaic)</string>
-                      </property>
-                     </widget>
-                    </item>
-                    <item row="6" column="0" colspan="2">
                      <widget class="QCheckBox" name="capturePerPointBrightfieldCheckbox">
                       <property name="toolTip">
                        <string>Capture a brightfield image at every measured grid point during the main acquisition (independent of the per-z overview above) - e.g. for post-hoc drift correction against each point's own image. Never before this point's Brillouin spectrum - either right after it (default, see below) or overlapped with it. Reuses the exposure/gain above.</string>
@@ -3954,14 +3944,14 @@ QTabBar::tab:!selected {
                       </property>
                      </widget>
                     </item>
-                    <item row="7" column="0">
+                    <item row="5" column="0">
                      <widget class="QLabel" name="perPointBrightfieldEveryNLabel">
                       <property name="text">
                        <string>Every N points</string>
                       </property>
                      </widget>
                     </item>
-                    <item row="7" column="1">
+                    <item row="5" column="1">
                      <widget class="QSpinBox" name="perPointBrightfieldEveryNSpinBox">
                       <property name="toolTip">
                        <string>N: capture every Nth measured point (1 = every point), counted in acquisition order.</string>
@@ -3974,13 +3964,13 @@ QTabBar::tab:!selected {
                       </property>
                      </widget>
                     </item>
-                    <item row="8" column="0" colspan="2">
+                    <item row="6" column="0" colspan="2">
                      <widget class="QCheckBox" name="perPointBrightfieldDuringAcquisitionCheckbox">
                       <property name="toolTip">
                        <string>On: overlap the brightfield exposure with this point's Brillouin exposure instead of switching presets before/after it - adds no extra time on a properly synchronized setup, at the cost of spectrum quality (the brightfield illumination is then present during the actual spectral exposure too). Verify on your own setup before trusting it for real data. Off (default): a clean, sequential capture right after each point's spectrum, which costs more time but never touches the spectrum itself.</string>
                       </property>
                       <property name="text">
-                       <string>Capture during acquisition (no extra time, may affect spectrum quality)</string>
+                       <string>Capture during acquisition</string>
                       </property>
                      </widget>
                     </item>
