@@ -114,10 +114,13 @@ struct BRILLOUIN_SETTINGS {
 			overviewBrightfieldExposureMs = settings.overviewBrightfieldExposureMs;
 			overviewBrightfieldGain = settings.overviewBrightfieldGain;
 			overviewBrightfieldFullGrid = settings.overviewBrightfieldFullGrid;
-			overviewBrightfieldSampledGrid = settings.overviewBrightfieldSampledGrid;
-			overviewBrightfieldBin = settings.overviewBrightfieldBin;
-			overviewBrightfieldFullStack = settings.overviewBrightfieldFullStack;
+			overviewBrightfieldFullStackSingle = settings.overviewBrightfieldFullStackSingle;
+			overviewBrightfieldFullStackMosaic = settings.overviewBrightfieldFullStackMosaic;
+			capturePerPointBrightfield = settings.capturePerPointBrightfield;
+			perPointBrightfieldEveryN = settings.perPointBrightfieldEveryN;
+			perPointBrightfieldDuringAcquisition = settings.perPointBrightfieldDuringAcquisition;
 			useGridHysteresisCompensation = settings.useGridHysteresisCompensation;
+			useDoseProtection = settings.useDoseProtection;
 			camera = settings.camera;
 			return *this;
 		}
@@ -209,29 +212,67 @@ struct BRILLOUIN_SETTINGS {
 		// (false), tile enough camera-FOV-sized images (20% overlap) to cover the whole
 		// grid extent (true). Works in both absolute and relative grid coordinate mode.
 		bool overviewBrightfieldFullGrid{ false };
-		// "Sampled grid points": an independent, additive option (not exclusive with
-		// overviewBrightfieldFullGrid above) - additionally captures one flat-z image at a
-		// coarse-binned subset of the real measurement grid (overviewBrightfieldBin, same
-		// coarse-binning logic as preScanXYBin) alongside whichever overview image is
-		// configured. A full stack (see overviewBrightfieldFullStack below) never applies
-		// to these - they always capture a single flat image per point.
-		bool overviewBrightfieldSampledGrid{ false };
-		int overviewBrightfieldBin{ 1 };
-		// If false, one flat-z overview image per finished z slice (legacy behaviour: the
-		// plane's own zMin..zMax offset from the grid origin, no surface-follow
-		// adjustment). If true, one full z-stack per finished z slice instead - spanning
-		// zMin..zMax (surface-follow off) or the global lowest-to-highest found surface,
-		// offset by zMin/zMax (surface-follow on), always sampled at zSteps points. Only
-		// ever applies to the overview image itself, never to "sampled grid points" above.
-		bool overviewBrightfieldFullStack{ false };
+		// Independent full-z-stack toggles, one per coverage mode (overviewBrightfieldFullGrid
+		// above chooses which one is actually in effect at any time - only ever one of the
+		// two, never both at once, but each remembers its own on/off state so switching
+		// coverage mode doesn't silently carry the other mode's choice over). If the active
+		// one is false, one flat-z overview image per finished z slice (legacy behaviour: the
+		// plane's own zMin..zMax offset from the grid origin, no surface-follow adjustment).
+		// If true, one full z-stack per finished z slice instead - spanning zMin..zMax
+		// (surface-follow off) or the global lowest-to-highest found surface, offset by
+		// zMin/zMax (surface-follow on), always sampled at zSteps points.
+		bool overviewBrightfieldFullStackSingle{ false };
+		bool overviewBrightfieldFullStackMosaic{ false };
+		// Captures a brightfield image at every perPointBrightfieldEveryN-th *measured* grid
+		// point during the main acquisition loop (runMeasurementPhase()) - independent of,
+		// and additive with, saveOverviewBrightfieldPerZ above (which only ever captures at
+		// the overview image's own xy point(s)/per-z cadence, not per actually-measured
+		// point). Meant for post-hoc drift correction against each point's own image, not a
+		// sample-wide overview. Off by default; reuses overviewBrightfieldExposureMs/Gain
+		// above rather than a second copy of the same two settings. Always captured right
+		// after that point's Brillouin spectrum finishes, or overlapped with it - see
+		// perPointBrightfieldDuringAcquisition below - never before it, so the spectrum
+		// itself is never at risk from a preset switch happening first.
+		bool capturePerPointBrightfield{ false };
+		// N: capture every Nth measured point (1 = every point), counted in acquisition
+		// order (the position's own index in m_orderedPositions), not xy/z grid index.
+		int perPointBrightfieldEveryN{ 1 };
+		// false (default, "after"): captured with a full, clean preset switch to
+		// Brightfield and back immediately after that point's Brillouin spectrum finishes -
+		// safest, but adds the switch + exposure + switch-back cost to every captured point.
+		// true ("during"): the brightfield camera's acquisition is started before that
+		// point's Brillouin exposure begins and only retrieved after it finishes, so the
+		// (normally much shorter) brightfield exposure/readout overlaps the Brillouin dwell
+		// time instead of adding to it - genuinely zero added wall-clock time on a properly
+		// synchronized setup, not just less than "after"'s cost. No preset switch either,
+		// since the excitation/detection path is left exactly as the Brillouin preset set
+		// it. The tradeoff: the brightfield illumination is then physically present during
+		// the actual spectral exposure too, which can contaminate the Brillouin signal
+		// depending on how optically isolated your two detection paths really are - verify
+		// on your own setup (e.g. compare a spectrum captured with this on vs off) before
+		// trusting it for real data, not assumed safe by this code.
+		bool perPointBrightfieldDuringAcquisition{ false };
 		// Whether stepping from one measurement grid point to the next approaches it from
 		// a consistent direction first (ScanControl::setPositionCompensated()) to cancel
 		// out stage hysteresis/backlash - accurate but costs an extra move + 100 ms settle
 		// per grid point. Off skips straight to the target (ScanControl::setPosition()) for
-		// faster stepping, at the cost of potential backlash error. Only affects the main
-		// grid-to-grid stepping in runMeasurementPhase(); the surface pre-scan always
-		// compensates, since accuracy matters more there than speed.
+		// faster stepping, at the cost of potential backlash error. Applies globally -
+		// every compensated move in this class (grid-to-grid stepping, the surface
+		// pre-scan's own z-stepping, the initial approach to the first point) goes through
+		// approachGridPosition(), which is what actually reads this flag; there is no
+		// separate "surface pre-scan always compensates" carve-out any more.
 		bool useGridHysteresisCompensation{ true };
+		// Closed is the default resting state for the scan controller's "Beam Block" element
+		// (the excitation laser's own shutter - see ScanControl::setBeamBlockOpen()) for the
+		// whole acquisition; it is only opened for a short, fixed margin immediately around
+		// each actual camera exposure (see Brillouin::acquireAndorFrame(), the one place
+		// every m_andor frame grab in this class goes through) and closed again right after -
+		// not just during stage travel between points, but between the two frames of a
+		// single point too, during a per-point brightfield capture, during a live
+		// calibration switch, and everywhere else nothing is actually integrating. No-op,
+		// and adds no delay, if the active scan controller has no Beam Block element
+		// (setBeamBlockOpen() itself checks this).
+		bool useDoseProtection{ false };
 
 		// ROI parameters
 		const double& xMin{ m_xMin };
@@ -423,12 +464,6 @@ public slots:
 	// tiled together - i.e. the outline of the area actually covered by that group's tiles,
 	// not each individual tile.
 	std::vector<std::pair<POINT2, POINT2>> overviewTileOutlinesUm() const;
-	// Coarse-binned real grid points (overviewBrightfieldBin), ROI-filtered and shifted
-	// into the same absolute frame overviewTileCentersXY() uses - the GUI live-view
-	// overlay draws these as markers for "sampled grid points", an option independent of
-	// (and additive to) the single-image/full-grid overview image - see
-	// overviewCapturePoints().
-	std::vector<POINT2> overviewSampledGridXY() const;
 	// The single grid-center point used by the "single image" coverage mode.
 	POINT2 overviewGridCenterXY() const;
 	// Coarse xy points (preScanXYBin) the surface pre-scan will actually measure, in the
@@ -518,35 +553,47 @@ private:
 	// (a previous drift between them here is what caused the ROI polygon overlay to land
 	// nowhere near its own roi-scan-plan-mask on relative-grid files).
 	POINT3 planPositionToGridFrame(const POINT3& planPosition) const;
-	// Shared by overviewSampledGridXY()/surfacePreScanGridXY(): coarseXYSamples(bin),
-	// ROI-filtered and shifted into the frame overviewTileCentersXY() uses.
+	// Shared by surfacePreScanGridXY(): coarseXYSamples(bin), ROI-filtered and shifted into
+	// the frame overviewTileCentersXY() uses.
 	std::vector<POINT2> coarseGridXYPoints(int bin) const;
 	// Flat plan z for a z-index - origin.z + directionsZ[zIndex], no surface-follow
-	// adjustment. This is the sole z used for "sampled grid points" (always) and for the
-	// overview image when overviewBrightfieldFullStack is off.
+	// adjustment. This is the sole z used for the overview image when the active coverage
+	// mode's own full-stack toggle (overviewBrightfieldFullStackSingle/Mosaic) is off.
 	double overviewFlatZAbs(int zIndex, const std::vector<double>& directionsZ) const;
 	// xy point(s) for the overview image itself: the true grid center (single image) or
-	// mosaic tile centers (full grid) - NOT "sampled grid points", which is an independent,
-	// additive option handled separately in overviewCapturePoints().
+	// mosaic tile centers (full grid).
 	std::vector<POINT2> overviewImageXY() const;
 	// z-targets to capture at the overview image's xy point(s) for the given z-index: a
-	// single flat value (overviewFlatZAbs(), overviewBrightfieldFullStack off), or zSteps
-	// values spanning either the grid's own zMin..zMax (surface-follow off) or the global
+	// single flat value (overviewFlatZAbs(), active full-stack toggle off), or zSteps values
+	// spanning either the grid's own zMin..zMax (surface-follow off) or the global
 	// lowest-to-highest found surface offset by zMin/zMax (surface-follow on, see
 	// m_surfaceZMinAbs/m_surfaceZMaxAbs).
 	std::vector<double> overviewStackZAbs(int zIndex, const std::vector<double>& directionsZ) const;
 	// One xy/z target per image actually captured for this z-index: the overview image's
 	// xy point(s) (see overviewImageXY()) each paired with overviewStackZAbs() (so a full
-	// stack, if enabled, only ever applies here), plus - additionally, independently of the
-	// overview image's own settings - "sampled grid points" (overviewSampledGridXY()) if
-	// that option is on, each paired with a single flat overviewFlatZAbs() (a full stack
-	// never applies to sampled grid points, no matter how many of them there are).
+	// stack, if enabled, only ever applies here).
 	struct OverviewCapturePoint {
 		POINT2 xy;
 		std::vector<double> zAbs;
 	};
 	std::vector<OverviewCapturePoint> overviewCapturePoints(int zIndex, const std::vector<double>& directionsZ) const;
 	void captureOverviewBrightfield(std::unique_ptr <StorageWrapper>& storage, int imageNumber, int zIndex, const POINT3& position);
+	// Per-point brightfield capture (capturePerPointBrightfield) - independent of the per-z
+	// overview above. See their own doc comments (Brillouin.cpp) for the "after" vs "during"
+	// (perPointBrightfieldDuringAcquisition) split and the negative-imageNumber convention
+	// that keeps them from colliding with captureOverviewBrightfield()'s own numbering if
+	// both are enabled in the same run.
+	bool shouldCapturePerPointBrightfield(gsl::index ll) const;
+	void capturePerPointBrightfieldImage(std::unique_ptr<StorageWrapper>& storage, gsl::index ll, const POINT3& position);
+	std::optional<CAMERA_SETTINGS> startPerPointBrightfieldDuring();
+	void finishPerPointBrightfieldDuring(
+		std::unique_ptr<StorageWrapper>& storage, gsl::index ll, const POINT3& position, CAMERA_SETTINGS brightfieldSettings);
+	// The one place every m_andor frame grab in this class goes through - see its own doc
+	// comment (Brillouin.cpp) for how dose protection (useDoseProtection) is folded in here
+	// rather than into approachGridPosition() or any single call site, and for openBeam/
+	// closeBeam (grabbing several frames back-to-back at one position without flapping the
+	// shutter between them).
+	void acquireAndorFrame(std::byte* buffer, bool openBeam = true, bool closeBeam = true);
 	// Moves to a grid point during runMeasurementPhase(), honoring
 	// useGridHysteresisCompensation (compensated approach vs. a direct move).
 	void approachGridPosition(const POINT3& position);

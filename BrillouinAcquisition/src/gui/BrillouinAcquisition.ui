@@ -2311,6 +2311,19 @@ QTabBar::tab:!selected {
                            </property>
                           </widget>
                          </item>
+                         <item row="4" column="0" colspan="2">
+                          <widget class="QCheckBox" name="doseProtectionCheckbox">
+                           <property name="toolTip">
+                            <string>Keep the beam block closed by default and only open it for a short margin around each actual camera exposure - not just during stage travel, but between frames at the same point, during a per-point brightfield capture, and everywhere else nothing is integrating. No-op if this scan controller has no Beam Block element.</string>
+                           </property>
+                           <property name="text">
+                            <string>Dose protection (beam off except while integrating)</string>
+                           </property>
+                           <property name="checked">
+                            <bool>false</bool>
+                           </property>
+                          </widget>
+                         </item>
                         </layout>
                        </widget>
                       </item>
@@ -3853,7 +3866,7 @@ QTabBar::tab:!selected {
                      <x>8</x>
                      <y>250</y>
                      <width>218</width>
-                     <height>168</height>
+                     <height>230</height>
                     </rect>
                    </property>
                    <property name="title">
@@ -3912,42 +3925,62 @@ QTabBar::tab:!selected {
                      </widget>
                     </item>
                     <item row="3" column="0" colspan="2">
-                     <widget class="QCheckBox" name="overviewSampledGridCheckbox">
+                     <widget class="QCheckBox" name="overviewFullStackSingleCheckbox">
                       <property name="toolTip">
-                       <string>Additionally capture a single flat image at every coarse-binned real grid point in the plane (independent of, and combinable with, the overview image above), using the same coarse-binning as surface mapping's "Grid bin" (Surface scanning tab). Never affected by "Full z-stack" below.</string>
+                       <string>When "Single image" above is the active coverage mode: capture a full brightfield z-stack per finished z slice instead of one flat image. Spans zMin..zMax (surface mapping off), or the global lowest-to-highest found surface offset by zMin/zMax (surface mapping on). Remembered independently of the mosaic's own z-stack toggle below.</string>
                       </property>
                       <property name="text">
-                       <string>Sampled grid points</string>
+                       <string>Full z-stack (single image)</string>
                       </property>
                      </widget>
                     </item>
-                    <item row="4" column="0">
-                     <widget class="QLabel" name="overviewBinLabel">
+                    <item row="4" column="0" colspan="2">
+                     <widget class="QCheckBox" name="overviewFullStackMosaicCheckbox">
+                      <property name="toolTip">
+                       <string>When "Full grid (mosaic)" above is the active coverage mode: capture a full brightfield z-stack per finished z slice at every tile instead of one flat image each. Spans zMin..zMax (surface mapping off), or the global lowest-to-highest found surface offset by zMin/zMax (surface mapping on). Remembered independently of the single image's own z-stack toggle above.</string>
+                      </property>
                       <property name="text">
-                       <string>Bin</string>
+                       <string>Full z-stack (mosaic)</string>
                       </property>
                      </widget>
                     </item>
-                    <item row="4" column="1">
-                     <widget class="QSpinBox" name="overviewBinSpinBox">
+                    <item row="6" column="0" colspan="2">
+                     <widget class="QCheckBox" name="capturePerPointBrightfieldCheckbox">
                       <property name="toolTip">
-                       <string>N: take an image every Nth grid point per plane (does not skip z planes).</string>
+                       <string>Capture a brightfield image at every measured grid point during the main acquisition (independent of the per-z overview above) - e.g. for post-hoc drift correction against each point's own image. Never before this point's Brillouin spectrum - either right after it (default, see below) or overlapped with it. Reuses the exposure/gain above.</string>
+                      </property>
+                      <property name="text">
+                       <string>Capture BF at each point</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="7" column="0">
+                     <widget class="QLabel" name="perPointBrightfieldEveryNLabel">
+                      <property name="text">
+                       <string>Every N points</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="7" column="1">
+                     <widget class="QSpinBox" name="perPointBrightfieldEveryNSpinBox">
+                      <property name="toolTip">
+                       <string>N: capture every Nth measured point (1 = every point), counted in acquisition order.</string>
                       </property>
                       <property name="minimum">
                        <number>1</number>
                       </property>
                       <property name="maximum">
-                       <number>1000</number>
+                       <number>100000</number>
                       </property>
                      </widget>
                     </item>
-                    <item row="5" column="0" colspan="2">
-                     <widget class="QCheckBox" name="overviewFullStackCheckbox">
+                    <item row="8" column="0" colspan="2">
+                     <widget class="QCheckBox" name="perPointBrightfieldDuringAcquisitionCheckbox">
                       <property name="toolTip">
-                       <string>Capture a full brightfield z-stack per finished z slice instead of a single image: spans zMin..zMax (surface mapping off), or the global lowest-to-highest found surface offset by zMin/zMax (surface mapping on). Off restores the flat single-image-per-z behaviour. Only applies to "Single image" and "Full grid (mosaic)" - disabled for "Sampled grid points", which always captures a single flat image per point.</string>
+                       <string>On: overlap the brightfield exposure with this point's Brillouin exposure instead of switching presets before/after it - adds no extra time on a properly synchronized setup, at the cost of spectrum quality (the brightfield illumination is then present during the actual spectral exposure too). Verify on your own setup before trusting it for real data. Off (default): a clean, sequential capture right after each point's spectrum, which costs more time but never touches the spectrum itself.</string>
                       </property>
                       <property name="text">
-                       <string>Full z-stack</string>
+                       <string>Capture during acquisition (no extra time, may affect spectrum quality)</string>
                       </property>
                      </widget>
                     </item>
