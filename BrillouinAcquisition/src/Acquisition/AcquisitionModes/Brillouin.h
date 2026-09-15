@@ -599,6 +599,24 @@ private:
 	// to occupy "empty". Empty if additionalBoundaryPoints was 0 or none of them found a
 	// surface.
 	std::vector<POINT3> m_surfaceBoundaryPointsUm;
+	// The full (z, metric) trace measured at each coarse pre-scan column, in the order the
+	// samples were actually taken (seed, then rewind steps if any, then the forward walk,
+	// then the verification window on a candidate crossing) - unlike m_surfacePreScanMetric
+	// (which only keeps the single found/last-measured value), this is what lets a reader
+	// reconstruct and plot the actual intensity-drop curve behind each column's result, not
+	// just its outcome. Rectangular [xSamples.size(), ySamples.size(),
+	// m_surfaceCurveMaxSamples]-shaped, flat-indexed (xi * ySamples.size() + yi) *
+	// m_surfaceCurveMaxSamples + k for sample k (mirroring the other coarse arrays' x-major
+	// convention), NaN-padded past each column's own m_surfaceCurveSampleCounts - sized to
+	// the longest column's trace actually needed during this scan, not a fixed worst-case
+	// bound. Empty under the same conditions m_surfacePreScanXUm is.
+	std::vector<double> m_surfaceCurveZUm;
+	std::vector<double> m_surfaceCurveMetric;
+	// Per coarse-grid cell (flat-indexed xi * ySamples.size() + yi, same as
+	// m_surfacePreScanFoundMask), how many samples that column's trace actually holds in
+	// m_surfaceCurveZUm/Metric before the NaN padding starts.
+	std::vector<double> m_surfaceCurveSampleCounts;
+	int m_surfaceCurveMaxSamples{ 0 };
 	// The medium-reference-derived drop threshold actually used by runSurfacePreScan() -
 	// (1 - surfaceDropFraction) * mediumReferenceValue, or NaN if mediumReferenceValue was
 	// ~0 (see runSurfacePreScan()). Saved directly (see runMeasurementPhase()) so a reader
