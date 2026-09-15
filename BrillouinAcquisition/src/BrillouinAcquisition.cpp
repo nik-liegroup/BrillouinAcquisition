@@ -9,7 +9,14 @@
 
 #include <cmath>
 #include <algorithm>
+#include <array>
 #include <limits>
+
+#include <QRegularExpression>
+#include <QFileInfo>
+#include <QCoreApplication>
+#include <QDir>
+#include <QDateTime>
 
 using namespace std::filesystem;
 
@@ -3568,13 +3575,161 @@ void BrillouinAcquisition::on_action_Voltage_calibration_load_triggered() {
 }
 
 void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
+	// setupUi()/connect() must run exactly once per Ui object - calling setupUi() again on an
+	// already-set-up QDialog builds an entirely new, unparented set of child widgets each time
+	// (the old layout refuses to be replaced), leaving the *visible* dialog showing stale
+	// widgets that the (now repointed) Ui struct - and everything wired to it - no longer
+	// touches. That was the actual cause of values silently not updating (and one dialog's
+	// worth of orphaned old widgets rendering wherever Qt happened to place them) after
+	// reopening a dialog more than once in a session; every "connect()" reconnecting here on
+	// every open would additionally have piled up duplicate signal/slot connections. So: only
+	// the widget construction/wiring happens inside this guard, everything below it re-runs on
+	// every open to refresh values.
 	if (!m_scaleCalibrationDialog) {
 		m_scaleCalibrationDialog = new QDialog(this, Qt::WindowTitleHint | Qt::WindowCloseButtonHint);
-	}
-	m_scaleCalibrationDialogUi.setupUi(m_scaleCalibrationDialog);
+		m_scaleCalibrationDialogUi.setupUi(m_scaleCalibrationDialog);
+		m_scaleCalibrationDialog->setWindowTitle("Scale calibration");
+		m_scaleCalibrationDialog->setWindowModality(Qt::ApplicationModal);
 
-	m_scaleCalibrationDialog->setWindowTitle("Scale calibration");
-	m_scaleCalibrationDialog->setWindowModality(Qt::ApplicationModal);
+		// Connect close signal
+		auto connection = QWidget::connect(
+			m_scaleCalibrationDialog,
+			&QDialog::rejected,
+			this,
+			[this]() { closeScaleCalibrationDialog(); }
+		);
+
+		// Connect push buttons
+		connection = QWidget::connect(
+			m_scaleCalibrationDialogUi.button_cancel,
+			&QPushButton::clicked,
+			this,
+			[this]() { closeScaleCalibrationDialog(); }
+		);
+		connection = QWidget::connect(
+			m_scaleCalibrationDialogUi.button_acquire,
+			&QPushButton::clicked,
+			this,
+			[this]() { scaleCalibrationButtonStartScaleCycle_clicked(); }
+		);
+		connection = QWidget::connect(
+			m_scaleCalibrationDialogUi.button_save,
+			&QPushButton::clicked,
+			this,
+			[this]() { scaleCalibrationButtonSaveFov_clicked(); }
+		);
+		connection = QWidget::connect(
+			m_scaleCalibrationDialogUi.button_saveScale,
+			&QPushButton::clicked,
+			this,
+			[this]() { scaleCalibrationButtonSaveScale_clicked(); }
+		);
+		connection = QWidget::connect(
+			m_scaleCalibration,
+			&ScaleCalibration::s_scaleCalibrationCycleProgress,
+			this,
+			[this](int currentCycle, int totalCycles) { updateScaleCalibrationCycleProgress(currentCycle, totalCycles); }
+		);
+
+		// Connect translation distance boxes
+		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+			m_scaleCalibrationDialogUi.dx,
+			&QDoubleSpinBox::valueChanged,
+			this,
+			[this](double dx) { setTranslationDistanceX(dx); }
+		);
+		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+			m_scaleCalibrationDialogUi.dy,
+			&QDoubleSpinBox::valueChanged,
+			this,
+			[this](double dy) { setTranslationDistanceY(dy); }
+		);
+
+		// Connect scale calibration boxes. Only pixToMicrometer is shown/editable in the dialog
+		// now (micrometerToPix is still stored internally - ScaleCalibrationHelper keeps both
+		// directions in sync from whichever one is edited - just not displayed twice) so there
+		// is no micrometerToPix wiring here anymore.
+		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+			m_scaleCalibrationDialogUi.pixToMicrometerX_x,
+			&QDoubleSpinBox::valueChanged,
+			this,
+			[this](double value) { setPixToMicrometerX_x(value); }
+		);
+		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+			m_scaleCalibrationDialogUi.pixToMicrometerX_y,
+			&QDoubleSpinBox::valueChanged,
+			this,
+			[this](double value) { setPixToMicrometerX_y(value); }
+		);
+		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+			m_scaleCalibrationDialogUi.pixToMicrometerY_x,
+			&QDoubleSpinBox::valueChanged,
+			this,
+			[this](double value) { setPixToMicrometerY_x(value); }
+		);
+		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+			m_scaleCalibrationDialogUi.pixToMicrometerY_y,
+			&QDoubleSpinBox::valueChanged,
+			this,
+			[this](double value) { setPixToMicrometerY_y(value); }
+		);
+
+		// Connect FOV-offset boxes - objectiveName/magnification are read-only (disabled in the
+		// .ui, refreshed from m_objectiveSlotNames by refreshScaleCalibrationObjectiveDisplay()),
+		// not user-editable, so unlike every other box here they have no valueChanged/textEdited
+		// wiring at all.
+		connection = QWidget::connect(
+			m_scaleCalibrationDialogUi.hasFovOffsetCheckbox,
+			&QCheckBox::toggled,
+			this,
+			[this](bool checked) { setHasFovOffset(checked); }
+		);
+		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+			m_scaleCalibrationDialogUi.fovOffsetX,
+			&QDoubleSpinBox::valueChanged,
+			this,
+			[this](double value) { setFovOffsetX(value); }
+		);
+		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+			m_scaleCalibrationDialogUi.fovOffsetY,
+			&QDoubleSpinBox::valueChanged,
+			this,
+			[this](double value) { setFovOffsetY(value); }
+		);
+		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+			m_scaleCalibrationDialogUi.fovOffsetSigma,
+			&QDoubleSpinBox::valueChanged,
+			this,
+			[this](double value) { setFovOffsetSigma(value); }
+		);
+		// Automated multi-cycle FOV-offset calibration
+		connection = QWidget::connect(
+			m_scaleCalibrationDialogUi.button_startObjectiveCycle,
+			&QPushButton::clicked,
+			this,
+			[this]() { scaleCalibrationButtonStartObjectiveCycle_clicked(); }
+		);
+		connection = QWidget::connect(
+			m_scaleCalibrationDialogUi.button_continueObjectiveCycle,
+			&QPushButton::clicked,
+			this,
+			[this]() { scaleCalibrationButtonContinueObjectiveCycle_clicked(); }
+		);
+		connection = QWidget::connect(
+			m_scaleCalibrationDialogUi.button_abortObjectiveCycle,
+			&QPushButton::clicked,
+			this,
+			[this]() { scaleCalibrationButtonAbortObjectiveCycle_clicked(); }
+		);
+		connection = QWidget::connect(
+			m_scaleCalibration,
+			&ScaleCalibration::s_objectiveCycleProgress,
+			this,
+			[this](int currentCycle, int totalCycles, bool waitingForContinue) {
+				updateObjectiveCycleProgress(currentCycle, totalCycles, waitingForContinue);
+			}
+		);
+	}
 
 	if (!m_brightfieldCamera) {
 		m_scaleCalibrationDialogUi.button_acquire->setDisabled(true);
@@ -3582,163 +3737,15 @@ void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 		m_scaleCalibrationDialogUi.button_acquire->setDisabled(false);
 	}
 
-	// Connect close signal
-	auto connection = QWidget::connect(
-		m_scaleCalibrationDialog,
-		&QDialog::rejected,
-		this,
-		[this]() { closeScaleCalibrationDialog(); }
-	);
-
-	// Connect push buttons
-	connection = QWidget::connect(
-		m_scaleCalibrationDialogUi.button_cancel,
-		&QPushButton::clicked,
-		this,
-		[this]() { closeScaleCalibrationDialog(); }
-	);
-	connection = QWidget::connect(
-		m_scaleCalibrationDialogUi.button_apply,
-		&QPushButton::clicked,
-		this,
-		[this]() { scaleCalibrationButtonApply_clicked(); }
-	);
-	connection = QWidget::connect(
-		m_scaleCalibrationDialogUi.button_acquire,
-		&QPushButton::clicked,
-		this,
-		[this]() { scaleCalibrationButtonAcquire_clicked(); }
-	);
-	connection = QWidget::connect(
-		m_scaleCalibrationDialogUi.button_save,
-		&QPushButton::clicked,
-		this,
-		[this]() { scaleCalibrationButtonSave_clicked(); }
-	);
-	connection = QWidget::connect(
-		m_scaleCalibrationDialogUi.button_fovOffsetReference,
-		&QPushButton::clicked,
-		this,
-		[this]() { scaleCalibrationButtonFovOffsetReference_clicked(); }
-	);
-	connection = QWidget::connect(
-		m_scaleCalibrationDialogUi.button_fovOffsetMeasure,
-		&QPushButton::clicked,
-		this,
-		[this]() { scaleCalibrationButtonFovOffsetMeasure_clicked(); }
-	);
-
-	// Connect translation distance boxes
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.dx,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double dx) { setTranslationDistanceX(dx); }
-	);
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.dy,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double dy) { setTranslationDistanceY(dy); }
-	);
-
-	// Connect scale calibration boxes
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.micrometerToPixX_x,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double value) { setMicrometerToPixX_x(value); }
-	);
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.micrometerToPixX_y,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double value) { setMicrometerToPixX_y(value); }
-	);
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.micrometerToPixY_x,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double value) { setMicrometerToPixY_x(value); }
-	);
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.micrometerToPixY_y,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double value) { setMicrometerToPixY_y(value); }
-	);
-
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.pixToMicrometerX_x,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double value) { setPixToMicrometerX_x(value); }
-	);
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.pixToMicrometerX_y,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double value) { setPixToMicrometerX_y(value); }
-	);
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.pixToMicrometerY_x,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double value) { setPixToMicrometerY_x(value); }
-	);
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.pixToMicrometerY_y,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double value) { setPixToMicrometerY_y(value); }
-	);
-
-	// Connect objective-identity/FOV-offset boxes
-	connection = QWidget::connect(
-		m_scaleCalibrationDialogUi.objectiveName,
-		&QLineEdit::textEdited,
-		this,
-		[this](const QString& name) { setObjectiveName(name); }
-	);
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.magnification,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double value) { setMagnification(value); }
-	);
-	connection = QWidget::connect(
-		m_scaleCalibrationDialogUi.referenceObjectiveName,
-		&QLineEdit::textEdited,
-		this,
-		[this](const QString& name) { setReferenceObjectiveName(name); }
-	);
-	connection = QWidget::connect(
-		m_scaleCalibrationDialogUi.hasFovOffsetCheckbox,
-		&QCheckBox::toggled,
-		this,
-		[this](bool checked) { setHasFovOffset(checked); }
-	);
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.fovOffsetX,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double value) { setFovOffsetX(value); }
-	);
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.fovOffsetY,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double value) { setFovOffsetY(value); }
-	);
-	connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
-		m_scaleCalibrationDialogUi.fovOffsetSigma,
-		&QDoubleSpinBox::valueChanged,
-		this,
-		[this](double value) { setFovOffsetSigma(value); }
-	);
-
 	// Initialize the scaleCalibration
 	m_scaleCalibration->initialize();
+
+	populateObjectivePickerCombos();
+	refreshScaleCalibrationObjectiveDisplay();
+	m_scaleCalibrationDialogUi.button_continueObjectiveCycle->setEnabled(false);
+	m_scaleCalibrationDialogUi.button_abortObjectiveCycle->setEnabled(false);
+	m_scaleCalibrationDialogUi.objectiveCycleStatusLabel->setText("");
+	m_scaleCalibrationDialogUi.scaleCalibrationCycleStatusLabel->setText("");
 
 	m_scaleCalibrationDialog->show();
 }
@@ -3751,21 +3758,13 @@ void BrillouinAcquisition::updateScaleCalibrationTranslationValue(POINT2 transla
 
 void BrillouinAcquisition::updateScaleCalibrationData(ScaleCalibrationData scaleCalibration) {
 	// We have to block the signals so that programmatically setting new values
-	// doesn't trigger a new round of calculations
-	const QSignalBlocker blocker1(m_scaleCalibrationDialogUi.micrometerToPixX_x);
-	const QSignalBlocker blocker2(m_scaleCalibrationDialogUi.micrometerToPixX_y);
-	const QSignalBlocker blocker3(m_scaleCalibrationDialogUi.micrometerToPixY_x);
-	const QSignalBlocker blocker4(m_scaleCalibrationDialogUi.micrometerToPixY_y);
-
+	// doesn't trigger a new round of calculations. Only pixToMicrometer is shown in the dialog -
+	// micrometerToPix is still tracked internally (see the .ui connect() comment above) but has
+	// no widget here to update.
 	const QSignalBlocker blocker5(m_scaleCalibrationDialogUi.pixToMicrometerX_x);
 	const QSignalBlocker blocker6(m_scaleCalibrationDialogUi.pixToMicrometerX_y);
 	const QSignalBlocker blocker7(m_scaleCalibrationDialogUi.pixToMicrometerY_x);
 	const QSignalBlocker blocker8(m_scaleCalibrationDialogUi.pixToMicrometerY_y);
-
-	m_scaleCalibrationDialogUi.micrometerToPixX_x->setValue(scaleCalibration.micrometerToPixX.x);
-	m_scaleCalibrationDialogUi.micrometerToPixX_y->setValue(scaleCalibration.micrometerToPixX.y);
-	m_scaleCalibrationDialogUi.micrometerToPixY_x->setValue(scaleCalibration.micrometerToPixY.x);
-	m_scaleCalibrationDialogUi.micrometerToPixY_y->setValue(scaleCalibration.micrometerToPixY.y);
 
 	m_scaleCalibrationDialogUi.pixToMicrometerX_x->setValue(scaleCalibration.pixToMicrometerX.x);
 	m_scaleCalibrationDialogUi.pixToMicrometerX_y->setValue(scaleCalibration.pixToMicrometerX.y);
@@ -3774,21 +3773,27 @@ void BrillouinAcquisition::updateScaleCalibrationData(ScaleCalibrationData scale
 }
 
 void BrillouinAcquisition::updateObjectiveCalibrationData(ObjectiveCalibrationData calibration) {
-	const QSignalBlocker blocker1(m_scaleCalibrationDialogUi.objectiveName);
-	const QSignalBlocker blocker2(m_scaleCalibrationDialogUi.magnification);
-	const QSignalBlocker blocker3(m_scaleCalibrationDialogUi.referenceObjectiveName);
+	// objectiveName/magnification are NOT set here - they are read-only, driven by
+	// m_objectiveSlotNames (refreshScaleCalibrationObjectiveDisplay()), not by whatever a
+	// calibration file/measurement happens to have stored for them.
 	const QSignalBlocker blocker4(m_scaleCalibrationDialogUi.hasFovOffsetCheckbox);
 	const QSignalBlocker blocker5(m_scaleCalibrationDialogUi.fovOffsetX);
 	const QSignalBlocker blocker6(m_scaleCalibrationDialogUi.fovOffsetY);
 	const QSignalBlocker blocker7(m_scaleCalibrationDialogUi.fovOffsetSigma);
+	const QSignalBlocker blocker8(m_scaleCalibrationDialogUi.objectiveCycleFovOffsetSigma);
+	const QSignalBlocker blocker9(m_scaleCalibrationDialogUi.scaleCalibrationSigma);
 
-	m_scaleCalibrationDialogUi.objectiveName->setText(QString::fromStdString(calibration.objectiveName));
-	m_scaleCalibrationDialogUi.magnification->setValue(calibration.magnification);
-	m_scaleCalibrationDialogUi.referenceObjectiveName->setText(QString::fromStdString(calibration.referenceObjectiveName));
 	m_scaleCalibrationDialogUi.hasFovOffsetCheckbox->setChecked(calibration.hasFovOffset);
 	m_scaleCalibrationDialogUi.fovOffsetX->setValue(calibration.fovOffsetUm.x);
 	m_scaleCalibrationDialogUi.fovOffsetY->setValue(calibration.fovOffsetUm.y);
 	m_scaleCalibrationDialogUi.fovOffsetSigma->setValue(calibration.fovOffsetSigmaUm);
+	// Read-only mirror of the same FOV-offset sigma, shown inside "Automated calibration: FOV"
+	// itself so it is visible right next to Start/Continue/Abort without also scrolling up to
+	// the FOV-center offset box.
+	m_scaleCalibrationDialogUi.objectiveCycleFovOffsetSigma->setValue(calibration.fovOffsetSigmaUm);
+	// Read-only display of the scale calibration's own repeatability (see
+	// ScaleCalibration::startScaleCalibrationCycle()) inside "Automated calibration: Scale".
+	m_scaleCalibrationDialogUi.scaleCalibrationSigma->setValue(calibration.scaleCalibrationSigmaUm);
 }
 
 void BrillouinAcquisition::closeScaleCalibrationDialog() {
@@ -3813,54 +3818,139 @@ void BrillouinAcquisition::showScaleCalibrationStatus(std::string title, std::st
 	msgBox.exec();
 }
 
-void BrillouinAcquisition::scaleCalibrationButtonApply_clicked() {
+void BrillouinAcquisition::scaleCalibrationButtonSaveScale_clicked() {
 	QMetaObject::invokeMethod(
 		m_scaleCalibration,
 		[&m_scaleCalibration = m_scaleCalibration]() {
-			m_scaleCalibration->apply();
+			m_scaleCalibration->saveScaleCalibration();
 		},
 		Qt::AutoConnection
 	);
 }
 
-void BrillouinAcquisition::scaleCalibrationButtonSave_clicked() {
+void BrillouinAcquisition::scaleCalibrationButtonSaveFov_clicked() {
 	QMetaObject::invokeMethod(
 		m_scaleCalibration,
 		[&m_scaleCalibration = m_scaleCalibration]() {
-			m_scaleCalibration->saveCalibration();
+			m_scaleCalibration->saveFovOffsetCalibration();
 		},
 		Qt::AutoConnection
 	);
 }
 
-void BrillouinAcquisition::scaleCalibrationButtonFovOffsetReference_clicked() {
+void BrillouinAcquisition::scaleCalibrationButtonStartObjectiveCycle_clicked() {
+	auto referenceSlot = m_scaleCalibrationDialogUi.referenceObjectiveCombo->currentData().toInt();
+	auto targetSlot = m_scaleCalibrationDialogUi.targetObjectiveCombo->currentData().toInt();
+	auto cycles = m_scaleCalibrationDialogUi.cyclesSpinBox->value();
+	auto retractUm = m_scaleCalibrationDialogUi.zRetractDistanceUm->value();
+
+	// currentData() is a valid, non-zero slot number even for a combo entry showing "Empty" -
+	// the slot number is always populated (populateObjectivePickerCombos()), only the name
+	// text differs - so check the underlying name directly, not just for a 0/invalid slot.
+	auto isNamed = [this](int slot) {
+		return slot >= 1 && slot <= (int)m_objectiveSlotNames.size() && !m_objectiveSlotNames[slot - 1].empty();
+	};
+	if (!isNamed(referenceSlot) || !isNamed(targetSlot)) {
+		m_scaleCalibrationDialogUi.objectiveCycleStatusLabel->setText(
+			"Name both objectives under Devices > Objective Setup before running an automated calibration."
+		);
+		return;
+	}
+	if (referenceSlot == targetSlot) {
+		m_scaleCalibrationDialogUi.objectiveCycleStatusLabel->setText(
+			"Reference and target objective must be different."
+		);
+		return;
+	}
+
 	QMetaObject::invokeMethod(
 		m_scaleCalibration,
-		[&m_scaleCalibration = m_scaleCalibration]() {
-			m_scaleCalibration->setFovOffsetReference();
+		[&m_scaleCalibration = m_scaleCalibration, referenceSlot, targetSlot, cycles, retractUm]() {
+			m_scaleCalibration->startObjectiveCycleCalibration(referenceSlot, targetSlot, cycles, retractUm);
 		},
 		Qt::AutoConnection
 	);
 }
 
-void BrillouinAcquisition::scaleCalibrationButtonFovOffsetMeasure_clicked() {
+void BrillouinAcquisition::scaleCalibrationButtonContinueObjectiveCycle_clicked() {
 	QMetaObject::invokeMethod(
 		m_scaleCalibration,
 		[&m_scaleCalibration = m_scaleCalibration]() {
-			m_scaleCalibration->measureFovOffset();
+			m_scaleCalibration->continueObjectiveCycle();
 		},
 		Qt::AutoConnection
 	);
 }
 
-void BrillouinAcquisition::scaleCalibrationButtonAcquire_clicked() {
+void BrillouinAcquisition::scaleCalibrationButtonAbortObjectiveCycle_clicked() {
 	QMetaObject::invokeMethod(
 		m_scaleCalibration,
 		[&m_scaleCalibration = m_scaleCalibration]() {
-			m_scaleCalibration->startRepetitions();
+			m_scaleCalibration->abortObjectiveCycle();
 		},
 		Qt::AutoConnection
 	);
+}
+
+void BrillouinAcquisition::updateObjectiveCycleProgress(int currentCycle, int totalCycles, bool waitingForContinue) {
+	// currentCycle == 0 is the idle/finished state (see ScaleCalibration::finishObjectiveCycle())
+	// - everything else (1..totalCycles) is a run in progress, either actively switching/
+	// capturing (waitingForContinue == false) or paused for the operator to refocus
+	// (waitingForContinue == true).
+	auto running = currentCycle != 0;
+	m_suppressObjectiveSwitchWarnings = running;
+
+	m_scaleCalibrationDialogUi.button_startObjectiveCycle->setEnabled(!running);
+	m_scaleCalibrationDialogUi.button_continueObjectiveCycle->setEnabled(waitingForContinue);
+	m_scaleCalibrationDialogUi.button_abortObjectiveCycle->setEnabled(running);
+	// referenceObjectiveCombo: locked permanently once a global reference objective is set (see
+	// populateObjectivePickerCombos()'s own doc comment) - only still an ordinary, run-lockable
+	// combo for the "no reference set yet" case.
+	auto hasGlobalReference = m_scanControl && [this]() {
+		for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
+			if (m_scanControl->getObjectiveCalibration((int)ii + 1).isReferenceObjective) {
+				return true;
+			}
+		}
+		return false;
+	}();
+	m_scaleCalibrationDialogUi.referenceObjectiveCombo->setEnabled(!hasGlobalReference && !running);
+	m_scaleCalibrationDialogUi.targetObjectiveCombo->setEnabled(!running);
+	m_scaleCalibrationDialogUi.cyclesSpinBox->setEnabled(!running);
+	m_scaleCalibrationDialogUi.zRetractDistanceUm->setEnabled(!running);
+
+	if (running) {
+		m_scaleCalibrationDialogUi.objectiveCycleStatusLabel->setText(
+			"Cycle " + QString::number(currentCycle) + " of " + QString::number(totalCycles) +
+			(waitingForContinue ? " - refocus, then click Continue." : " - switching objectives...")
+		);
+	}
+}
+
+void BrillouinAcquisition::scaleCalibrationButtonStartScaleCycle_clicked() {
+	auto cycles = m_scaleCalibrationDialogUi.scaleCyclesSpinBox->value();
+	QMetaObject::invokeMethod(
+		m_scaleCalibration,
+		[&m_scaleCalibration = m_scaleCalibration, cycles]() {
+			m_scaleCalibration->startScaleCalibrationCycle(cycles);
+		},
+		Qt::AutoConnection
+	);
+}
+
+void BrillouinAcquisition::updateScaleCalibrationCycleProgress(int currentCycle, int totalCycles) {
+	// currentCycle == 0 is the idle/finished state (see ScaleCalibration::startScaleCalibrationCycle()).
+	// Unlike the FOV-offset cycle, there is no "waiting for continue" pause - this run is fully
+	// autonomous - so only a running/not-running distinction is needed here.
+	auto running = currentCycle != 0;
+	m_scaleCalibrationDialogUi.button_acquire->setEnabled(!running && m_brightfieldCamera);
+	m_scaleCalibrationDialogUi.scaleCyclesSpinBox->setEnabled(!running);
+
+	if (running) {
+		m_scaleCalibrationDialogUi.scaleCalibrationCycleStatusLabel->setText(
+			"Cycle " + QString::number(currentCycle) + " of " + QString::number(totalCycles) + "..."
+		);
+	}
 }
 
 void BrillouinAcquisition::setTranslationDistanceX(double dx) {
@@ -3869,22 +3959,6 @@ void BrillouinAcquisition::setTranslationDistanceX(double dx) {
 
 void BrillouinAcquisition::setTranslationDistanceY(double dy) {
 	m_scaleCalibration->setTranslationDistanceY(dy);
-}
-
-void BrillouinAcquisition::setMicrometerToPixX_x(double value) {
-	m_scaleCalibration->setMicrometerToPixX_x(value);
-}
-
-void BrillouinAcquisition::setMicrometerToPixX_y(double value) {
-	m_scaleCalibration->setMicrometerToPixX_y(value);
-}
-
-void BrillouinAcquisition::setMicrometerToPixY_x(double value) {
-	m_scaleCalibration->setMicrometerToPixY_x(value);
-}
-
-void BrillouinAcquisition::setMicrometerToPixY_y(double value) {
-	m_scaleCalibration->setMicrometerToPixY_y(value);
 }
 
 void BrillouinAcquisition::setPixToMicrometerX_x(double value) {
@@ -3911,10 +3985,6 @@ void BrillouinAcquisition::setMagnification(double value) {
 	m_scaleCalibration->setMagnification(value);
 }
 
-void BrillouinAcquisition::setReferenceObjectiveName(QString name) {
-	m_scaleCalibration->setReferenceObjectiveName(name);
-}
-
 void BrillouinAcquisition::setHasFovOffset(bool hasFovOffset) {
 	m_scaleCalibration->setHasFovOffset(hasFovOffset);
 }
@@ -3931,66 +4001,550 @@ void BrillouinAcquisition::setFovOffsetSigma(double value) {
 	m_scaleCalibration->setFovOffsetSigma(value);
 }
 
-void BrillouinAcquisition::on_action_Scale_calibration_load_triggered() {
-	m_scaleCalibrationFilePath = QFileDialog::getOpenFileName(this, tr("Select scale calibration"),
-		QString::fromStdString(m_scaleCalibrationFilePath), tr("Scale calibration (*.h5)")).toStdString();
-	loadScaleCalibrationFile();
-	writeSettings();
+std::string BrillouinAcquisition::defaultCalibrationsFolderPath() const {
+	// The exe always lands at "<repo>/x64/<Debug|Release>/BrillouinAcquisition.exe" for this
+	// project's build layout, so two directories up from applicationDirPath() is always the
+	// repo root regardless of configuration.
+	auto path = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../BrillouinAcquisition/scaleCalibrationFiles");
+	return path.toStdString();
 }
 
-void BrillouinAcquisition::loadScaleCalibrationFile() {
-	QMetaObject::invokeMethod(
-		m_scaleCalibration,
-		[&m_scaleCalibration = m_scaleCalibration, &m_scaleCalibrationFilePath = m_scaleCalibrationFilePath]() {
-			m_scaleCalibration->load(m_scaleCalibrationFilePath);
-		},
-		Qt::AutoConnection
-	);
-}
-
-void BrillouinAcquisition::on_action_Scale_calibration_set_folder_triggered() {
-	auto folder = QFileDialog::getExistingDirectory(this, tr("Select calibrations folder"),
-		QString::fromStdString(m_calibrationsFolderPath));
-	if (folder.isEmpty()) {
-		return;
-	}
-	m_calibrationsFolderPath = folder.toStdString();
-	writeSettings();
-	autoLoadObjectiveCalibrations();
-}
-
-void BrillouinAcquisition::autoLoadObjectiveCalibrations() {
-	if (m_calibrationsFolderPath.empty()) {
-		// No folder configured (yet) - fall back to the pre-existing single-file behaviour
-		// so a session that has never used this feature keeps working exactly as before.
-		loadScaleCalibrationFile();
-		return;
-	}
-	QMetaObject::invokeMethod(
-		m_scaleCalibration,
-		[&m_scaleCalibration = m_scaleCalibration, &m_calibrationsFolderPath = m_calibrationsFolderPath]() {
-			m_scaleCalibration->autoLoadCalibrationsFromFolder(m_calibrationsFolderPath);
-		},
-		Qt::AutoConnection
-	);
-}
-
-void BrillouinAcquisition::calibrationAutoLoadSummary(std::string appliedText, std::string warningText) {
-	if (!appliedText.empty()) {
-		qInfo(logInfo()) << "Objective calibrations auto-loaded from" << QString::fromStdString(m_calibrationsFolderPath) << ":\n" << QString::fromStdString(appliedText);
-	}
-	if (!warningText.empty()) {
-		QMessageBox::warning(
-			this,
-			"Objective calibration auto-load",
-			QString::fromStdString(
-				"Some files in the calibrations folder could not be applied automatically:\n\n" + warningText +
-				"\nThese objectives keep whatever calibration (if any) was already registered. Resolve by "
-				"keeping only one file per objective in that folder, or use Scale calibration > Load to "
-				"apply one manually."
-			)
+void BrillouinAcquisition::loadLinkedObjectiveCalibrations() {
+	// Registers whatever Objective Setup has linked for each slot, straight into ScanControl -
+	// the only calibration-loading mechanism left (the older folder-scan auto-load was removed
+	// as redundant/ambiguous once every slot has an explicit link). Only ever registers slots
+	// that actually have a link configured; slots with none are left exactly as a prior session
+	// (or the default-constructed empty state) set them.
+	for (size_t ii = 0; ii < m_objectiveSlotCalibrationPaths.size(); ii++) {
+		auto path = m_objectiveSlotCalibrationPaths[ii];
+		if (path.empty()) {
+			continue;
+		}
+		auto slot = (int)ii + 1;
+		auto name = ii < m_objectiveSlotNames.size() ? m_objectiveSlotNames[ii] : std::string{};
+		auto magnification = magnificationFromObjectiveName(name);
+		QMetaObject::invokeMethod(
+			m_scaleCalibration,
+			[&m_scaleCalibration = m_scaleCalibration, slot, path, name, magnification]() {
+				m_scaleCalibration->loadCalibrationForSlot(slot, path, name, magnification);
+			},
+			Qt::AutoConnection
 		);
 	}
+}
+
+void BrillouinAcquisition::on_action_Objective_setup_triggered() {
+	// setupUi()/connect() must run exactly once per Ui object - see the identical comment in
+	// on_action_Scale_calibration_acquire_triggered(). Calling setupUi() again on every open was
+	// the actual cause of the Apply button appearing to render in the wrong place and typed
+	// values (magnification, calibration links) not visibly updating until a full app restart:
+	// each reopen silently built a fresh, unparented set of child widgets while the still-
+	// visible dialog kept showing the previous ones.
+	if (!m_objectiveSetupDialog) {
+		m_objectiveSetupDialog = new QDialog(this, Qt::WindowTitleHint | Qt::WindowCloseButtonHint);
+		m_objectiveSetupDialogUi.setupUi(m_objectiveSetupDialog);
+		m_objectiveSetupDialog->setWindowTitle("Objective setup");
+		m_objectiveSetupDialog->setWindowModality(Qt::ApplicationModal);
+
+		std::array<QPushButton*, 6> browseButtons{
+			m_objectiveSetupDialogUi.button_browseCalibration_1, m_objectiveSetupDialogUi.button_browseCalibration_2,
+			m_objectiveSetupDialogUi.button_browseCalibration_3, m_objectiveSetupDialogUi.button_browseCalibration_4,
+			m_objectiveSetupDialogUi.button_browseCalibration_5, m_objectiveSetupDialogUi.button_browseCalibration_6
+		};
+		std::array<QPushButton*, 6> newButtons{
+			m_objectiveSetupDialogUi.button_newCalibration_1, m_objectiveSetupDialogUi.button_newCalibration_2,
+			m_objectiveSetupDialogUi.button_newCalibration_3, m_objectiveSetupDialogUi.button_newCalibration_4,
+			m_objectiveSetupDialogUi.button_newCalibration_5, m_objectiveSetupDialogUi.button_newCalibration_6
+		};
+		std::array<QPushButton*, 6> clearButtons{
+			m_objectiveSetupDialogUi.button_clearCalibration_1, m_objectiveSetupDialogUi.button_clearCalibration_2,
+			m_objectiveSetupDialogUi.button_clearCalibration_3, m_objectiveSetupDialogUi.button_clearCalibration_4,
+			m_objectiveSetupDialogUi.button_clearCalibration_5, m_objectiveSetupDialogUi.button_clearCalibration_6
+		};
+		std::array<QCheckBox*, 6> referenceCheckboxes{
+			m_objectiveSetupDialogUi.objectiveReference_1, m_objectiveSetupDialogUi.objectiveReference_2,
+			m_objectiveSetupDialogUi.objectiveReference_3, m_objectiveSetupDialogUi.objectiveReference_4,
+			m_objectiveSetupDialogUi.objectiveReference_5, m_objectiveSetupDialogUi.objectiveReference_6
+		};
+
+		auto connection = QWidget::connect(
+			m_objectiveSetupDialog,
+			&QDialog::rejected,
+			this,
+			[this]() { m_objectiveSetupDialog->hide(); }
+		);
+		connection = QWidget::connect(
+			m_objectiveSetupDialogUi.button_cancel,
+			&QPushButton::clicked,
+			this,
+			[this]() { m_objectiveSetupDialog->hide(); }
+		);
+		connection = QWidget::connect(
+			m_objectiveSetupDialogUi.button_apply,
+			&QPushButton::clicked,
+			this,
+			[this]() { objectiveSetupButtonApply_clicked(); }
+		);
+		for (int ii = 0; ii < (int)browseButtons.size(); ii++) {
+			connection = QWidget::connect(
+				browseButtons[ii],
+				&QPushButton::clicked,
+				this,
+				[this, ii]() { objectiveSetupBrowseCalibration_clicked(ii); }
+			);
+			connection = QWidget::connect(
+				newButtons[ii],
+				&QPushButton::clicked,
+				this,
+				[this, ii]() { objectiveSetupNewCalibration_clicked(ii); }
+			);
+			connection = QWidget::connect(
+				clearButtons[ii],
+				&QPushButton::clicked,
+				this,
+				[this, ii]() { objectiveSetupClearCalibration_clicked(ii); }
+			);
+			connection = QWidget::connect(
+				referenceCheckboxes[ii],
+				&QCheckBox::toggled,
+				this,
+				[this, ii](bool checked) { objectiveSetupReferenceToggled(ii, checked); }
+			);
+		}
+	}
+
+	std::array<QLineEdit*, 6> nameFields{
+		m_objectiveSetupDialogUi.objectiveName_1, m_objectiveSetupDialogUi.objectiveName_2,
+		m_objectiveSetupDialogUi.objectiveName_3, m_objectiveSetupDialogUi.objectiveName_4,
+		m_objectiveSetupDialogUi.objectiveName_5, m_objectiveSetupDialogUi.objectiveName_6
+	};
+	std::array<QLabel*, 6> slotLabels{
+		m_objectiveSetupDialogUi.slot1_label, m_objectiveSetupDialogUi.slot2_label,
+		m_objectiveSetupDialogUi.slot3_label, m_objectiveSetupDialogUi.slot4_label,
+		m_objectiveSetupDialogUi.slot5_label, m_objectiveSetupDialogUi.slot6_label
+	};
+	std::array<QLabel*, 6> calibrationPathLabels{
+		m_objectiveSetupDialogUi.calibrationPath_1, m_objectiveSetupDialogUi.calibrationPath_2,
+		m_objectiveSetupDialogUi.calibrationPath_3, m_objectiveSetupDialogUi.calibrationPath_4,
+		m_objectiveSetupDialogUi.calibrationPath_5, m_objectiveSetupDialogUi.calibrationPath_6
+	};
+	std::array<QPushButton*, 6> browseButtons{
+		m_objectiveSetupDialogUi.button_browseCalibration_1, m_objectiveSetupDialogUi.button_browseCalibration_2,
+		m_objectiveSetupDialogUi.button_browseCalibration_3, m_objectiveSetupDialogUi.button_browseCalibration_4,
+		m_objectiveSetupDialogUi.button_browseCalibration_5, m_objectiveSetupDialogUi.button_browseCalibration_6
+	};
+	std::array<QPushButton*, 6> newButtons{
+		m_objectiveSetupDialogUi.button_newCalibration_1, m_objectiveSetupDialogUi.button_newCalibration_2,
+		m_objectiveSetupDialogUi.button_newCalibration_3, m_objectiveSetupDialogUi.button_newCalibration_4,
+		m_objectiveSetupDialogUi.button_newCalibration_5, m_objectiveSetupDialogUi.button_newCalibration_6
+	};
+	std::array<QPushButton*, 6> clearButtons{
+		m_objectiveSetupDialogUi.button_clearCalibration_1, m_objectiveSetupDialogUi.button_clearCalibration_2,
+		m_objectiveSetupDialogUi.button_clearCalibration_3, m_objectiveSetupDialogUi.button_clearCalibration_4,
+		m_objectiveSetupDialogUi.button_clearCalibration_5, m_objectiveSetupDialogUi.button_clearCalibration_6
+	};
+	std::array<QCheckBox*, 6> referenceCheckboxes{
+		m_objectiveSetupDialogUi.objectiveReference_1, m_objectiveSetupDialogUi.objectiveReference_2,
+		m_objectiveSetupDialogUi.objectiveReference_3, m_objectiveSetupDialogUi.objectiveReference_4,
+		m_objectiveSetupDialogUi.objectiveReference_5, m_objectiveSetupDialogUi.objectiveReference_6
+	};
+
+	auto hasObjectiveElement = !m_objectiveSlotNames.empty();
+	m_objectiveSetupDialogUi.noObjectiveElementLabel->setVisible(!hasObjectiveElement);
+	m_objectiveSetupDialogUi.slotsContainer->setVisible(hasObjectiveElement);
+	m_objectiveSetupDialogUi.instructionsLabel->setVisible(hasObjectiveElement);
+	m_objectiveSetupDialogUi.button_apply->setEnabled(hasObjectiveElement);
+	m_objectiveSetupDialogUi.statusLabel->setText("");
+
+	// Kept in sync with m_objectiveSlotNames' size everywhere it changes (initScanControl(),
+	// objectiveSetupButtonApply_clicked()) - this resize is just a defensive fallback so a
+	// mismatch (should not happen) shows empty links rather than crashing on an out-of-range
+	// index below.
+	m_objectiveSlotCalibrationPaths.resize(m_objectiveSlotNames.size());
+
+	for (size_t ii = 0; ii < nameFields.size(); ii++) {
+		auto rowExists = ii < m_objectiveSlotNames.size();
+		slotLabels[ii]->setVisible(rowExists);
+		nameFields[ii]->setVisible(rowExists);
+		calibrationPathLabels[ii]->setVisible(rowExists);
+		browseButtons[ii]->setVisible(rowExists);
+		newButtons[ii]->setVisible(rowExists);
+		clearButtons[ii]->setVisible(rowExists);
+		referenceCheckboxes[ii]->setVisible(rowExists);
+		if (rowExists) {
+			nameFields[ii]->setText(QString::fromStdString(m_objectiveSlotNames[ii]));
+			auto path = m_objectiveSlotCalibrationPaths[ii];
+			// Full path lives in the tooltip - objectiveSetupButtonApply_clicked() reads that
+			// back, the visible text is just the filename so a long path doesn't blow out the
+			// column width.
+			calibrationPathLabels[ii]->setToolTip(QString::fromStdString(path));
+			calibrationPathLabels[ii]->setText(path.empty() ? "(none)"
+				: QFileInfo(QString::fromStdString(path)).fileName());
+			// Reflects whatever is currently registered live (loadLinkedObjectiveCalibrations()
+			// already populated every linked slot at startup, not just the active one - see its
+			// own doc comment) - blocked so re-populating the dialog never itself triggers
+			// objectiveSetupReferenceToggled().
+			const QSignalBlocker blocker(*referenceCheckboxes[ii]);
+			referenceCheckboxes[ii]->setChecked(
+				m_scanControl && m_scanControl->getObjectiveCalibration((int)ii + 1).isReferenceObjective);
+		}
+	}
+
+	m_objectiveSetupDialog->show();
+}
+
+void BrillouinAcquisition::objectiveSetupBrowseCalibration_clicked(int slotIndex) {
+	if (slotIndex < 0 || slotIndex >= (int)m_objectiveSlotCalibrationPaths.size()) {
+		return;
+	}
+	auto currentPath = m_objectiveSlotCalibrationPaths[slotIndex];
+	auto path = QFileDialog::getOpenFileName(m_objectiveSetupDialog, tr("Select scale calibration"),
+		QString::fromStdString(currentPath), tr("Scale calibration (*.h5)"));
+	if (path.isEmpty()) {
+		return;
+	}
+	// Staged in the label only, same as the name fields - not written to
+	// m_objectiveSlotCalibrationPaths or loaded until Apply is clicked.
+	std::array<QLabel*, 6> calibrationPathLabels{
+		m_objectiveSetupDialogUi.calibrationPath_1, m_objectiveSetupDialogUi.calibrationPath_2,
+		m_objectiveSetupDialogUi.calibrationPath_3, m_objectiveSetupDialogUi.calibrationPath_4,
+		m_objectiveSetupDialogUi.calibrationPath_5, m_objectiveSetupDialogUi.calibrationPath_6
+	};
+	calibrationPathLabels[slotIndex]->setToolTip(path);
+	calibrationPathLabels[slotIndex]->setText(QFileInfo(path).fileName());
+}
+
+void BrillouinAcquisition::objectiveSetupNewCalibration_clicked(int slotIndex) {
+	if (slotIndex < 0 || slotIndex >= (int)m_objectiveSlotCalibrationPaths.size()) {
+		return;
+	}
+	std::array<QLineEdit*, 6> nameFields{
+		m_objectiveSetupDialogUi.objectiveName_1, m_objectiveSetupDialogUi.objectiveName_2,
+		m_objectiveSetupDialogUi.objectiveName_3, m_objectiveSetupDialogUi.objectiveName_4,
+		m_objectiveSetupDialogUi.objectiveName_5, m_objectiveSetupDialogUi.objectiveName_6
+	};
+	// The row's current (possibly not-yet-Applied) name - fine to use as-is, this only affects
+	// the new file's own recorded metadata, not m_objectiveSlotNames.
+	auto name = nameFields[slotIndex]->text().trimmed().toStdString();
+	auto magnification = magnificationFromObjectiveName(name);
+
+	auto folder = QString::fromStdString(defaultCalibrationsFolderPath());
+	try {
+		create_directories(folder.toStdString());
+	} catch (const filesystem_error&) {
+		// Not fatal - getSaveFileName below still works against a non-existent default folder,
+		// the operator just has to navigate to/create one themselves.
+	}
+	auto shortDate = QDateTime::currentDateTime().toString("yyyy-MM-ddTHHmmss");
+	auto defaultFileName = QString("_scaleCalibration_%1_%2.h5")
+		.arg(name.empty() ? QString("unnamed") : QString::fromStdString(name))
+		.arg(shortDate);
+	auto path = QFileDialog::getSaveFileName(m_objectiveSetupDialog, tr("Create scale calibration file"),
+		folder + "/" + defaultFileName, tr("Scale calibration (*.h5)"));
+	if (path.isEmpty()) {
+		return;
+	}
+
+	auto slot = slotIndex + 1;
+	auto pathStd = path.toStdString();
+	QMetaObject::invokeMethod(
+		m_scaleCalibration,
+		[&m_scaleCalibration = m_scaleCalibration, slot, name, magnification, pathStd]() {
+			m_scaleCalibration->createEmptyCalibrationFile(slot, name, magnification, pathStd);
+		},
+		Qt::AutoConnection
+	);
+
+	// Staged in the label only, same as Browse - not written to m_objectiveSlotCalibrationPaths
+	// until Apply is clicked (even though the file itself, and its live registration in
+	// ScanControl above, already happened - Apply only governs what gets persisted/reloaded at
+	// the next startup).
+	std::array<QLabel*, 6> calibrationPathLabels{
+		m_objectiveSetupDialogUi.calibrationPath_1, m_objectiveSetupDialogUi.calibrationPath_2,
+		m_objectiveSetupDialogUi.calibrationPath_3, m_objectiveSetupDialogUi.calibrationPath_4,
+		m_objectiveSetupDialogUi.calibrationPath_5, m_objectiveSetupDialogUi.calibrationPath_6
+	};
+	calibrationPathLabels[slotIndex]->setToolTip(path);
+	calibrationPathLabels[slotIndex]->setText(QFileInfo(path).fileName());
+}
+
+void BrillouinAcquisition::objectiveSetupClearCalibration_clicked(int slotIndex) {
+	if (slotIndex < 0 || slotIndex >= (int)m_objectiveSlotCalibrationPaths.size()) {
+		return;
+	}
+	std::array<QLabel*, 6> calibrationPathLabels{
+		m_objectiveSetupDialogUi.calibrationPath_1, m_objectiveSetupDialogUi.calibrationPath_2,
+		m_objectiveSetupDialogUi.calibrationPath_3, m_objectiveSetupDialogUi.calibrationPath_4,
+		m_objectiveSetupDialogUi.calibrationPath_5, m_objectiveSetupDialogUi.calibrationPath_6
+	};
+	calibrationPathLabels[slotIndex]->setToolTip("");
+	calibrationPathLabels[slotIndex]->setText("(none)");
+}
+
+void BrillouinAcquisition::objectiveSetupReferenceToggled(int slotIndex, bool checked) {
+	if (!m_scanControl || slotIndex < 0 || slotIndex >= (int)m_objectiveSlotCalibrationPaths.size()) {
+		return;
+	}
+	auto slot = slotIndex + 1;
+	std::array<QLineEdit*, 6> nameFields{
+		m_objectiveSetupDialogUi.objectiveName_1, m_objectiveSetupDialogUi.objectiveName_2,
+		m_objectiveSetupDialogUi.objectiveName_3, m_objectiveSetupDialogUi.objectiveName_4,
+		m_objectiveSetupDialogUi.objectiveName_5, m_objectiveSetupDialogUi.objectiveName_6
+	};
+	std::array<QCheckBox*, 6> referenceCheckboxes{
+		m_objectiveSetupDialogUi.objectiveReference_1, m_objectiveSetupDialogUi.objectiveReference_2,
+		m_objectiveSetupDialogUi.objectiveReference_3, m_objectiveSetupDialogUi.objectiveReference_4,
+		m_objectiveSetupDialogUi.objectiveReference_5, m_objectiveSetupDialogUi.objectiveReference_6
+	};
+
+	if (!checked) {
+		// Only reachable by unchecking the row that currently IS the reference (every other row
+		// is already unchecked - see the mutual-exclusion loop below) - demote it back to
+		// "unmeasured" (see this function's own doc comment in the header for why demotion
+		// resets rather than tries to guess a value relative to some other objective).
+		auto data = m_scanControl->getObjectiveCalibration(slot);
+		data.isReferenceObjective = false;
+		data.hasFovOffset = false;
+		data.fovOffsetUm = POINT2{ 0, 0 };
+		data.fovOffsetSigmaUm = 0.0;
+		data.referenceObjectiveName = "";
+		auto path = m_objectiveSlotCalibrationPaths[slotIndex];
+		QMetaObject::invokeMethod(
+			m_scaleCalibration,
+			[&m_scaleCalibration = m_scaleCalibration, slot, path, data]() {
+				m_scaleCalibration->writeCalibrationToSlot(slot, path, data);
+			},
+			Qt::AutoConnection
+		);
+		m_objectiveSetupDialogUi.statusLabel->setText(
+			"No reference objective set - FOV-center offsets for every objective are now unmeasured "
+			"relative to nothing in particular until a new reference is chosen.");
+		refreshScaleCalibrationObjectiveDisplay();
+		populateObjectivePickerCombos();
+		return;
+	}
+
+	// Demote whichever OTHER slot currently holds the flag (if any) - only one reference at a
+	// time. A demoted objective's own fovOffsetUm was only ever valid relative to the OLD
+	// reference, so it is reset to "unmeasured" (not silently kept as a now-wrong value) -
+	// see this function's own doc comment in the header.
+	auto demotedAny = false;
+	for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
+		auto otherSlot = (int)ii + 1;
+		if (otherSlot == slot) {
+			continue;
+		}
+		auto otherData = m_scanControl->getObjectiveCalibration(otherSlot);
+		if (!otherData.isReferenceObjective) {
+			continue;
+		}
+		demotedAny = true;
+		otherData.isReferenceObjective = false;
+		otherData.hasFovOffset = false;
+		otherData.fovOffsetUm = POINT2{ 0, 0 };
+		otherData.fovOffsetSigmaUm = 0.0;
+		otherData.referenceObjectiveName = "";
+		auto otherPath = m_objectiveSlotCalibrationPaths[ii];
+		QMetaObject::invokeMethod(
+			m_scaleCalibration,
+			[&m_scaleCalibration = m_scaleCalibration, otherSlot, otherPath, otherData]() {
+				m_scaleCalibration->writeCalibrationToSlot(otherSlot, otherPath, otherData);
+			},
+			Qt::AutoConnection
+		);
+		const QSignalBlocker blocker(*referenceCheckboxes[ii]);
+		referenceCheckboxes[ii]->setChecked(false);
+	}
+
+	auto data = m_scanControl->getObjectiveCalibration(slot);
+	data.isReferenceObjective = true;
+	data.hasFovOffset = true;
+	data.fovOffsetUm = POINT2{ 0, 0 };
+	data.fovOffsetSigmaUm = 0.0;
+	// The reference IS the baseline everything else is measured relative to - it has no
+	// reference of its own.
+	data.referenceObjectiveName = "";
+	// The row's current (possibly not-yet-Applied) name, same convention
+	// objectiveSetupNewCalibration_clicked() already uses - only affects this file's own
+	// recorded identity metadata, not m_objectiveSlotNames.
+	auto name = nameFields[slotIndex]->text().trimmed().toStdString();
+	data.objectiveName = name;
+	data.magnification = magnificationFromObjectiveName(name);
+	auto path = m_objectiveSlotCalibrationPaths[slotIndex];
+	QMetaObject::invokeMethod(
+		m_scaleCalibration,
+		[&m_scaleCalibration = m_scaleCalibration, slot, path, data]() {
+			m_scaleCalibration->writeCalibrationToSlot(slot, path, data);
+		},
+		Qt::AutoConnection
+	);
+
+	m_objectiveSetupDialogUi.statusLabel->setText(demotedAny
+		? QString("\"%1\" is now the reference objective (FOV-center offset 0, 0). Any other "
+			"objective's previously-saved FOV offset was measured relative to the OLD reference "
+			"and needs re-measuring.").arg(QString::fromStdString(name))
+		: QString("\"%1\" is now the reference objective (FOV-center offset 0, 0).").arg(QString::fromStdString(name)));
+	refreshScaleCalibrationObjectiveDisplay();
+	populateObjectivePickerCombos();
+}
+
+void BrillouinAcquisition::objectiveSetupButtonApply_clicked() {
+	std::array<QLineEdit*, 6> nameFields{
+		m_objectiveSetupDialogUi.objectiveName_1, m_objectiveSetupDialogUi.objectiveName_2,
+		m_objectiveSetupDialogUi.objectiveName_3, m_objectiveSetupDialogUi.objectiveName_4,
+		m_objectiveSetupDialogUi.objectiveName_5, m_objectiveSetupDialogUi.objectiveName_6
+	};
+
+	// Validate every row first, so a single bad entry doesn't leave m_objectiveSlotNames
+	// half-updated - either all rows apply, or none do. One or two digits (1x-99x, no leading
+	// zero) - formatObjectiveNamesForBeampath() pads a one-digit name to the same 3-character
+	// beampath width as a two-digit one, so the button width stays consistent either way.
+	static const QRegularExpression namePattern("^[1-9][0-9]?x$");
+	auto candidates = std::vector<std::string>(m_objectiveSlotNames.size());
+	for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
+		auto text = nameFields[ii]->text().trimmed();
+		if (text.isEmpty()) {
+			candidates[ii] = "";
+			continue;
+		}
+		if (!namePattern.match(text).hasMatch()) {
+			m_objectiveSetupDialogUi.statusLabel->setText(
+				"Slot " + QString::number(ii + 1) + ": \"" + text +
+				"\" is not valid - use one or two digits followed by \"x\" (1x-99x), or leave blank."
+			);
+			return;
+		}
+		candidates[ii] = text.toStdString();
+	}
+
+	std::array<QLabel*, 6> calibrationPathLabels{
+		m_objectiveSetupDialogUi.calibrationPath_1, m_objectiveSetupDialogUi.calibrationPath_2,
+		m_objectiveSetupDialogUi.calibrationPath_3, m_objectiveSetupDialogUi.calibrationPath_4,
+		m_objectiveSetupDialogUi.calibrationPath_5, m_objectiveSetupDialogUi.calibrationPath_6
+	};
+	auto calibrationPathCandidates = std::vector<std::string>(m_objectiveSlotCalibrationPaths.size());
+	for (size_t ii = 0; ii < calibrationPathCandidates.size(); ii++) {
+		// Full path lives in the tooltip (see on_action_Objective_setup_triggered()/
+		// objectiveSetupBrowseCalibration_clicked()) - the visible text is just the filename.
+		calibrationPathCandidates[ii] = calibrationPathLabels[ii]->toolTip().toStdString();
+	}
+
+	m_objectiveSlotNames = candidates;
+	m_objectiveSlotCalibrationPaths = calibrationPathCandidates;
+	writeSettings();
+	pushObjectiveOptionNames();
+	loadLinkedObjectiveCalibrations();
+	m_objectiveSetupDialog->hide();
+}
+
+void BrillouinAcquisition::pushObjectiveOptionNames() {
+	auto formatted = formatObjectiveNamesForBeampath(m_objectiveSlotNames);
+
+	if (m_scanControl && !formatted.empty()) {
+		QMetaObject::invokeMethod(
+			m_scanControl,
+			[scanControl = m_scanControl, formatted]() { scanControl->setObjectiveOptionNames(formatted); },
+			Qt::AutoConnection
+		);
+	}
+
+	updateElementButtonLabels(formatted);
+	populateObjectivePickerCombos();
+}
+
+void BrillouinAcquisition::populateObjectivePickerCombos() {
+	// Safe to call whether or not the dialog is currently visible/shown (e.g. this also runs
+	// as part of on_action_Scale_calibration_acquire_triggered()'s own setup, before show() is
+	// called) - only guards against the dialog never having been constructed at all.
+	if (!m_scaleCalibrationDialog) {
+		return;
+	}
+	const QSignalBlocker b1(m_scaleCalibrationDialogUi.referenceObjectiveCombo);
+	const QSignalBlocker b2(m_scaleCalibrationDialogUi.targetObjectiveCombo);
+	m_scaleCalibrationDialogUi.referenceObjectiveCombo->clear();
+	m_scaleCalibrationDialogUi.targetObjectiveCombo->clear();
+	// The global reference slot (Objective Setup's "Reference" checkbox - see
+	// ObjectiveCalibrationData::isReferenceObjective), found here rather than cached anywhere
+	// since it can change (objectiveSetupReferenceToggled()) independently of this dialog.
+	auto referenceSlot = -1;
+	if (m_scanControl) {
+		for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
+			if (m_scanControl->getObjectiveCalibration((int)ii + 1).isReferenceObjective) {
+				referenceSlot = (int)ii + 1;
+				break;
+			}
+		}
+	}
+	auto referenceComboIndex = -1;
+	for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
+		auto slot = (int)ii + 1;
+		auto text = m_objectiveSlotNames[ii].empty()
+			? QString("Empty")
+			: QString::fromStdString(m_objectiveSlotNames[ii]);
+		m_scaleCalibrationDialogUi.referenceObjectiveCombo->addItem(text, QVariant(slot));
+		m_scaleCalibrationDialogUi.targetObjectiveCombo->addItem(text, QVariant(slot));
+		if (slot == referenceSlot) {
+			referenceComboIndex = (int)ii;
+		}
+	}
+	// There is only ever one true reference objective (see Objective Setup's mutually-exclusive
+	// "Reference" checkbox) - measuring a NEW objective's FOV offset against anything else would
+	// just need composing back through that reference anyway (measureFovOffset() already does
+	// this automatically for an indirect chain), so picking any other objective here was never
+	// actually useful, only a source of operator error. Locked to the reference and disabled
+	// outright if one is set; left as an ordinary, operator-picked combo (same as before) if none
+	// is set yet, so an operator can still run the very first calibration cycle before any
+	// objective has been marked as the reference.
+	if (referenceComboIndex >= 0) {
+		m_scaleCalibrationDialogUi.referenceObjectiveCombo->setCurrentIndex(referenceComboIndex);
+	}
+	m_scaleCalibrationDialogUi.referenceObjectiveCombo->setDisabled(referenceComboIndex >= 0);
+}
+
+void BrillouinAcquisition::refreshScaleCalibrationObjectiveDisplay() {
+	if (!m_scaleCalibrationDialog || !m_scanControl) {
+		return;
+	}
+	// Direct, same-thread-unsafe-in-principle but already-precedented read of ScanControl's
+	// live state from the GUI thread (see objectiveSwitched()'s own
+	// m_scanControl->getObjectiveCalibration() call) - a trivial int/struct getter, not worth a
+	// round trip for.
+	auto activeSlot = m_scanControl->getActiveObjectiveSlot();
+	auto activeName = (activeSlot >= 1 && activeSlot <= (int)m_objectiveSlotNames.size())
+		? m_objectiveSlotNames[activeSlot - 1] : std::string{};
+	auto activeMagnification = magnificationFromObjectiveName(activeName);
+
+	const QSignalBlocker blocker1(m_scaleCalibrationDialogUi.objectiveName);
+	const QSignalBlocker blocker2(m_scaleCalibrationDialogUi.magnification);
+	m_scaleCalibrationDialogUi.objectiveName->setText(QString::fromStdString(activeName));
+	m_scaleCalibrationDialogUi.magnification->setValue(activeMagnification);
+	// Keep ScaleCalibration's own edit buffer in sync too, so Save persists the right
+	// name/magnification even though nothing in the dialog lets the operator type them anymore.
+	m_scaleCalibration->setObjectiveName(QString::fromStdString(activeName));
+	m_scaleCalibration->setMagnification(activeMagnification);
+
+	// Same idea for the linked calibration file - shown read-only so the operator can see which
+	// file Save will write into, and pushed into ScaleCalibration so it actually does.
+	auto activePath = (activeSlot >= 1 && activeSlot <= (int)m_objectiveSlotCalibrationPaths.size())
+		? m_objectiveSlotCalibrationPaths[activeSlot - 1] : std::string{};
+	m_scaleCalibrationDialogUi.objectiveCalibrationFile->setToolTip(QString::fromStdString(activePath));
+	m_scaleCalibrationDialogUi.objectiveCalibrationFile->setText(activePath.empty() ? "(none)"
+		: QFileInfo(QString::fromStdString(activePath)).fileName());
+	m_scaleCalibration->setLinkedCalibrationFilePath(activePath);
+
+	// The reference objective's FOV-center offset is locked at {0,0}, sigma 0 - see
+	// ObjectiveCalibrationData::isReferenceObjective's own doc comment. Editing it here would be
+	// meaningless (it is set exclusively via Objective Setup's "Reference" checkbox); grey the
+	// fields out rather than let the operator type a value that the next objectiveSetupReference
+	// Toggled()/switch would just overwrite anyway.
+	auto activeIsReference = m_scanControl->getObjectiveCalibration(activeSlot).isReferenceObjective;
+	m_scaleCalibrationDialogUi.hasFovOffsetCheckbox->setDisabled(activeIsReference);
+	m_scaleCalibrationDialogUi.fovOffsetX->setDisabled(activeIsReference);
+	m_scaleCalibrationDialogUi.fovOffsetY->setDisabled(activeIsReference);
+	m_scaleCalibrationDialogUi.fovOffsetSigma->setDisabled(activeIsReference);
+	// The reference's own offset is locked at {0,0} - nothing to persist by re-saving it, and
+	// leaving Save enabled invited clicking it under the impression it did something here.
+	m_scaleCalibrationDialogUi.button_save->setDisabled(activeIsReference);
 }
 
 void BrillouinAcquisition::initBeampathButtons() {
@@ -4205,6 +4759,30 @@ void BrillouinAcquisition::initScanControl() {
 			break;
 	}
 
+	// Resize m_objectiveSlotNames to this backend's "Objective" element (0 if it has none, e.g.
+	// NIDAQ - see formatObjectiveNamesForBeampath()/pushObjectiveOptionNames()), preserving
+	// whatever was already loaded from settings for slots that still exist and defaulting any
+	// newly-appearing slot to "". Then push directly - m_scanControl is still exclusively
+	// GUI-thread-owned here, before m_acquisitionThread.startWorker(m_scanControl) below, so
+	// this does not need QMetaObject::invokeMethod the way the same call does everywhere else
+	// (see pushObjectiveOptionNames()). This must run before initBeampathButtons() (called from
+	// initBrillouin(), later than this function) so the beampath is built with real names from
+	// the start rather than flashing "1".."6" first.
+	{
+		auto maxOptions = 0;
+		for (const auto& element : m_scanControl->m_deviceElements) {
+			if (element.name == "Objective") {
+				maxOptions = element.maxOptions;
+				break;
+			}
+		}
+		m_objectiveSlotNames.resize(maxOptions);
+		m_objectiveSlotCalibrationPaths.resize(maxOptions);
+		if (maxOptions > 0) {
+			m_scanControl->setObjectiveOptionNames(formatObjectiveNamesForBeampath(m_objectiveSlotNames));
+		}
+	}
+
 	// init or de-init ODT
 	initODT();
 	initVoltageCalibration();
@@ -4312,7 +4890,7 @@ void BrillouinAcquisition::initScanControl() {
 		Qt::AutoConnection
 	);
 
-	autoLoadObjectiveCalibrations();
+	loadLinkedObjectiveCalibrations();
 
 	m_scanControl->locatePositionScanner(m_positionScanner);
 }
@@ -4464,15 +5042,11 @@ void BrillouinAcquisition::initScaleCalibration() {
 		);
 		connection = QWidget::connect(
 			m_scaleCalibration,
-			&ScaleCalibration::s_calibrationAutoLoadSummary,
+			&ScaleCalibration::s_fovOffsetSaved,
 			this,
-			[this](std::string appliedText, std::string warningText) { calibrationAutoLoadSummary(appliedText, warningText); }
-		);
-		connection = QWidget::connect(
-			m_scaleCalibration,
-			&ScaleCalibration::s_closeScaleCalibrationDialog,
-			this,
-			[this]() { closeScaleCalibrationDialog(); }
+			[this](int slot, POINT2 oldOffsetUm, bool oldHasFovOffset, POINT2 newOffsetUm, bool newHasFovOffset) {
+				onFovOffsetSaved(slot, oldOffsetUm, oldHasFovOffset, newOffsetUm, newHasFovOffset);
+			}
 		);
 	}
 }
@@ -4779,35 +5353,59 @@ void BrillouinAcquisition::microscopeElementPositionChanged(DeviceElement elemen
 }
 
 void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool hasCalibration, bool hasFovOffset, POINT2 offsetUm, double offsetSigmaUm) {
+	// Unconditional and first - the read-only name/magnification display and the "compare to"
+	// pairwise offset need to follow the active slot regardless of whether this switch triggers
+	// one of the warnings below (a no-op if the Scale Calibration dialog is not currently open).
+	refreshScaleCalibrationObjectiveDisplay();
+
 	if (!hasCalibration) {
-		QMessageBox::warning(
-			this,
-			"No Scale Calibration For This Objective",
-			QString("No scale calibration is registered for the objective in slot %1.\n\n"
-				"Pixel<->micrometer conversions, grids, ROIs and overview tiles for this objective "
-				"will be wrong until a calibration is loaded for it.").arg(newSlot)
-		);
+		// Suppressed during an automated multi-cycle run (see
+		// ScaleCalibration::startObjectiveCycleCalibration()) - a blocking popup on every
+		// switch would defeat the point of automating this. The early return below is
+		// unaffected either way: with no scale calibration at all for this objective, there is
+		// nothing meaningful for updatePositions()/the stage-nudge logic further down to
+		// recompute.
+		if (!m_suppressObjectiveSwitchWarnings) {
+			QMessageBox::warning(
+				this,
+				"No Scale Calibration For This Objective",
+				QString("No scale calibration is registered for the objective in slot %1.\n\n"
+					"Pixel<->micrometer conversions, grids, ROIs and overview tiles for this objective "
+					"will be wrong until a calibration is loaded for it.").arg(newSlot)
+			);
+		}
 		return;
 	}
 	if (!hasFovOffset) {
-		auto reply = QMessageBox::warning(
-			this,
-			"No FOV-Center Offset For This Objective Switch",
-			QString("No calibrated FOV-center offset is stored for this objective switch (slot %1 -> %2).\n\n"
-				"In absolute grid-coordinate mode, grids, ROIs and overview tiles will NOT be translated "
-				"to compensate for this objective's field-of-view center shift, and measurements may no "
-				"longer target the same physical sample location as before the switch. Relative-mode grids "
-				"are not affected, since they anchor to wherever the stage is when a measurement starts.\n\n"
-				"Continue anyway?").arg(previousSlot).arg(newSlot),
-			QMessageBox::Yes | QMessageBox::No,
-			QMessageBox::No
-		);
-		if (reply == QMessageBox::Yes) {
+		if (m_suppressObjectiveSwitchWarnings) {
+			// The target slot of an automated run lacking a FOV offset is expected - it is the
+			// thing being calibrated - not something to interrupt for. Treat it as accepted,
+			// same as the operator clicking "Yes" below would.
 			QMetaObject::invokeMethod(
 				m_scanControl,
 				[scanControl = m_scanControl]() { scanControl->acceptMissingObjectiveOffset(); },
 				Qt::AutoConnection
 			);
+		} else {
+			auto reply = QMessageBox::warning(
+				this,
+				"No FOV-Center Offset For This Objective Switch",
+				QString("No calibrated FOV-center offset is stored for this objective switch (slot %1 -> %2).\n\n"
+					"In absolute grid-coordinate mode, grids, ROIs and overview tiles will NOT be translated "
+					"to compensate for this objective's field-of-view center shift, and measurements may no "
+					"longer target the same physical sample location as before the switch. Relative-mode grids "
+					"are not affected, since they anchor to wherever the stage is when a measurement starts.\n\n"
+					"Continue anyway?").arg(previousSlot).arg(newSlot),
+				QMessageBox::Yes | QMessageBox::No,
+				QMessageBox::No
+			);
+			if (reply == QMessageBox::Yes) {
+				QMetaObject::invokeMethod(
+					m_scanControl,
+					[scanControl = m_scanControl]() { scanControl->acceptMissingObjectiveOffset(); },
+					Qt::AutoConnection
+				);
+			}
 		}
 	} else {
 		// hasCalibration && hasFovOffset: nothing needs the operator's attention beyond a log
@@ -4829,14 +5427,21 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 		QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
 	}
 
-	// Physical stage move: relative-mode grids anchor to wherever the stage physically is
-	// when a measurement starts (see Brillouin::resolvedGridOriginUm()'s doc comment and
-	// m_startPosition) - nothing recomputes that for them the way updatePositions() just did
-	// for absolute mode above, so without an actual stage move here, a relative-mode grid
-	// would silently re-anchor to the wrong physical location after this switch. Absolute
-	// mode does NOT need this - its eventual measurement target is already correct from
-	// updatePositions() alone; moving the stage there too would only be a cosmetic head start
-	// on what Start would do anyway, so it's skipped to minimize unattended motion.
+	// Relative-mode grids anchor to Brillouin::m_startPosition (a stage position captured once,
+	// at "Start" - see its doc comment), not recomputed fresh on every read the way absolute
+	// mode's resolvedGridOriginUm() is. Without correcting that anchor here, an objective switch
+	// would leave any not-yet-visited grid point targeted at the OLD objective's FOV center.
+	//
+	// This is a pure in-memory shift of that anchor (Brillouin::adjustStartPositionForFovOffsetChange()),
+	// NOT a physical stage move - a previous version of this code moved the actual stage by delta
+	// here, which was wrong: it yanked the sample out from under the live view/blue dot on every
+	// switch (unrequested motion the operator never asked for), and - since m_startPosition is
+	// only ever captured fresh at "Start" - had no lasting effect anyway once a real target
+	// (m_startPosition + gridOffset, from the value captured BEFORE this switch) was next
+	// commanded, silently undoing the nudge. Shifting the bookkeeping anchor instead means the
+	// blue dot stays exactly where the operator left it, and it's the (not-yet-visited) grid that
+	// moves under it - matching how absolute mode already behaves, and how the stage only ever
+	// actually moves once a real measurement point is visited.
 	// Only fires when both the objective being left and the one just switched to have a
 	// calibrated offset - otherwise there is no valid delta to apply.
 	if (m_Brillouin && !m_Brillouin->settings.gridCoordinatesAbsolute && hasFovOffset && m_scanControl) {
@@ -4845,20 +5450,53 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 			auto deltaX = offsetUm.x - previousCalibration.fovOffsetUm.x;
 			auto deltaY = offsetUm.y - previousCalibration.fovOffsetUm.y;
 			qInfo(logInfo()) << "Objective switch" << previousSlot << "->" << newSlot
-				<< ": relative grid mode, moving stage by (" << deltaX << "," << deltaY
-				<< ") um to preserve FOV-offset alignment.";
+				<< ": relative grid mode, shifting grid origin by (" << deltaX << "," << deltaY
+				<< ") um to preserve FOV-offset alignment (no stage motion).";
+			auto deltaUm = POINT2{ deltaX, deltaY };
 			QMetaObject::invokeMethod(
-				m_scanControl,
-				[scanControl = m_scanControl, deltaX, deltaY]() {
-					// getPosition() (stage+scanner combined) is the frame setPositionCompensated()
-					// expects - see ScanControl::setPosition(POINT2)'s "subtract the scanner
-					// position" comment for why a plain stage-only position would be wrong here.
-					auto position = scanControl->getPosition();
-					scanControl->setPositionCompensated(POINT3{ position.x + deltaX, position.y + deltaY, position.z });
-				},
-				Qt::AutoConnection
+				m_Brillouin,
+				"adjustStartPositionForFovOffsetChange",
+				Qt::AutoConnection,
+				Q_ARG(POINT2, deltaUm)
 			);
 		}
+	}
+}
+
+void BrillouinAcquisition::onFovOffsetSaved(int slot, POINT2 oldOffsetUm, bool oldHasFovOffset, POINT2 newOffsetUm, bool newHasFovOffset) {
+	// Unconditional and first, mirrors objectiveSwitched() - a plain Save otherwise leaves the
+	// on-screen grid/ROI/overview-tile preview showing the OLD offset (see
+	// ScaleCalibration::s_fovOffsetSaved's doc comment for why nothing else already does this).
+	// Safe regardless of hasFovOffset/mode: absolute mode's resolvedGridOriginUm() just re-reads
+	// whatever is now registered, and if nothing meaningful changed this is a harmless no-op
+	// redraw.
+	if (m_Brillouin) {
+		QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
+	}
+
+	// Relative mode: the same "shift the not-yet-visited grid by the delta, don't move the
+	// stage" treatment objectiveSwitched() applies on an actual switch - see that function's own
+	// doc comment for why this is a pure bookkeeping shift. `slot` is always the active one (see
+	// s_fovOffsetSaved's doc comment), so the extra equality check here is just defensive - only
+	// meaningful if both the old and new state have a real offset to take a delta between.
+	if (m_Brillouin && !m_Brillouin->settings.gridCoordinatesAbsolute && m_scanControl
+			&& slot == m_scanControl->getActiveObjectiveSlot() && oldHasFovOffset && newHasFovOffset) {
+		auto deltaUm = POINT2{ newOffsetUm.x - oldOffsetUm.x, newOffsetUm.y - oldOffsetUm.y };
+		qInfo(logInfo()) << "FOV-offset calibration saved for slot" << slot
+			<< ": relative grid mode, shifting grid origin by (" << deltaUm.x << "," << deltaUm.y
+			<< ") um (no stage motion).";
+		QMetaObject::invokeMethod(
+			m_Brillouin,
+			"adjustStartPositionForFovOffsetChange",
+			Qt::AutoConnection,
+			Q_ARG(POINT2, deltaUm)
+		);
+		QMetaObject::invokeMethod(
+			m_scanControl,
+			"adjustStartPositionForFovOffsetChange",
+			Qt::AutoConnection,
+			Q_ARG(POINT2, deltaUm)
+		);
 	}
 }
 
@@ -4912,6 +5550,55 @@ void BrillouinAcquisition::checkElementButtons() {
 		presetButtons[ii]->style()->unpolish(presetButtons[ii]);
 		presetButtons[ii]->style()->polish(presetButtons[ii]);
 		presetButtons[ii]->update();
+	}
+}
+
+std::vector<std::string> BrillouinAcquisition::formatObjectiveNamesForBeampath(const std::vector<std::string>& names) const {
+	auto formatted = std::vector<std::string>(names.size());
+	for (size_t ii = 0; ii < names.size(); ii++) {
+		if (names[ii].empty()) {
+			formatted[ii] = "E  ";
+		} else if (names[ii].size() == 2) {
+			// One-digit magnification (e.g. "5x") - left-pad to the same 3-character width as
+			// a two-digit name ("10x") so the beampath buttons stay a consistent size.
+			formatted[ii] = " " + names[ii];
+		} else {
+			formatted[ii] = names[ii];
+		}
+	}
+	return formatted;
+}
+
+double BrillouinAcquisition::magnificationFromObjectiveName(const std::string& name) const {
+	if (name.size() < 2 || name.back() != 'x') {
+		return 0.0;
+	}
+	try {
+		return std::stod(name.substr(0, name.size() - 1));
+	} catch (...) {
+		return 0.0;
+	}
+}
+
+void BrillouinAcquisition::updateElementButtonLabels(const std::vector<std::string>& objectiveOptionNames) {
+	if (!m_scanControl) {
+		return;
+	}
+	// Mirrors checkElementButtons()'s exact indexing: indButton only increments on a
+	// PUSHBUTTON element, so it stays correct regardless of how many non-pushbutton elements
+	// (or other pushbutton elements, e.g. "RL Shutter") precede "Objective" for this backend.
+	auto elements = m_scanControl->m_deviceElements;
+	int indButton{ 0 };
+	for (gsl::index ii = 0; ii < elements.size(); ii++) {
+		if (elements[ii].inputType != DEVICE_INPUT_TYPE::PUSHBUTTON) {
+			continue;
+		}
+		if (elements[ii].name == "Objective" && indButton < (int)elementButtons.size()) {
+			for (gsl::index jj = 0; jj < elementButtons[indButton].size() && jj < (gsl::index)objectiveOptionNames.size(); jj++) {
+				elementButtons[indButton][jj]->setText(objectiveOptionNames[jj].c_str());
+			}
+		}
+		indButton++;
 	}
 }
 
@@ -6153,9 +6840,13 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brightfield-camera", brightfieldCamera);
 	settings.setValue("stage", stage);
 	settings.endGroup();
-	settings.beginGroup("scale-calibration");
-	settings.setValue("file-path", QString::fromStdString(m_scaleCalibrationFilePath));
-	settings.setValue("calibrations-folder-path", QString::fromStdString(m_calibrationsFolderPath));
+	settings.beginGroup("objective-setup");
+	settings.setValue("slot-count", (int)m_objectiveSlotNames.size());
+	for (size_t ii = 0; ii < m_objectiveSlotNames.size(); ii++) {
+		settings.setValue(QString("slot-%1-name").arg(ii + 1), QString::fromStdString(m_objectiveSlotNames[ii]));
+		auto path = ii < m_objectiveSlotCalibrationPaths.size() ? m_objectiveSlotCalibrationPaths[ii] : "";
+		settings.setValue(QString("slot-%1-calibration-path").arg(ii + 1), QString::fromStdString(path));
+	}
 	settings.endGroup();
 	settings.beginGroup("devices-settings");
 	settings.setValue("stage-laser-position-x", m_positionScanner.x);
@@ -6304,11 +6995,18 @@ void BrillouinAcquisition::readSettings() {
 
 	settings.endGroup();
 
-	settings.beginGroup("scale-calibration");
-	QVariant filePath = settings.value("file-path");
-	m_scaleCalibrationFilePath = filePath.toString().toStdString();
-	QVariant calibrationsFolderPath = settings.value("calibrations-folder-path");
-	m_calibrationsFolderPath = calibrationsFolderPath.toString().toStdString();
+	settings.beginGroup("objective-setup");
+	// Read into m_objectiveSlotNames/m_objectiveSlotCalibrationPaths as-is here;
+	// initScanControl() (run later at startup, once the active backend and its real
+	// "Objective" element maxOptions are known) resizes both to match, preserving these values
+	// for whichever slots still exist.
+	auto slotCount = settings.value("slot-count", 0).toInt();
+	m_objectiveSlotNames.assign(slotCount, std::string{});
+	m_objectiveSlotCalibrationPaths.assign(slotCount, std::string{});
+	for (int ii = 0; ii < slotCount; ii++) {
+		m_objectiveSlotNames[ii] = settings.value(QString("slot-%1-name").arg(ii + 1), "").toString().toStdString();
+		m_objectiveSlotCalibrationPaths[ii] = settings.value(QString("slot-%1-calibration-path").arg(ii + 1), "").toString().toStdString();
+	}
 	settings.endGroup();
 
 	settings.beginGroup("devices-settings");

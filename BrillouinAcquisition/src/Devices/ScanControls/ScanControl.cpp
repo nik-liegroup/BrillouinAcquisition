@@ -175,7 +175,17 @@ void ScanControl::enableMeasurementMode(bool enabled) {
 	// so the AOI positions display has the correct origin.
 	if (enabled) {
 		auto pos = getPosition();
-		m_startPosition = POINT2{ pos.x, pos.y };
+		// Fold in the active objective's own FOV-center offset at capture time - relative-mode
+		// targets are "current stage position, translated by the active objective's FOV offset,
+		// plus the grid offset" (one formula, always), not "current stage position" alone with
+		// the FOV term only ever applied as a later correction on a subsequent switch. Without
+		// this, a grid defined and started while already sitting on a non-reference objective
+		// (no switch involved at all) would silently target the wrong physical location by
+		// exactly that objective's own offset. adjustStartPositionForFovOffsetChange() keeps this
+		// invariant (m_startPosition == stage position + active objective's FOV offset) intact
+		// across any later switch/FOV-offset save.
+		auto fovOffsetUm = getActiveObjectiveFovOffsetUm();
+		m_startPosition = POINT2{ pos.x + fovOffsetUm.x, pos.y + fovOffsetUm.y };
 	}
 	m_measurementMode = enabled;
 }
@@ -417,6 +427,18 @@ bool ScanControl::isValidObjectiveSlot(int slot) const {
 	return false;
 }
 
+void ScanControl::setObjectiveOptionNames(const std::vector<std::string>& names) {
+	for (auto& element : m_deviceElements) {
+		if (element.name == "Objective") {
+			if ((int)names.size() != element.maxOptions) {
+				return;
+			}
+			element.optionNames = names;
+			return;
+		}
+	}
+}
+
 int ScanControl::objectiveElementIndex() const {
 	for (const auto& element : m_deviceElements) {
 		if (element.name == "Objective") {
@@ -462,11 +484,42 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 	auto offsetUm = hasFovOffset ? calibration.fovOffsetUm : POINT2{ 0, 0 };
 	auto offsetSigmaUm = hasFovOffset ? calibration.fovOffsetSigmaUm : 0.0;
 
+	// See adjustStartPositionForFovOffsetChange()'s own doc comment for what m_startPosition
+	// means here and why this needs correcting on a switch.
+	if (previousSlot >= 0) {
+		auto previousCalibration = getObjectiveCalibration(previousSlot);
+		if (hasFovOffset && previousCalibration.hasFovOffset) {
+			adjustStartPositionForFovOffsetChange(POINT2{
+				offsetUm.x - previousCalibration.fovOffsetUm.x,
+				offsetUm.y - previousCalibration.fovOffsetUm.y
+			});
+		}
+	}
+
 	// previousSlot == -1 is the initial hardware read at startup/connect, not an
 	// operator-driven switch - do not warn about it (there is nothing to have translated
 	// grids/ROIs relative to yet).
 	if (previousSlot >= 0) {
 		emit(s_objectiveSwitched(previousSlot, newSlot, hasCalibration, hasFovOffset, offsetUm, offsetSigmaUm));
+	}
+}
+
+void ScanControl::adjustStartPositionForFovOffsetChange(POINT2 deltaUm) {
+	// m_startPosition here is the AOI/grid-marker DISPLAY offset reference for relative-mode
+	// positions during an active/paused measurement (see getPositionOffset()'s measurement-mode
+	// branch: offset = m_startPosition - m_positionStage) - a different variable from
+	// Brillouin::m_startPosition (the actual measurement-target anchor, corrected separately via
+	// Brillouin::adjustStartPositionForFovOffsetChange()), but capturing the exact same physical
+	// stage position at the exact same moment (enableMeasurementMode(true) vs. Brillouin's own
+	// capture, both at "Start"). Without shifting this one too, the on-screen grid/AOI markers
+	// would keep showing the OLD (no-longer-correct) positions after the active objective's known
+	// FOV offset changes mid-run, even though the actual upcoming moves are already correctly
+	// re-targeted - i.e. the overlay would silently stop matching where the scan is actually
+	// about to measure. No-op outside measurement mode - nothing reads m_startPosition then, and
+	// it gets a fresh live capture the next time a measurement actually starts anyway.
+	if (m_measurementMode) {
+		m_startPosition.x += deltaUm.x;
+		m_startPosition.y += deltaUm.y;
 	}
 }
 
@@ -497,8 +550,14 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	// sliding past a fixed marker.
 	//
 	// In normal (live-preview) mode, the positions are shown relative to the scanner
-	// position, so they track wherever the laser currently points within the FOV.
-	auto offset = m_positionScanner;
+	// position, so they track wherever the laser currently points within the FOV - plus the
+	// active objective's own FOV-center offset, so a relative-mode grid visibly shifts (relative
+	// to the fixed marker) on an objective switch, exactly like it needs to physically shift once
+	// a measurement is actually started (see enableMeasurementMode()'s identical formula for the
+	// measurement-mode case below, and Brillouin::acquire()'s analogous capture of its own
+	// m_startPosition) - without this, switching objectives only ever rescaled the preview, never
+	// translated it, even with a real, saved FOV offset.
+	auto offset = m_positionScanner + getActiveObjectiveFovOffsetUm();
 	if (positionIsAbsolute) {
 		// Absolute positions are stored as the raw target stage+scanner position directly
 		// (absoluteGridOriginUm + gridOffset, see gridOffsetToAbsoluteTarget()), so the

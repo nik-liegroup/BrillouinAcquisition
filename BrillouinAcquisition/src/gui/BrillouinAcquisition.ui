@@ -4854,14 +4854,6 @@ border: none;</string>
     <property name="title">
      <string>Devices</string>
     </property>
-    <widget class="QMenu" name="menu_Scale_calibration">
-     <property name="title">
-      <string>Scale calibration</string>
-     </property>
-     <addaction name="action_Scale_calibration_acquire"/>
-     <addaction name="action_Scale_calibration_load"/>
-     <addaction name="action_Scale_calibration_set_folder"/>
-    </widget>
     <widget class="QMenu" name="menu_Voltage_calibration">
      <property name="title">
       <string>Voltage calibration</string>
@@ -4874,7 +4866,8 @@ border: none;</string>
     <addaction name="separator"/>
     <addaction name="actionConnect_Stage"/>
     <addaction name="menu_Voltage_calibration"/>
-    <addaction name="menu_Scale_calibration"/>
+    <addaction name="action_Scale_calibration_acquire"/>
+    <addaction name="action_Objective_setup"/>
     <addaction name="separator"/>
     <addaction name="actionConnect_Brightfield_camera"/>
     <addaction name="separator"/>
@@ -4946,6 +4939,11 @@ border: none;</string>
     <string>Settings</string>
    </property>
   </action>
+  <action name="action_Objective_setup">
+   <property name="text">
+    <string>Objective Setup</string>
+   </property>
+  </action>
   <action name="actionLoad_Voltage_Position_calibration">
    <property name="text">
     <string>Load V-µm calibration</string>
@@ -4976,17 +4974,7 @@ border: none;</string>
   </action>
   <action name="action_Scale_calibration_acquire">
    <property name="text">
-    <string>Acquire</string>
-   </property>
-  </action>
-  <action name="action_Scale_calibration_load">
-   <property name="text">
-    <string>Load</string>
-   </property>
-  </action>
-  <action name="action_Scale_calibration_set_folder">
-   <property name="text">
-    <string>Set calibrations folder...</string>
+    <string>Scale calibration</string>
    </property>
   </action>
  </widget>

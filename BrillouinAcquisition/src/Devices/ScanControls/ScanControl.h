@@ -175,6 +175,19 @@ public slots:
 
 	void enableMeasurementMode(bool enabled);
 
+	// Shifts m_startPosition (the relative-mode AOI/grid-marker DISPLAY offset reference during
+	// an active/paused measurement - see getPositionOffset()'s measurement-mode branch) by
+	// deltaUm - a pure book-keeping update, no hardware motion. No-op while not in measurement
+	// mode (m_startPosition is irrelevant then - it gets a fresh live capture the next time
+	// enableMeasurementMode(true) runs, so there's nothing to correct yet). Called both by
+	// handleObjectiveSlotObserved() on an actual objective switch, and by BrillouinAcquisition
+	// (via onFovOffsetSaved()) when the operator saves a revised FOV offset for the active
+	// objective without switching away from it - same delta, same reasoning, two different
+	// triggers. Kept in sync with Brillouin::adjustStartPositionForFovOffsetChange(), which does
+	// the analogous shift for the actual measurement-target anchor (a different variable in a
+	// different class - see that function's own doc comment for why there are two).
+	void adjustStartPositionForFovOffsetChange(POINT2 deltaUm);
+
 	void setPreset(ScanPreset presetType);
 	Preset getPreset(ScanPreset);
 	void checkPresets();
@@ -234,6 +247,15 @@ public slots:
 	// is flagged for the operator instead of being silently registered against a slot that may
 	// not mean what the file thinks it means.
 	bool isValidObjectiveSlot(int slot) const;
+
+	// Overwrites the "Objective" device element's display names (DeviceElement::optionNames,
+	// what the beampath buttons show - see BrillouinAcquisition::initBeampathButtons()) at
+	// runtime. optionNames is otherwise only ever set once, at backend-construction time (see
+	// DeviceElement's checkNames()-driven constructors above). No-op if this backend has no
+	// element named "Objective" (e.g. plain NIDAQ) or if names.size() does not match that
+	// element's maxOptions - a size mismatch would silently mislabel/skip slots, so this
+	// refuses rather than guesses.
+	void setObjectiveOptionNames(const std::vector<std::string>& names);
 
 	// Called by the GUI once the operator has explicitly accepted running an objective
 	// switch with no calibrated FOV-center offset (see s_objectiveSwitched()). Reset back to

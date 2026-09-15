@@ -303,6 +303,10 @@
 		</QtUic>
 	</ItemGroup>
 	<ItemGroup>
+		<QtUic Include="src\gui\ObjectiveSetupDialog.ui">
+		</QtUic>
+	</ItemGroup>
+	<ItemGroup>
 		<None Include="..\..\..\..\..\..\Program Files\Carl Zeiss\MTB 2011 - 2.15.0.2\MTBApi\MTBApi.tlb" />
 	</ItemGroup>
 	<Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

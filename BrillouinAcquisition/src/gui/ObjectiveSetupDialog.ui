@@ -1,0 +1,531 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ObjectiveSetupDialog</class>
+ <widget class="QDialog" name="ObjectiveSetupDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>660</width>
+    <height>340</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Objective setup</string>
+  </property>
+  <layout class="QVBoxLayout" name="rootLayout">
+   <property name="spacing">
+    <number>6</number>
+   </property>
+   <item>
+    <widget class="QLabel" name="instructionsLabel">
+     <property name="text">
+      <string>Name each nosepiece slot as its magnification followed by "x" (e.g. 5x, 10x, 20x, 63x) - one or two digits, 1-99. Leave a slot blank if it is unused or unnamed. Optionally link a saved scale-calibration file (.h5) to a slot - it loads automatically at startup and re-applies every time the nosepiece switches to that slot. "New" creates a blank one to fill in later; "..." links an existing file.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="noObjectiveElementLabel">
+     <property name="text">
+      <string>This device has no motorized objective changer.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+     <property name="visible">
+      <bool>false</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="slotsContainer" native="true">
+     <layout class="QGridLayout" name="slotsGridLayout">
+      <property name="verticalSpacing">
+       <number>8</number>
+      </property>
+      <property name="horizontalSpacing">
+       <number>6</number>
+      </property>
+      <item row="0" column="0">
+       <widget class="QLabel" name="slot1_label">
+        <property name="text">
+         <string>Slot 1</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="objectiveName_1">
+        <property name="placeholderText">
+         <string>e.g. 10x</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="calibrationPath_1">
+        <property name="text">
+         <string>(none)</string>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>180</width>
+          <height>0</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QPushButton" name="button_newCalibration_1">
+        <property name="text">
+         <string>New</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="4">
+       <widget class="QPushButton" name="button_browseCalibration_1">
+        <property name="text">
+         <string>...</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>28</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="5">
+       <widget class="QPushButton" name="button_clearCalibration_1">
+        <property name="text">
+         <string>x</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>20</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="6">
+       <widget class="QCheckBox" name="objectiveReference_1">
+        <property name="toolTip">
+         <string>Reference objective - every other objective's FOV-center offset is measured relative to this one. Only one slot can be the reference; checking this unchecks it elsewhere.</string>
+        </property>
+        <property name="text">
+         <string>Ref</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="slot2_label">
+        <property name="text">
+         <string>Slot 2</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="objectiveName_2">
+        <property name="placeholderText">
+         <string>e.g. 20x</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="calibrationPath_2">
+        <property name="text">
+         <string>(none)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QPushButton" name="button_newCalibration_2">
+        <property name="text">
+         <string>New</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="4">
+       <widget class="QPushButton" name="button_browseCalibration_2">
+        <property name="text">
+         <string>...</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>28</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="5">
+       <widget class="QPushButton" name="button_clearCalibration_2">
+        <property name="text">
+         <string>x</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>20</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="6">
+       <widget class="QCheckBox" name="objectiveReference_2">
+        <property name="toolTip">
+         <string>Reference objective - every other objective's FOV-center offset is measured relative to this one. Only one slot can be the reference; checking this unchecks it elsewhere.</string>
+        </property>
+        <property name="text">
+         <string>Ref</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="slot3_label">
+        <property name="text">
+         <string>Slot 3</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLineEdit" name="objectiveName_3">
+        <property name="placeholderText">
+         <string>e.g. 40x</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="2">
+       <widget class="QLabel" name="calibrationPath_3">
+        <property name="text">
+         <string>(none)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="3">
+       <widget class="QPushButton" name="button_newCalibration_3">
+        <property name="text">
+         <string>New</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="4">
+       <widget class="QPushButton" name="button_browseCalibration_3">
+        <property name="text">
+         <string>...</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>28</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="5">
+       <widget class="QPushButton" name="button_clearCalibration_3">
+        <property name="text">
+         <string>x</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>20</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="6">
+       <widget class="QCheckBox" name="objectiveReference_3">
+        <property name="toolTip">
+         <string>Reference objective - every other objective's FOV-center offset is measured relative to this one. Only one slot can be the reference; checking this unchecks it elsewhere.</string>
+        </property>
+        <property name="text">
+         <string>Ref</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="slot4_label">
+        <property name="text">
+         <string>Slot 4</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QLineEdit" name="objectiveName_4">
+        <property name="placeholderText">
+         <string>e.g. 63x</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="2">
+       <widget class="QLabel" name="calibrationPath_4">
+        <property name="text">
+         <string>(none)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="3">
+       <widget class="QPushButton" name="button_newCalibration_4">
+        <property name="text">
+         <string>New</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="4">
+       <widget class="QPushButton" name="button_browseCalibration_4">
+        <property name="text">
+         <string>...</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>28</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="5">
+       <widget class="QPushButton" name="button_clearCalibration_4">
+        <property name="text">
+         <string>x</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>20</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="6">
+       <widget class="QCheckBox" name="objectiveReference_4">
+        <property name="toolTip">
+         <string>Reference objective - every other objective's FOV-center offset is measured relative to this one. Only one slot can be the reference; checking this unchecks it elsewhere.</string>
+        </property>
+        <property name="text">
+         <string>Ref</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="slot5_label">
+        <property name="text">
+         <string>Slot 5</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QLineEdit" name="objectiveName_5"/>
+      </item>
+      <item row="4" column="2">
+       <widget class="QLabel" name="calibrationPath_5">
+        <property name="text">
+         <string>(none)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="3">
+       <widget class="QPushButton" name="button_newCalibration_5">
+        <property name="text">
+         <string>New</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="4">
+       <widget class="QPushButton" name="button_browseCalibration_5">
+        <property name="text">
+         <string>...</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>28</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="5">
+       <widget class="QPushButton" name="button_clearCalibration_5">
+        <property name="text">
+         <string>x</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>20</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="6">
+       <widget class="QCheckBox" name="objectiveReference_5">
+        <property name="toolTip">
+         <string>Reference objective - every other objective's FOV-center offset is measured relative to this one. Only one slot can be the reference; checking this unchecks it elsewhere.</string>
+        </property>
+        <property name="text">
+         <string>Ref</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0">
+       <widget class="QLabel" name="slot6_label">
+        <property name="text">
+         <string>Slot 6</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="1">
+       <widget class="QLineEdit" name="objectiveName_6"/>
+      </item>
+      <item row="5" column="2">
+       <widget class="QLabel" name="calibrationPath_6">
+        <property name="text">
+         <string>(none)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="3">
+       <widget class="QPushButton" name="button_newCalibration_6">
+        <property name="text">
+         <string>New</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="4">
+       <widget class="QPushButton" name="button_browseCalibration_6">
+        <property name="text">
+         <string>...</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>28</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="5">
+       <widget class="QPushButton" name="button_clearCalibration_6">
+        <property name="text">
+         <string>x</string>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>20</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="6">
+       <widget class="QCheckBox" name="objectiveReference_6">
+        <property name="toolTip">
+         <string>Reference objective - every other objective's FOV-center offset is measured relative to this one. Only one slot can be the reference; checking this unchecks it elsewhere.</string>
+        </property>
+        <property name="text">
+         <string>Ref</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="statusLabel">
+     <property name="text">
+      <string/>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="buttonLayout">
+     <property name="spacing">
+      <number>6</number>
+     </property>
+     <item>
+      <spacer name="buttonSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="button_cancel">
+       <property name="text">
+        <string>Cancel</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="button_apply">
+       <property name="text">
+        <string>Apply</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <tabstops>
+  <tabstop>objectiveName_1</tabstop>
+  <tabstop>objectiveName_2</tabstop>
+  <tabstop>objectiveName_3</tabstop>
+  <tabstop>objectiveName_4</tabstop>
+  <tabstop>objectiveName_5</tabstop>
+  <tabstop>objectiveName_6</tabstop>
+  <tabstop>button_cancel</tabstop>
+  <tabstop>button_apply</tabstop>
+ </tabstops>
+ <resources/>
+ <connections/>
+</ui>

@@ -35,6 +35,7 @@
 
 #include <QtWidgets/QMainWindow>
 #include "ui_BrillouinAcquisition.h"
+#include "ui_ObjectiveSetupDialog.h"
 
 #include <vector>
 #include <string>
@@ -275,16 +276,47 @@ private:
 	QComboBox* m_camera_BrillouinDropdown;
 	QComboBox* m_numberCameras_BrillouinDropdown;
 	std::string m_voltageCalibrationFilePath;
-	std::string m_scaleCalibrationFilePath;
-	// Folder scanned by autoLoadObjectiveCalibrations() at startup - unset (empty) means "no
-	// folder configured yet", in which case startup falls back to loading just
-	// m_scaleCalibrationFilePath as before. Persisted via writeSettings()/readSettings().
-	std::string m_calibrationsFolderPath;
+	// Default save-as location offered by Objective Setup's "New" (create empty calibration
+	// file) button - a fixed, source-tree-relative "<repo>/BrillouinAcquisition/scaleCalibrationFiles"
+	// folder, computed from the running executable's own location
+	// (QCoreApplication::applicationDirPath()) rather than hardcoded, since the exe lands at
+	// "<repo>/x64/<Debug|Release>/" for every build configuration - two directories up from
+	// there is always the repo root. Created if missing. Purely a convenience default - the
+	// operator can save anywhere via the New/Browse dialogs, and this is not itself scanned or
+	// auto-loaded from (that folder-scan mechanism was removed in favor of Objective Setup's
+	// explicit per-slot links, which are what actually determines what gets loaded).
+	std::string defaultCalibrationsFolderPath() const;
 
 	QDialog* m_settingsDialog{ nullptr };
 
 	Ui::Dialog m_scaleCalibrationDialogUi;
 	QDialog* m_scaleCalibrationDialog{ nullptr };
+
+	// Per-slot objective names ("" = unnamed), canonical/GUI-thread-owned. Persisted via
+	// writeSettings()/readSettings() (group "objective-setup"), pushed to ScanControl's live
+	// "Objective" DeviceElement and the beampath buttons via pushObjectiveOptionNames(), and
+	// read directly (not round-tripped through ScanControl) by populateObjectivePickerCombos().
+	// Sized to the active backend's "Objective" DeviceElement::maxOptions once a backend is
+	// connected (6 for every current backend; empty if the backend has none, e.g. NIDAQ).
+	std::vector<std::string> m_objectiveSlotNames;
+	// Explicit "this slot's scale calibration lives in this file" link, set via Objective
+	// Setup's per-slot "..." browse button - "" = no file linked for that slot. Same size/
+	// indexing as m_objectiveSlotNames (kept in sync by initScanControl()'s resize), persisted
+	// in the same "objective-setup" settings group. Loaded into ScanControl at startup
+	// (loadLinkedObjectiveCalibrations()) and re-loaded immediately whenever changed via Apply -
+	// unlike m_objectiveSlotNames (a label the beampath displays), this is what actually
+	// determines which ObjectiveCalibrationData ends up registered for the slot, via
+	// ScaleCalibration::loadCalibrationForSlot().
+	std::vector<std::string> m_objectiveSlotCalibrationPaths;
+	Ui::ObjectiveSetupDialog m_objectiveSetupDialogUi;
+	QDialog* m_objectiveSetupDialog{ nullptr };
+
+	// Suppresses objectiveSwitched()'s two blocking QMessageBox warnings for the duration of an
+	// automated multi-cycle run (ScaleCalibration::startObjectiveCycleCalibration()) - the
+	// target slot being calibrated will, by definition, always lack a FOV offset, so leaving
+	// these active would interrupt every single cycle. Set/cleared from
+	// updateObjectiveCycleProgress().
+	bool m_suppressObjectiveSwitchWarnings{ false };
 
 	Camera* m_andor{ nullptr };
 	ScanControl* m_scanControl{ nullptr };
@@ -400,21 +432,6 @@ private slots:
 	void on_action_Voltage_calibration_load_triggered();
 
 	void on_action_Scale_calibration_acquire_triggered();
-	void on_action_Scale_calibration_load_triggered();
-	void loadScaleCalibrationFile();
-
-	// Lets the operator point at a folder holding one calibration file per objective (see
-	// ScaleCalibration::autoLoadCalibrationsFromFolder()) - persisted the same way
-	// m_scaleCalibrationFilePath already is (writeSettings()/readSettings()).
-	void on_action_Scale_calibration_set_folder_triggered();
-	// Invoked at startup/connect (initBrillouin()): if a calibrations folder is configured,
-	// scans it and auto-applies whatever matches unambiguously; otherwise falls back to the
-	// pre-existing single-file loadScaleCalibrationFile() so a session that never configured
-	// a folder keeps behaving exactly as before.
-	void autoLoadObjectiveCalibrations();
-	// s_calibrationAutoLoadSummary() receiver - logs appliedText, and pops a blocking
-	// QMessageBox for warningText (ambiguous/invalid files) if it is non-empty.
-	void calibrationAutoLoadSummary(std::string appliedText, std::string warningText);
 
 	void updateScaleCalibrationTranslationValue(POINT2 translation);
 	void updateScaleCalibrationData(ScaleCalibrationData scaleCalibration);
@@ -423,20 +440,111 @@ private slots:
 	void showScaleCalibrationStatus(std::string title, std::string message);
 
 	void closeScaleCalibrationDialog();
-	void scaleCalibrationButtonApply_clicked();
-	void scaleCalibrationButtonAcquire_clicked();
-	void scaleCalibrationButtonSave_clicked();
-	void scaleCalibrationButtonFovOffsetReference_clicked();
-	void scaleCalibrationButtonFovOffsetMeasure_clicked();
+	// The FOV box's "Save calibration (no acquire needed)" (button_save) and the Scale box's
+	// same-labeled button (button_saveScale) are deliberately separate handlers, not one shared
+	// slot - each dispatches to the matching ScaleCalibration::saveFovOffsetCalibration()/
+	// saveScaleCalibration(), which persist only their own half of the calibration (see the
+	// rationale on those two in ScaleCalibration.h) - so saving one never also commits an
+	// in-progress, not-yet-decided edit sitting in the other box.
+	void scaleCalibrationButtonSaveScale_clicked();
+	void scaleCalibrationButtonSaveFov_clicked();
+	// "Automated calibration: Scale" box's Start button - reads scaleCyclesSpinBox and dispatches
+	// to ScaleCalibration::startScaleCalibrationCycle(). Replaces the former single-shot
+	// "Acquire" (now cycles=1 degenerates back to the same single-measurement behavior) and the
+	// former separate Apply button, whose only distinct behavior (closing the dialog) was
+	// dropped - the two Save buttons above are now the sole persist actions.
+	void scaleCalibrationButtonStartScaleCycle_clicked();
+	// s_scaleCalibrationCycleProgress() receiver - toggles Start/Cycles enablement and updates
+	// the "Automated calibration: Scale" status label. No "waiting for continue" state, unlike
+	// updateObjectiveCycleProgress() - this run is fully autonomous.
+	void updateScaleCalibrationCycleProgress(int currentCycle, int totalCycles);
+
+	// Refreshes the dialog's read-only "Objective" name/magnification/calibration-file display
+	// (from m_objectiveSlotNames/m_objectiveSlotCalibrationPaths for whichever slot is
+	// physically/software-active right now - the operator can no longer type into these fields
+	// directly, Objective Setup is the only place that changes them) and the "compare to"
+	// FOV-offset field enablement (greyed out for the reference objective - its offset is locked
+	// at {0,0}, see ObjectiveCalibrationData::isReferenceObjective). Also pushes the active
+	// slot's linked calibration file path into m_scaleCalibration (setLinkedCalibrationFilePath())
+	// so Save writes into the same file. Called once when the dialog is opened and again from
+	// objectiveSwitched() every time the active slot changes while it is open.
+	void refreshScaleCalibrationObjectiveDisplay();
+
+	// Automated multi-cycle FOV-offset calibration (Reference/Target combos + Start/Continue/
+	// Abort, see ScaleCalibration::startObjectiveCycleCalibration()). Dispatches to
+	// m_scaleCalibration exactly like the manual FOV-offset buttons above.
+	void scaleCalibrationButtonStartObjectiveCycle_clicked();
+	void scaleCalibrationButtonContinueObjectiveCycle_clicked();
+	void scaleCalibrationButtonAbortObjectiveCycle_clicked();
+	// s_objectiveCycleProgress() receiver - toggles Start/Continue/Abort enablement and updates
+	// the progress label; also flips m_suppressObjectiveSwitchWarnings for the run's duration.
+	void updateObjectiveCycleProgress(int currentCycle, int totalCycles, bool waitingForContinue);
+
+	// "Devices > Objective Setup": per-slot objective name/magnification, independent of and a
+	// prerequisite for the Reference/Target combos above (see m_objectiveSlotNames).
+	void on_action_Objective_setup_triggered();
+	void objectiveSetupButtonApply_clicked();
+	// One per slot, wired to each row's "..."/"x" buttons in on_action_Objective_setup_triggered() -
+	// opens a file picker (browse) or clears the link (clear), updating only that row's
+	// calibrationPath_N label (full path kept in the label's tooltip - see
+	// objectiveSetupButtonApply_clicked()) until Apply is clicked, same as the name fields.
+	void objectiveSetupBrowseCalibration_clicked(int slotIndex);
+	void objectiveSetupClearCalibration_clicked(int slotIndex);
+	// "New" button per row - prompts for a save path (defaulting into
+	// defaultCalibrationsFolderPath()), writes a blank calibration file (identity/zero scale,
+	// no FOV offset, name/magnification pre-filled from that row's own name field so it is
+	// self-consistent even before Apply), and links it exactly like Browse would.
+	void objectiveSetupNewCalibration_clicked(int slotIndex);
+	// "Reference" checkbox per row - marks that slot as THE objective every other slot's
+	// fovOffsetUm is measured relative to (hasFovOffset=true, fovOffsetUm={0,0},
+	// fovOffsetSigmaUm=0 - a real, locked value, not an absent one; see
+	// ObjectiveCalibrationData::isReferenceObjective's own doc comment for why that distinction
+	// matters). Mutually exclusive across slots: checking one unchecks (and demotes back to
+	// "unmeasured" - not a silently-wrong leftover value) whichever other slot currently has it.
+	// Writes straight to each affected slot's own live registration and linked file via
+	// ScaleCalibration::writeCalibrationToSlot(), so this works regardless of which objective is
+	// physically active right now.
+	void objectiveSetupReferenceToggled(int slotIndex, bool checked);
+	// Loads m_objectiveSlotCalibrationPaths into ScanControl for every slot that has one
+	// configured (ScaleCalibration::loadCalibrationForSlot() per slot) - called once at startup
+	// (initScanControl()) and again from objectiveSetupButtonApply_clicked() whenever a link
+	// changes, so a newly-linked file takes effect immediately without needing an app restart.
+	void loadLinkedObjectiveCalibrations();
+	// Pushes m_objectiveSlotNames out to everywhere it needs to be reflected: the live
+	// ScanControl's "Objective" DeviceElement::optionNames (cross-thread), the already-built
+	// beampath buttons (updateElementButtonLabels(), GUI thread, immediate), and the Scale
+	// Calibration dialog's Reference/Target combos if that dialog is currently open
+	// (populateObjectivePickerCombos()). Called after Objective Setup's Apply and once at
+	// startup (initScanControl(), before the beampath is actually built).
+	void pushObjectiveOptionNames();
+	// Sets the beampath QPushButtons' text for the "Objective" element from
+	// objectiveOptionNames (already formatted - empty slots must already be the fixed-width
+	// placeholder, not ""). Mirrors checkElementButtons()'s exact "indButton only increments on
+	// PUSHBUTTON elements" indexing so it stays correct regardless of backend/element order.
+	void updateElementButtonLabels(const std::vector<std::string>& objectiveOptionNames);
+	// Fills the Scale Calibration dialog's referenceObjectiveCombo/targetObjectiveCombo from
+	// m_objectiveSlotNames (name if set, else the word "Empty"), storing the 1-based slot number
+	// as each item's data (currentData().toInt()). No-op if the dialog is not currently open.
+	// referenceObjectiveCombo is also locked to whichever slot is the global reference objective
+	// (Objective Setup's "Reference" checkbox) and disabled outright, if one is set - there is
+	// only ever one true reference, so picking anything else there was only ever operator error
+	// (see this function's own .cpp comment). Left as an ordinary combo if no reference is set
+	// yet.
+	void populateObjectivePickerCombos();
+	// Empty slot names -> the fixed-width "E  " beampath placeholder (same width as "10x"-style
+	// names); named slots pass through unchanged. Used for the beampath specifically - the
+	// Reference/Target combos (populateObjectivePickerCombos()) spell out "Empty" instead.
+	std::vector<std::string> formatObjectiveNamesForBeampath(const std::vector<std::string>& names) const;
+	// Parses the magnification out of an already-validated "<N>x"/"<NN>x" objective name (see
+	// objectiveSetupButtonApply_clicked()'s namePattern) - 0.0 for an empty/unnamed slot.
+	double magnificationFromObjectiveName(const std::string& name) const;
 
 	void setTranslationDistanceX(double dx);
 	void setTranslationDistanceY(double dy);
 
-	void setMicrometerToPixX_x(double value);
-	void setMicrometerToPixX_y(double value);
-	void setMicrometerToPixY_x(double value);
-	void setMicrometerToPixY_y(double value);
-
+	// micrometerToPix is no longer shown/editable in the dialog (see updateScaleCalibrationData())
+	// - it is still tracked internally by ScaleCalibration, kept in sync from whichever
+	// pixToMicrometer field is edited below, so there are no GUI-facing setters for it here anymore.
 	void setPixToMicrometerX_x(double value);
 	void setPixToMicrometerX_y(double value);
 	void setPixToMicrometerY_x(double value);
@@ -444,7 +552,6 @@ private slots:
 
 	void setObjectiveName(QString name);
 	void setMagnification(double value);
-	void setReferenceObjectiveName(QString name);
 	void setHasFovOffset(bool hasFovOffset);
 	void setFovOffsetX(double value);
 	void setFovOffsetY(double value);
@@ -463,6 +570,13 @@ private slots:
 	// initial hardware read at startup, not an operator-driven switch, and is filtered out
 	// before this is even called (ScanControl itself does not emit for that case).
 	void objectiveSwitched(int previousSlot, int newSlot, bool hasCalibration, bool hasFovOffset, POINT2 offsetUm, double offsetSigmaUm);
+	// Reacts to ScaleCalibration::s_fovOffsetSaved(): a plain "Save calibration" on the FOV-offset
+	// box, while staying on the same active objective, otherwise triggers neither an on-screen
+	// grid redraw nor the relative-mode grid-origin correction that an actual objective switch
+	// gets (see s_fovOffsetSaved's doc comment in ScaleCalibration.h for why). This applies the
+	// same treatment objectiveSwitched() does, just keyed off old/new FOV-offset state instead of
+	// old/new objective slot.
+	void onFovOffsetSaved(int slot, POINT2 oldOffsetUm, bool oldHasFovOffset, POINT2 newOffsetUm, bool newHasFovOffset);
 	void on_camera_playPause_clicked();
 
 	void updateImageBrillouin();

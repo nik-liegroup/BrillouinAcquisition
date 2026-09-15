@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>441</width>
-    <height>422</height>
+    <height>1020</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -16,27 +16,14 @@
   <widget class="QPushButton" name="button_cancel">
    <property name="geometry">
     <rect>
-     <x>204</x>
-     <y>184</y>
-     <width>65</width>
+     <x>178</x>
+     <y>982</y>
+     <width>85</width>
      <height>23</height>
     </rect>
    </property>
    <property name="text">
     <string>Cancel</string>
-   </property>
-  </widget>
-  <widget class="QPushButton" name="button_apply">
-   <property name="geometry">
-    <rect>
-     <x>275</x>
-     <y>184</y>
-     <width>158</width>
-     <height>23</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>Apply</string>
    </property>
   </widget>
   <widget class="QWidget" name="verticalLayoutWidget">
@@ -135,141 +122,10 @@
      <x>176</x>
      <y>8</y>
      <width>257</width>
-     <height>168</height>
+     <height>90</height>
     </rect>
    </property>
    <layout class="QVBoxLayout" name="verticalLayout_2">
-    <item>
-     <layout class="QGridLayout" name="gridLayout">
-      <property name="spacing">
-       <number>6</number>
-      </property>
-      <item row="1" column="2">
-       <widget class="QDoubleSpinBox" name="micrometerToPixX_y">
-        <property name="decimals">
-         <number>4</number>
-        </property>
-        <property name="minimum">
-         <double>-100.000000000000000</double>
-        </property>
-        <property name="maximum">
-         <double>100.000000000000000</double>
-        </property>
-        <property name="singleStep">
-         <double>0.100000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="0">
-       <widget class="QLabel" name="label_6">
-        <property name="text">
-         <string>y-direction</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="1">
-       <widget class="QDoubleSpinBox" name="micrometerToPixX_x">
-        <property name="decimals">
-         <number>4</number>
-        </property>
-        <property name="minimum">
-         <double>-100.000000000000000</double>
-        </property>
-        <property name="maximum">
-         <double>100.000000000000000</double>
-        </property>
-        <property name="singleStep">
-         <double>0.100000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="2">
-       <widget class="QDoubleSpinBox" name="micrometerToPixY_y">
-        <property name="decimals">
-         <number>4</number>
-        </property>
-        <property name="minimum">
-         <double>-100.000000000000000</double>
-        </property>
-        <property name="maximum">
-         <double>100.000000000000000</double>
-        </property>
-        <property name="singleStep">
-         <double>0.100000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="1">
-       <widget class="QDoubleSpinBox" name="micrometerToPixY_x">
-        <property name="decimals">
-         <number>4</number>
-        </property>
-        <property name="minimum">
-         <double>-100.000000000000000</double>
-        </property>
-        <property name="maximum">
-         <double>100.000000000000000</double>
-        </property>
-        <property name="singleStep">
-         <double>0.100000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="QLabel" name="label_5">
-        <property name="text">
-         <string>x</string>
-        </property>
-        <property name="alignment">
-         <set>Qt::AlignCenter</set>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="2">
-       <widget class="QLabel" name="label_7">
-        <property name="text">
-         <string>y</string>
-        </property>
-        <property name="alignment">
-         <set>Qt::AlignCenter</set>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="label_4">
-        <property name="text">
-         <string>x-direction</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="0">
-       <widget class="QLabel" name="label_12">
-        <property name="sizePolicy">
-         <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
-          <horstretch>0</horstretch>
-          <verstretch>0</verstretch>
-         </sizepolicy>
-        </property>
-        <property name="minimumSize">
-         <size>
-          <width>0</width>
-          <height>28</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>16777215</width>
-          <height>28</height>
-         </size>
-        </property>
-        <property name="text">
-         <string>Micrometer to Pixel
-[pix/µm]</string>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </item>
     <item>
      <layout class="QGridLayout" name="gridLayout_2">
       <property name="spacing">
@@ -403,48 +259,161 @@
     </item>
    </layout>
   </widget>
-  <widget class="QPushButton" name="button_acquire">
+  <widget class="QGroupBox" name="scaleCalibrationCycleGroupBox">
    <property name="geometry">
     <rect>
      <x>8</x>
-     <y>184</y>
-     <width>158</width>
-     <height>23</height>
+     <y>106</y>
+     <width>425</width>
+     <height>200</height>
     </rect>
    </property>
-   <property name="text">
-    <string>Acquire</string>
+   <property name="title">
+    <string>Automated calibration: Scale</string>
    </property>
-  </widget>
-  <widget class="QProgressBar" name="progress">
-   <property name="geometry">
-    <rect>
-     <x>8</x>
-     <y>152</y>
-     <width>158</width>
-     <height>23</height>
-    </rect>
-   </property>
-   <property name="value">
-    <number>0</number>
-   </property>
-   <property name="alignment">
-    <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
-   </property>
+   <layout class="QVBoxLayout" name="scaleCalibrationCycleVerticalLayout">
+    <property name="spacing">
+     <number>6</number>
+    </property>
+    <property name="leftMargin">
+     <number>9</number>
+    </property>
+    <property name="topMargin">
+     <number>12</number>
+    </property>
+    <property name="rightMargin">
+     <number>9</number>
+    </property>
+    <property name="bottomMargin">
+     <number>9</number>
+    </property>
+    <item>
+     <layout class="QFormLayout" name="scaleCalibrationCycleFormLayout">
+      <property name="verticalSpacing">
+       <number>10</number>
+      </property>
+      <property name="horizontalSpacing">
+       <number>6</number>
+      </property>
+      <item row="0" column="0">
+       <widget class="QLabel" name="scaleCyclesSpinBox_label">
+        <property name="text">
+         <string>Cycles</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QSpinBox" name="scaleCyclesSpinBox">
+        <property name="minimum">
+         <number>1</number>
+        </property>
+        <property name="maximum">
+         <number>100</number>
+        </property>
+        <property name="value">
+         <number>3</number>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="scaleCalibrationSigma_label">
+        <property name="text">
+         <string>Sigma [µm/pix]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QDoubleSpinBox" name="scaleCalibrationSigma">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="decimals">
+         <number>4</number>
+        </property>
+        <property name="minimum">
+         <double>0.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100000.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QProgressBar" name="progress">
+      <property name="value">
+       <number>0</number>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QLabel" name="scaleCalibrationCycleStatusLabel">
+      <property name="text">
+       <string/>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="scaleCalibrationCycleButtonLayout">
+      <property name="spacing">
+       <number>6</number>
+      </property>
+      <item>
+       <widget class="QPushButton" name="button_acquire">
+        <property name="text">
+         <string>Start</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="button_saveScale">
+        <property name="text">
+         <string>Save calibration (no acquire needed)</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+   </layout>
   </widget>
   <widget class="QGroupBox" name="objectiveGroupBox">
    <property name="geometry">
     <rect>
      <x>8</x>
-     <y>216</y>
+     <y>316</y>
      <width>425</width>
-     <height>136</height>
+     <height>120</height>
     </rect>
    </property>
    <property name="title">
-    <string>Objective (applies to whichever slot is currently active)</string>
+    <string>Objective (currently active)</string>
    </property>
    <layout class="QFormLayout" name="objectiveFormLayout">
+    <property name="verticalSpacing">
+     <number>10</number>
+    </property>
+    <property name="horizontalSpacing">
+     <number>6</number>
+    </property>
+    <property name="leftMargin">
+     <number>9</number>
+    </property>
+    <property name="topMargin">
+     <number>12</number>
+    </property>
+    <property name="rightMargin">
+     <number>9</number>
+    </property>
+    <property name="bottomMargin">
+     <number>9</number>
+    </property>
     <item row="0" column="0">
      <widget class="QLabel" name="objectiveName_label">
       <property name="text">
@@ -453,7 +422,11 @@
      </widget>
     </item>
     <item row="0" column="1">
-     <widget class="QLineEdit" name="objectiveName"/>
+     <widget class="QLineEdit" name="objectiveName">
+      <property name="enabled">
+       <bool>false</bool>
+      </property>
+     </widget>
     </item>
     <item row="1" column="0">
      <widget class="QLabel" name="magnification_label">
@@ -464,6 +437,9 @@
     </item>
     <item row="1" column="1">
      <widget class="QDoubleSpinBox" name="magnification">
+      <property name="enabled">
+       <bool>false</bool>
+      </property>
       <property name="minimum">
        <double>0.000000000000000</double>
       </property>
@@ -473,138 +449,320 @@
      </widget>
     </item>
     <item row="2" column="0">
-     <widget class="QLabel" name="referenceObjectiveName_label">
+     <widget class="QLabel" name="objectiveCalibrationFile_label">
       <property name="text">
-       <string>Reference objective</string>
+       <string>Calibration file</string>
       </property>
      </widget>
     </item>
     <item row="2" column="1">
-     <widget class="QLineEdit" name="referenceObjectiveName"/>
-    </item>
-    <item row="3" column="0">
-     <widget class="QCheckBox" name="hasFovOffsetCheckbox">
+     <widget class="QLabel" name="objectiveCalibrationFile">
+      <property name="enabled">
+       <bool>false</bool>
+      </property>
       <property name="text">
-       <string>FOV-center offset calibrated</string>
-      </property>
-     </widget>
-    </item>
-    <item row="4" column="0">
-     <widget class="QLabel" name="fovOffsetX_label">
-      <property name="text">
-       <string>FOV offset x [µm]</string>
-      </property>
-     </widget>
-    </item>
-    <item row="4" column="1">
-     <widget class="QDoubleSpinBox" name="fovOffsetX">
-      <property name="decimals">
-       <number>3</number>
-      </property>
-      <property name="minimum">
-       <double>-100000.000000000000000</double>
-      </property>
-      <property name="maximum">
-       <double>100000.000000000000000</double>
-      </property>
-     </widget>
-    </item>
-    <item row="5" column="0">
-     <widget class="QLabel" name="fovOffsetY_label">
-      <property name="text">
-       <string>FOV offset y [µm]</string>
-      </property>
-     </widget>
-    </item>
-    <item row="5" column="1">
-     <widget class="QDoubleSpinBox" name="fovOffsetY">
-      <property name="decimals">
-       <number>3</number>
-      </property>
-      <property name="minimum">
-       <double>-100000.000000000000000</double>
-      </property>
-      <property name="maximum">
-       <double>100000.000000000000000</double>
-      </property>
-     </widget>
-    </item>
-    <item row="6" column="0">
-     <widget class="QLabel" name="fovOffsetSigma_label">
-      <property name="text">
-       <string>FOV offset sigma [µm]</string>
-      </property>
-     </widget>
-    </item>
-    <item row="6" column="1">
-     <widget class="QDoubleSpinBox" name="fovOffsetSigma">
-      <property name="decimals">
-       <number>3</number>
-      </property>
-      <property name="minimum">
-       <double>0.000000000000000</double>
-      </property>
-      <property name="maximum">
-       <double>100000.000000000000000</double>
+       <string>(none)</string>
       </property>
      </widget>
     </item>
    </layout>
   </widget>
-  <widget class="QPushButton" name="button_save">
+  <widget class="QGroupBox" name="fovOffsetGroupBox">
    <property name="geometry">
     <rect>
      <x>8</x>
-     <y>360</y>
+     <y>446</y>
      <width>425</width>
-     <height>23</height>
+     <height>250</height>
     </rect>
    </property>
-   <property name="text">
-    <string>Save calibration (no acquire needed)</string>
+   <property name="title">
+    <string>FOV-center offset (relative to the shared reference objective)</string>
    </property>
+   <layout class="QVBoxLayout" name="fovOffsetVerticalLayout">
+    <property name="spacing">
+     <number>6</number>
+    </property>
+    <property name="leftMargin">
+     <number>9</number>
+    </property>
+    <property name="topMargin">
+     <number>12</number>
+    </property>
+    <property name="rightMargin">
+     <number>9</number>
+    </property>
+    <property name="bottomMargin">
+     <number>9</number>
+    </property>
+    <item>
+     <layout class="QFormLayout" name="fovOffsetFormLayout">
+      <property name="verticalSpacing">
+       <number>10</number>
+      </property>
+      <property name="horizontalSpacing">
+       <number>6</number>
+      </property>
+      <item row="0" column="0" colspan="2">
+       <widget class="QCheckBox" name="hasFovOffsetCheckbox">
+        <property name="text">
+         <string>This objective's FOV-center offset is calibrated</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="fovOffsetX_label">
+        <property name="text">
+         <string>FOV offset x [µm]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QDoubleSpinBox" name="fovOffsetX">
+        <property name="decimals">
+         <number>3</number>
+        </property>
+        <property name="minimum">
+         <double>-100000.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100000.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="fovOffsetY_label">
+        <property name="text">
+         <string>FOV offset y [µm]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QDoubleSpinBox" name="fovOffsetY">
+        <property name="decimals">
+         <number>3</number>
+        </property>
+        <property name="minimum">
+         <double>-100000.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100000.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="fovOffsetSigma_label">
+        <property name="text">
+         <string>FOV offset sigma [µm]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QDoubleSpinBox" name="fovOffsetSigma">
+        <property name="decimals">
+         <number>3</number>
+        </property>
+        <property name="minimum">
+         <double>0.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100000.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QPushButton" name="button_save">
+      <property name="text">
+       <string>Save calibration (no acquire needed)</string>
+      </property>
+     </widget>
+    </item>
+   </layout>
   </widget>
-  <widget class="QPushButton" name="button_fovOffsetReference">
+  <widget class="QGroupBox" name="objectiveCycleGroupBox">
    <property name="geometry">
     <rect>
      <x>8</x>
-     <y>390</y>
-     <width>210</width>
-     <height>23</height>
+     <y>706</y>
+     <width>425</width>
+     <height>266</height>
     </rect>
    </property>
-   <property name="text">
-    <string>Set as FOV-offset reference</string>
+   <property name="title">
+    <string>Automated calibration: FOV</string>
    </property>
-  </widget>
-  <widget class="QPushButton" name="button_fovOffsetMeasure">
-   <property name="geometry">
-    <rect>
-     <x>223</x>
-     <y>390</y>
-     <width>210</width>
-     <height>23</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>Measure FOV offset</string>
-   </property>
+   <layout class="QVBoxLayout" name="objectiveCycleVerticalLayout">
+    <property name="spacing">
+     <number>6</number>
+    </property>
+    <property name="leftMargin">
+     <number>9</number>
+    </property>
+    <property name="topMargin">
+     <number>12</number>
+    </property>
+    <property name="rightMargin">
+     <number>9</number>
+    </property>
+    <property name="bottomMargin">
+     <number>9</number>
+    </property>
+    <item>
+     <layout class="QFormLayout" name="objectiveCycleFormLayout">
+      <property name="verticalSpacing">
+       <number>10</number>
+      </property>
+      <property name="horizontalSpacing">
+       <number>6</number>
+      </property>
+      <item row="0" column="0">
+       <widget class="QLabel" name="referenceObjectiveCombo_label">
+        <property name="text">
+         <string>Reference (already calibrated)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="referenceObjectiveCombo"/>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="targetObjectiveCombo_label">
+        <property name="text">
+         <string>Target (to calibrate)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QComboBox" name="targetObjectiveCombo"/>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="cyclesSpinBox_label">
+        <property name="text">
+         <string>Cycles</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QSpinBox" name="cyclesSpinBox">
+        <property name="minimum">
+         <number>1</number>
+        </property>
+        <property name="maximum">
+         <number>100</number>
+        </property>
+        <property name="value">
+         <number>3</number>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="zRetractDistanceUm_label">
+        <property name="text">
+         <string>Z retract [µm]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QDoubleSpinBox" name="zRetractDistanceUm">
+        <property name="decimals">
+         <number>2</number>
+        </property>
+        <property name="minimum">
+         <double>-10000.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>10000.000000000000000</double>
+        </property>
+        <property name="value">
+         <double>0.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="objectiveCycleFovOffsetSigma_label">
+        <property name="text">
+         <string>FOV offset sigma [µm]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QDoubleSpinBox" name="objectiveCycleFovOffsetSigma">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="decimals">
+         <number>3</number>
+        </property>
+        <property name="minimum">
+         <double>0.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100000.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QLabel" name="objectiveCycleStatusLabel">
+      <property name="text">
+       <string/>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="objectiveCycleButtonLayout">
+      <property name="spacing">
+       <number>6</number>
+      </property>
+      <item>
+       <widget class="QPushButton" name="button_startObjectiveCycle">
+        <property name="text">
+         <string>Start</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="button_continueObjectiveCycle">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="text">
+         <string>Continue</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="button_abortObjectiveCycle">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="text">
+         <string>Abort</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+   </layout>
   </widget>
  </widget>
  <tabstops>
   <tabstop>dx</tabstop>
   <tabstop>dy</tabstop>
-  <tabstop>micrometerToPixX_x</tabstop>
-  <tabstop>micrometerToPixX_y</tabstop>
-  <tabstop>micrometerToPixY_x</tabstop>
-  <tabstop>micrometerToPixY_y</tabstop>
   <tabstop>pixToMicrometerX_x</tabstop>
   <tabstop>pixToMicrometerX_y</tabstop>
   <tabstop>pixToMicrometerY_x</tabstop>
   <tabstop>pixToMicrometerY_y</tabstop>
+  <tabstop>scaleCyclesSpinBox</tabstop>
   <tabstop>button_acquire</tabstop>
+  <tabstop>button_saveScale</tabstop>
   <tabstop>button_cancel</tabstop>
-  <tabstop>button_apply</tabstop>
  </tabstops>
  <resources/>
  <connections/>

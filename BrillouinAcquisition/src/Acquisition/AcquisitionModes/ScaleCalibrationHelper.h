@@ -3,6 +3,7 @@
 
 #include "../../lib/math/points.h"
 
+#include <cmath>
 #include <string>
 
 struct ScaleCalibrationData {
@@ -36,6 +37,13 @@ struct ObjectiveCalibrationData : public ScaleCalibrationData {
 	std::string referenceObjectiveName{ "" };
 	std::string calibrationDate{ "" };
 
+	// [um/pix] repeatability (std dev of the isotropic pixel pitch, see
+	// ScaleCalibrationHelper::isotropicPixelPitchUm()) of the pix<->um scale calibration across
+	// the automated "Automated calibration: Scale" cycles that produced it - 0 if the scale
+	// calibration was only ever measured once (a single Acquire, not a multi-cycle run) or not
+	// at all. Purely a QC/repeatability display value, not consumed by anything else.
+	double scaleCalibrationSigmaUm{ 0.0 };
+
 	// The nosepiece slot this file was written from (ScanControl::getActiveObjectiveSlot() at
 	// save time - see ScaleCalibration::writeCalibrationMetadata()). -1 if unset: either an
 	// older file saved before this field existed, or a session with no motorized objective
@@ -45,6 +53,22 @@ struct ObjectiveCalibrationData : public ScaleCalibrationData {
 	// objective right now - the existing manual load()/apply() workflow ignores this field
 	// entirely and keeps registering against whichever slot is physically active.
 	int objectiveSlot{ -1 };
+
+	// True for exactly one objective across the whole nosepiece - the one every other
+	// objective's fovOffsetUm is ultimately relative to (composed through, if measured
+	// indirectly - see ScaleCalibration::measureFovOffset()'s composition). Distinct from
+	// hasFovOffset==false: hasFovOffset==false means "never measured, not a validated value at
+	// all" (callers must not treat it as a validated zero); a reference objective instead
+	// explicitly HAS hasFovOffset==true with fovOffsetUm=={0,0} and fovOffsetSigmaUm==0 - a
+	// real, deliberately-locked value, not an absent one. This is what lets objectiveSwitched()
+	// treat a switch to/from the reference exactly like any other calibrated switch (offset
+	// {0,0}, sigma 0) instead of raising the "no FOV-center offset" warning on every single
+	// switch involving it. Set exclusively via BrillouinAcquisition's Objective Setup dialog
+	// ("Reference" checkbox, mutually exclusive across slots - see
+	// ScaleCalibration::writeCalibrationToSlot()), never by measureFovOffset() itself. Optional/
+	// existence-checked on read (like scaleCalibrationSigma) - an older file predating this
+	// field is read as false, not rejected.
+	bool isReferenceObjective{ false };
 };
 
 struct Matrix2{
@@ -83,6 +107,19 @@ public:
 
 		calibration->micrometerToPixX = POINT2{ inverted.a, inverted.c };
 		calibration->micrometerToPixY = POINT2{ inverted.b, inverted.d };
+	}
+
+	// Isotropic-equivalent pixel pitch [um/pix]: sqrt(|determinant|) of the pix->um matrix - the
+	// matrix's area-scale factor, correct regardless of any rotation between the camera's pixel
+	// axes and the stage axes (unlike averaging the matrix's diagonal terms, which silently
+	// assumes zero rotation). Used both to bring two different objectives' images to a
+	// comparable scale before FOV-offset matching (ScaleCalibration::computeFovOffsetShiftUm())
+	// and to report repeatability across repeated scale-calibration cycles (ScaleCalibration::
+	// startScaleCalibrationCycle()).
+	static double isotropicPixelPitchUm(const ScaleCalibrationData& calibration) {
+		auto det = calibration.pixToMicrometerX.x * calibration.pixToMicrometerY.y
+			- calibration.pixToMicrometerY.x * calibration.pixToMicrometerX.y;
+		return std::sqrt(std::abs(det));
 	}
 
 	static bool isBasis(POINT2 e_0, POINT2 e_1) {
