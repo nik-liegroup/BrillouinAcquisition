@@ -1,6 +1,5 @@
 #include "stdafx.h"
 #include "ScaleCalibration.h"
-#include "FovRegistration.h"
 
 #include "src/helper/h5_helper.h"
 
@@ -27,10 +26,6 @@ using namespace std::filesystem;
 
 ScaleCalibration::ScaleCalibration(QObject* parent, Acquisition* acquisition, Camera*& camera, ScanControl*& scanControl)
 	: AcquisitionMode(parent, acquisition, scanControl), m_camera(camera) {
-	if (m_scanControl) {
-		connect(m_scanControl, &ScanControl::s_objectiveSwitched, this,
-			[this](int, int, bool, bool, POINT2, double) { refreshActiveObjectiveForEditing(); });
-	}
 }
 
 ScaleCalibration::~ScaleCalibration() {}
@@ -195,9 +190,7 @@ void ScaleCalibration::loadCalibrationForSlot(int slot, std::string filepath, st
 	// objectiveSlot said. setObjectiveCalibration() applies it live immediately if slot is
 	// already active, and unconditionally on every future switch to it either way
 	// (ScanControl::handleObjectiveSlotObserved()).
-	m_objectiveFilePaths[slot] = filepath;
 	m_scanControl->setObjectiveCalibration(slot, data);
-	if (slot == m_scanControl->getActiveObjectiveSlot()) refreshActiveObjectiveForEditing(true);
 }
 
 void ScaleCalibration::createEmptyCalibrationFile(int slot, std::string objectiveName, double magnification, std::string filepath) {
@@ -236,7 +229,7 @@ void ScaleCalibration::createEmptyCalibrationFile(int slot, std::string objectiv
 		writeAttribute(root, "referenceObjectiveName", data.referenceObjectiveName);
 		writeAttribute(root, "calibrationDate", data.calibrationDate);
 		writeAttribute(root, "hasFovOffset", data.hasFovOffset ? 1.0 : 0.0);
-		writeAttribute(root, "fovOffsetConvention", 2.0); // originPix-based image translation
+		writeAttribute(root, "fovOffsetConvention", 1.0); // originPix-based image translation
 		writeAttribute(root, "fovOffsetX", data.fovOffsetUm.x);
 		writeAttribute(root, "fovOffsetY", data.fovOffsetUm.y);
 		writeAttribute(root, "fovOffsetSigma", data.fovOffsetSigmaUm);
@@ -248,9 +241,7 @@ void ScaleCalibration::createEmptyCalibrationFile(int slot, std::string objectiv
 		return;
 	}
 
-	m_objectiveFilePaths[slot] = filepath;
 	m_scanControl->setObjectiveCalibration(slot, data);
-	if (slot == m_scanControl->getActiveObjectiveSlot()) refreshActiveObjectiveForEditing(true);
 }
 
 void ScaleCalibration::writeCalibrationToSlot(int slot, std::string filepath, ObjectiveCalibrationData data) {
@@ -282,7 +273,7 @@ void ScaleCalibration::writeCalibrationToSlot(int slot, std::string filepath, Ob
 			writeAttribute(root, "referenceObjectiveName", data.referenceObjectiveName);
 			writeAttribute(root, "calibrationDate", data.calibrationDate);
 			writeAttribute(root, "hasFovOffset", data.hasFovOffset ? 1.0 : 0.0);
-			writeAttribute(root, "fovOffsetConvention", 2.0); // originPix-based image translation
+			writeAttribute(root, "fovOffsetConvention", 1.0); // originPix-based image translation
 			writeAttribute(root, "fovOffsetX", data.fovOffsetUm.x);
 			writeAttribute(root, "fovOffsetY", data.fovOffsetUm.y);
 			writeAttribute(root, "fovOffsetSigma", data.fovOffsetSigmaUm);
@@ -295,9 +286,14 @@ void ScaleCalibration::writeCalibrationToSlot(int slot, std::string filepath, Ob
 		}
 	}
 
-	m_objectiveFilePaths[slot] = filepath;
 	m_scanControl->setObjectiveCalibration(slot, data);
-	if (slot == m_scanControl->getActiveObjectiveSlot()) refreshActiveObjectiveForEditing(true);
+	// If this happens to be the active slot (and/or its edit buffer is currently showing on the
+	// dialog), keep both in sync exactly like persistPartial() does.
+	if (slot == m_scanControl->getActiveObjectiveSlot()) {
+		m_scaleCalibration = data;
+		emit(s_scaleCalibrationChanged(m_scaleCalibration));
+		emit(s_objectiveCalibrationChanged(m_scaleCalibration));
+	}
 }
 
 /*
@@ -382,13 +378,13 @@ void ScaleCalibration::readCalibrationFile(const std::string& filepath, Objectiv
 		readAttribute(root, "isReferenceObjective", &isReferenceObjectiveValue);
 		out->isReferenceObjective = isReferenceObjectiveValue != 0.0;
 	}
-	// Older versions mixed image/plot origins and top-down/bottom-up coordinates.
-	// Neither the captured dimensions nor the original match were stored in the file.
+	// Unversioned files may use image-centre offsets. Their image dimensions were not
+	// stored, so conversion to the originPix frame cannot be reconstructed safely.
 	double offsetConvention = 0.0;
 	if (root.attrExists("fovOffsetConvention")) {
 		readAttribute(root, "fovOffsetConvention", &offsetConvention);
 	}
-	if (out->hasFovOffset && offsetConvention != 2.0 && !out->isReferenceObjective) {
+	if (out->hasFovOffset && offsetConvention != 1.0 && !out->isReferenceObjective) {
 		out->hasFovOffset = false;
 		out->fovOffsetUm = POINT2{};
 		out->fovOffsetSigmaUm = 0.0;
@@ -424,7 +420,7 @@ void ScaleCalibration::writeCalibrationMetadata(H5::Group& root) {
 	writeAttribute(root, "referenceObjectiveName", m_scaleCalibration.referenceObjectiveName);
 	writeAttribute(root, "calibrationDate", m_scaleCalibration.calibrationDate);
 	writeAttribute(root, "hasFovOffset", m_scaleCalibration.hasFovOffset ? 1.0 : 0.0);
-	writeAttribute(root, "fovOffsetConvention", 2.0); // originPix-based image translation
+	writeAttribute(root, "fovOffsetConvention", 1.0); // originPix-based image translation
 	writeAttribute(root, "fovOffsetX", m_scaleCalibration.fovOffsetUm.x);
 	writeAttribute(root, "fovOffsetY", m_scaleCalibration.fovOffsetUm.y);
 	writeAttribute(root, "fovOffsetSigma", m_scaleCalibration.fovOffsetSigmaUm);
@@ -433,40 +429,11 @@ void ScaleCalibration::writeCalibrationMetadata(H5::Group& root) {
 	writeAttribute(root, "isReferenceObjective", m_scaleCalibration.isReferenceObjective ? 1.0 : 0.0);
 }
 
-bool ScaleCalibration::isEditingObjective(int slot) const {
-	return m_scanControl && slot == m_editingObjectiveSlot
-		&& slot == m_scanControl->getActiveObjectiveSlot();
-}
-
-void ScaleCalibration::refreshActiveObjectiveForEditing(bool discardEdits) {
-	if (!m_scanControl) return;
-	auto slot = m_scanControl->getActiveObjectiveSlot();
-	if (!discardEdits && slot == m_editingObjectiveSlot) return;
-	m_scaleCalibration = m_scanControl->getObjectiveCalibration(slot);
-	if (!m_scanControl->hasObjectiveCalibration(slot)) {
-		static_cast<ScaleCalibrationData&>(m_scaleCalibration) = m_scanControl->getScaleCalibration();
-	}
-	m_scaleCalibration.objectiveSlot = slot;
-	m_editingObjectiveSlot = slot;
-	auto file = m_objectiveFilePaths.find(slot);
-	m_linkedCalibrationFilePath = file == m_objectiveFilePaths.end() ? "" : file->second;
-	emit(s_scaleCalibrationChanged(m_scaleCalibration));
-	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
-}
-
-void ScaleCalibration::selectObjectiveForEditing(int slot, std::string path, std::string name, double magnification) {
-	if (!m_scanControl || slot != m_scanControl->getActiveObjectiveSlot()) return;
-	m_objectiveFilePaths[slot] = path;
-	refreshActiveObjectiveForEditing();
+void ScaleCalibration::setLinkedCalibrationFilePath(std::string path) {
 	m_linkedCalibrationFilePath = path;
-	m_scaleCalibration.objectiveName = name;
-	m_scaleCalibration.magnification = magnification;
-	emit(s_scaleCalibrationChanged(m_scaleCalibration));
-	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
 }
 
 void ScaleCalibration::writeLinkedCalibrationFile() {
-	if (!isEditingObjective(m_editingObjectiveSlot)) return;
 	if (m_linkedCalibrationFilePath.empty()) {
 		emit(s_scaleCalibrationStatus("Calibration not saved to a file",
 			"This slot has no linked calibration file yet - link or create one first "
@@ -488,7 +455,6 @@ void ScaleCalibration::persistPartial(bool includeScale, bool includeFov) {
 		return;
 	}
 	auto slot = m_scanControl->getActiveObjectiveSlot();
-	if (!isEditingObjective(slot)) return;
 	// Start from whatever is currently stored for this slot (already registered in ScanControl,
 	// i.e. whatever the linked file last held) - not from m_scaleCalibration wholesale - so the
 	// half the caller does NOT own is left exactly as it was, regardless of what might currently
@@ -538,27 +504,17 @@ void ScaleCalibration::persistPartial(bool includeScale, bool includeFov) {
 	}
 }
 
-void ScaleCalibration::saveScaleCalibration(int expectedSlot) {
-	if (!isEditingObjective(expectedSlot)) {
-		emit(s_scaleCalibrationStatus("Objective changed", "The objective changed before Save. Review its calibration and save again."));
-		return;
-	}
+void ScaleCalibration::saveScaleCalibration() {
 	try {
 		// Keeps micrometerToPix in sync with a possibly-just-edited pixToMicrometer field - the
 		// same validation the former apply() performed.
 		ScaleCalibrationHelper::initializeCalibrationFromPixel(&m_scaleCalibration);
 	} catch (std::exception&) {
-		emit(s_scaleCalibrationStatus("Invalid pixel scale", "The pixel-scale vectors must form a valid basis."));
-		return;
 	}
 	persistPartial(true, false);
 }
 
-void ScaleCalibration::saveFovOffsetCalibration(int expectedSlot) {
-	if (!isEditingObjective(expectedSlot)) {
-		emit(s_scaleCalibrationStatus("Objective changed", "The objective changed before Save. Review its calibration and save again."));
-		return;
-	}
+void ScaleCalibration::saveFovOffsetCalibration() {
 	// No scale-calibration validation here at all - this half never touches those fields, so a
 	// still-degenerate (not yet "Acquire"d) scale calibration must not block saving just an
 	// FOV-center offset.
@@ -818,14 +774,14 @@ void ScaleCalibration::__acquire() {
 	auto minLocX = cv::Point{};
 	auto maxLocX = cv::Point{};
 	cv::minMaxLoc(outputX, &minValX, &maxValX, &minLocX, &maxLocX, cv::Mat());
-	auto shiftDx = subpixelMatchLocation(outputX, minLocX) - cv::Point2d(padding, padding);
+	auto shiftDx = minLocX - cv::Point(padding, padding);
 
 	auto minValY = double{};
 	auto maxValY = double{};
 	auto minLocY = cv::Point{};
 	auto maxLocY = cv::Point{};
 	cv::minMaxLoc(outputY, &minValY, &maxValY, &minLocY, &maxLocY, cv::Mat());
-	auto shiftDy = subpixelMatchLocation(outputY, minLocY) - cv::Point2d(padding, padding);
+	auto shiftDy = minLocY - cv::Point(padding, padding);
 
 	/*
 	 * Construct the scale calibration
@@ -871,7 +827,6 @@ void ScaleCalibration::__acquire() {
 void ScaleCalibration::acquire(std::unique_ptr <StorageWrapper>& storage) {}
 
 void ScaleCalibration::acquire() {
-	refreshActiveObjectiveForEditing();
 	if (m_cameraSettings.readout.dataType == "unsigned short") {
 		__acquire<unsigned short>();
 	} else if (m_cameraSettings.readout.dataType == "unsigned char") {
@@ -880,8 +835,28 @@ void ScaleCalibration::acquire() {
 }
 
 void ScaleCalibration::initialize() {
-	refreshActiveObjectiveForEditing(true);
+	// Get the current scale calibration from the scanControl. Only the base
+	// ScaleCalibrationData portion - m_scaleCalibration is now the derived
+	// ObjectiveCalibrationData, and getScaleCalibration() only returns the base type, so a
+	// plain assignment no longer compiles. The objective-identity/FOV-offset fields are
+	// populated separately just below, from whatever is already registered for the active
+	// slot (if any), so the dialog opens showing the right existing values for whichever
+	// objective is actually in the beam path right now.
+	static_cast<ScaleCalibrationData&>(m_scaleCalibration) = m_scanControl->getScaleCalibration();
+	auto activeCalibration = m_scanControl->getActiveObjectiveCalibration();
+	m_scaleCalibration.objectiveName = activeCalibration.objectiveName;
+	m_scaleCalibration.magnification = activeCalibration.magnification;
+	m_scaleCalibration.hasFovOffset = activeCalibration.hasFovOffset;
+	m_scaleCalibration.fovOffsetUm = activeCalibration.fovOffsetUm;
+	m_scaleCalibration.fovOffsetSigmaUm = activeCalibration.fovOffsetSigmaUm;
+	m_scaleCalibration.referenceObjectiveName = activeCalibration.referenceObjectiveName;
+	m_scaleCalibration.calibrationDate = activeCalibration.calibrationDate;
+	m_scaleCalibration.scaleCalibrationSigmaUm = activeCalibration.scaleCalibrationSigmaUm;
+
+	// Emit it to the main GUI thread
 	emit(s_scaleCalibrationAcquisitionProgress(0.0));
+	emit(s_scaleCalibrationChanged(m_scaleCalibration));
+	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
 	emit(s_Ds_changed(m_Ds));
 }
 
@@ -1180,17 +1155,172 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	cv::Mat refMat = readAsMat8U(referenceImage, referenceRoi.height_binned, referenceRoi.width_binned, referenceDataType);
 	cv::Mat tgtMat = readAsMat8U(targetImage, targetRoi.height_binned, targetRoi.width_binned, targetDataType);
 
-	FovRegistrationResult registration;
-	if (!registerObjectiveImages(refMat, tgtMat, referenceScale, targetScale, registration, *failureReason)) {
+	// Approximate, isotropic pixel pitch [um/pix] - only to bring the two images to a roughly
+	// comparable scale before template matching. The final um result below uses the target's
+	// full, non-approximated calibration instead.
+	//
+	// ScaleCalibrationHelper::isotropicPixelPitchUm() (sqrt(|determinant|) of the pix->um
+	// matrix), NOT an average of its diagonal terms: the determinant is the matrix's area-scale
+	// factor (um^2/pixel^2), which is correct regardless of any rotation between the camera's
+	// pixel axes and the stage axes - averaging only the diagonal (X.x, Y.y) terms silently
+	// assumes zero rotation, and is wrong (by a large, rotation-dependent factor - up to totally
+	// collapsing to ~0 at 90 degrees) whenever the two objectives' optical paths actually
+	// introduce different image rotations, which is exactly what previously produced a grossly
+	// inflated "estimated magnification change" (and the resulting nonsense multi-hundred-um
+	// shift, since the two images were then rescaled to the wrong relative size before matching)
+	// even with two independently-verified-correct per-objective pixel-scale calibrations.
+	auto referencePixelSizeUm = ScaleCalibrationHelper::isotropicPixelPitchUm(referenceScale);
+	auto targetPixelSizeUm = ScaleCalibrationHelper::isotropicPixelPitchUm(targetScale);
+	if (referencePixelSizeUm <= 0.0 || targetPixelSizeUm <= 0.0) {
+		// Not an image-content problem at all - this objective has no (non-zero)
+		// pixToMicrometer pixel-scale calibration registered yet, i.e. its own "Acquire"
+		// (translation between images) has never successfully completed and been applied/
+		// saved. The FOV-offset measurement needs that first, for both objectives, purely to
+		// know how much to rescale one image before comparing it to the other.
+		*failureReason = (referencePixelSizeUm <= 0.0 && targetPixelSizeUm <= 0.0)
+			? "Neither the reference nor the target objective has a saved pixel-scale (\"Acquire\"/translation-between-images) calibration yet - run and apply/save that for both objectives first."
+			: (referencePixelSizeUm <= 0.0
+				? "The reference objective has no saved pixel-scale (\"Acquire\"/translation-between-images) calibration yet - run and apply/save that for it first."
+				: "The target objective has no saved pixel-scale (\"Acquire\"/translation-between-images) calibration yet - run and apply/save that for it first.");
 		return false;
 	}
-	// This is informational only. Registration itself uses the full matrix.
-	*estimatedMagnificationChange = ScaleCalibrationHelper::isotropicPixelPitchUm(referenceScale)
-		/ ScaleCalibrationHelper::isotropicPixelPitchUm(targetScale);
-	*shiftUm = ScaleCalibrationHelper::fovOffsetFromImageTranslation(referenceScale, targetScale,
-		refMat.rows, tgtMat.rows, registration.imageTranslation);
-	saveDebugCalibrationMat(registration.overlay, "fovOverlay");
-	auto matrix = ScaleCalibrationHelper::imageLinearTransform(referenceScale, targetScale);
+
+	auto rescaleFactor = referencePixelSizeUm / targetPixelSizeUm;
+	// This is exactly the reference->target magnification ratio the matching below assumes,
+	// derived purely from each objective's own stored pixToMicrometer calibration (not from
+	// the image content) - the caller compares it against the nominal ratio of the two
+	// objectives' typed-in "Magnification" values as a sanity check that the matching is
+	// operating at a sane scale.
+	*estimatedMagnificationChange = rescaleFactor;
+	cv::Mat refMatRescaled;
+	cv::resize(refMat, refMatRescaled, cv::Size(), rescaleFactor, rescaleFactor, cv::INTER_LINEAR);
+
+	// matchTemplate() requires the template to fit inside the search image - whichever of the
+	// two (now comparably-scaled) images is smaller becomes the template.
+	cv::Mat searchMat;
+	cv::Mat templateMat;
+	bool referenceIsSearch;
+	if (refMatRescaled.rows >= tgtMat.rows && refMatRescaled.cols >= tgtMat.cols) {
+		searchMat = refMatRescaled;
+		templateMat = tgtMat;
+		referenceIsSearch = true;
+	} else if (tgtMat.rows >= refMatRescaled.rows && tgtMat.cols >= refMatRescaled.cols) {
+		searchMat = tgtMat;
+		templateMat = refMatRescaled;
+		referenceIsSearch = false;
+	} else {
+		// Neither fits inside the other - very different aspect ratios after rescaling, or a
+		// degenerate ROI. Give up rather than guess. This means the two objectives' pixel-scale
+		// calibrations imply a very different aspect ratio between the two captured frames -
+		// most likely one of the two pixel-scale calibrations is wrong (e.g. x/y swapped),
+		// not that the images lack matchable content.
+		*failureReason = "The reference and target images have too different an aspect ratio after "
+			"rescaling to a common pixel scale - check both objectives' pixel-scale calibrations "
+			"(the estimated magnification change reported after a successful measurement is the "
+			"sanity check for this).";
+		return false;
+	}
+
+	// The smaller (already rescaled-to-a-common-pixel-pitch) image is used as the template in
+	// full - no additional crop/margin. An earlier version of this code cropped a padded,
+	// centered region out of it first, copying the trick __acquire() uses for the (same-size-
+	// image) scale-calibration match, where cropping is what creates room to slide at all. Here
+	// searchMat and templateMat are already different sizes (that is the whole point - the
+	// reference objective's real field of view is physically bigger), so that size difference
+	// alone already provides all the room matchTemplate needs; cropping on top of it only threw
+	// away real image content for no benefit, which is the actual/main cause of the large,
+	// genuinely-different cycle-to-cycle results you saw - a smaller, less distinctive template
+	// window is more prone to a locally-similar-but-wrong best match. Using the full image
+	// gives the match the most real content to work with.
+	cv::Mat templ = templateMat;
+	if (templ.rows < 1 || templ.cols < 1 || searchMat.rows < templ.rows || searchMat.cols < templ.cols) {
+		*failureReason = "The smaller of the two captured images is empty, or no longer fits inside "
+			"the larger one after rescaling to a common pixel scale - capture at a larger ROI, or "
+			"check both objectives' pixel-scale calibrations for a gross error.";
+		return false;
+	}
+
+	// TM_CCOEFF_NORMED (mean-subtracted, normalized cross-correlation) rather than TM_SQDIFF -
+	// unlike the same-objective scale-calibration match in __acquire(), reference and target here
+	// are captured through two different objectives, whose illumination/brightness (and contrast)
+	// commonly differ with magnification. TM_SQDIFF's score is sensitive to absolute intensity
+	// offsets/scale between the two images, which can bias or outright break the match; the
+	// normalized-correlation coefficient is invariant to a per-image additive/multiplicative
+	// brightness difference, so it keeps matching on structure regardless.
+	cv::Mat matchResult;
+	cv::matchTemplate(searchMat, templ, matchResult, cv::TemplateMatchModes::TM_CCOEFF_NORMED);
+	cv::normalize(matchResult, matchResult, 0, 1, cv::NORM_MINMAX, -1, cv::Mat());
+
+	auto minVal = double{};
+	auto maxVal = double{};
+	auto minLoc = cv::Point{};
+	auto maxLoc = cv::Point{};
+	cv::minMaxLoc(matchResult, &minVal, &maxVal, &minLoc, &maxLoc, cv::Mat());
+
+	// maxLoc (not minLoc - TM_CCOEFF_NORMED's best match is the highest score, the opposite
+	// convention from TM_SQDIFF) is where templ's top-left corner best matches inside searchMat -
+	// i.e. the RAW match location, with no "expected/zero-shift" reference point subtracted here.
+	// Earlier versions of this code subtracted a geometric-image-centre-based expectedLoc at this
+	// point, implicitly assuming each image's optical centre is its own geometric centre
+	// (originPix == width/2,height/2). That is a DIFFERENT assumption than what the runtime
+	// consumer of fovOffsetUm actually uses (ScanControl::pixToMicroMeter()/microMeterToPix(),
+	// which use the real, stored originPix - (0,0) in practice, since scale calibration never
+	// computes it). Mixing the two produced a constant, wrong bias (A_target * expectedLoc) baked
+	// into every measurement. Fixed by deriving fovOffsetUm directly from the ACTUAL originPix of
+	// both objectives (whatever it is, even if that's (0,0)) instead of assuming a value for it:
+	//
+	//   p_t = s*p_r - tau   (image registration: tau = maxLoc, s = rescaleFactor)
+	//   p_t = A_t^-1[A_r(p_r-o_r) + fovOffsetUm] + o_t   (runtime, assuming A_t^-1*A_r == s*I)
+	//   => fovOffsetUm = -A_t*tau + A_r*o_r - A_t*o_t
+	//
+	// which reduces to the old formula exactly when o_r=o_t=width/2,height/2, and to plain
+	// -A_t*tau when o_r=o_t=(0,0) (the actual case today) - see the derivation this was worked
+	// out from for the general case and the s*I approximation's own limits (assumes no relative
+	// rotation/shear between the two objectives' images beyond the isotropic rescale below).
+	auto tau = maxLoc;
+	if (!referenceIsSearch) {
+		// templ came from the (rescaled) reference and searchMat is the target - the above
+		// then measures "reference relative to target", the opposite of "target relative to
+		// reference" (searchMat = reference case), so flip it to keep one consistent meaning
+		// regardless of which image happened to be larger.
+		tau = -tau;
+	}
+
+	// Visual sanity check for the operator: the (common-pixel-scale) target image blended at
+	// 50% opacity onto the (common-pixel-scale) reference image, positioned exactly where the
+	// match above placed it - so misalignment is visible directly, independent of trusting the
+	// numeric shift computed below. targetTopLeftInRef == tau always (both branches - in the
+	// referenceIsSearch case maxLoc already IS target's top-left within refMatRescaled; in the
+	// other case it's the negation of reference's top-left within target, i.e. target's top-left
+	// within reference's own frame under a pure-translation assumption).
+	{
+		auto targetTopLeftInRef = tau;
+
+		auto refRect = cv::Rect(0, 0, refMatRescaled.cols, refMatRescaled.rows);
+		auto targetRectInRef = cv::Rect(targetTopLeftInRef, tgtMat.size());
+		auto visibleRect = refRect & targetRectInRef;
+		if (visibleRect.area() > 0) {
+			auto overlay = refMatRescaled.clone();
+			auto sourceRect = cv::Rect(visibleRect.tl() - targetTopLeftInRef, visibleRect.size());
+			cv::addWeighted(overlay(visibleRect), 0.5, tgtMat(sourceRect), 0.5, 0.0, overlay(visibleRect));
+			saveDebugCalibrationMat(overlay, "fovOverlay");
+		}
+	}
+
+	// A_r * o_r and A_t * o_t - each objective's own calibrated originPix, converted through its
+	// own pixToMicrometer matrix. (0,0) today for both (originPix is never actually calibrated -
+	// see the comment above tau's definition), which makes both of these (0,0) too and the
+	// formula below collapse to fovOffsetUm = -A_t*tau - but this stays correct automatically if
+	// originPix is ever given a real per-objective calibration later, with no further code change.
+	auto refOriginXUm = referenceScale.pixToMicrometerX.x * referenceScale.originPix.x + referenceScale.pixToMicrometerY.x * referenceScale.originPix.y;
+	auto refOriginYUm = referenceScale.pixToMicrometerX.y * referenceScale.originPix.x + referenceScale.pixToMicrometerY.y * referenceScale.originPix.y;
+	auto tgtOriginXUm = targetScale.pixToMicrometerX.x * targetScale.originPix.x + targetScale.pixToMicrometerY.x * targetScale.originPix.y;
+	auto tgtOriginYUm = targetScale.pixToMicrometerX.y * targetScale.originPix.x + targetScale.pixToMicrometerY.y * targetScale.originPix.y;
+
+	// The runtime adds this translation before projecting through the target scale.
+	// A physical stage jog also depends on the laser marker's old/new um coordinates;
+	// the image-frame offset alone must not be described as a compensating stage move.
+	*shiftUm = ScaleCalibrationHelper::fovOffsetFromTranslation(referenceScale, targetScale, POINT2{ (double)tau.x, (double)tau.y });
 
 	// Plain-text dump of every number this measurement is built from, alongside the reference/
 	// target/overlay .tif debug images - lets the operator check the matrices themselves (e.g.
@@ -1214,11 +1344,10 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 		text << "  micrometerToPixY: (" << targetScale.micrometerToPixY.x << ", " << targetScale.micrometerToPixY.y << ")\n";
 		text << "\n";
 		text << "FOV-offset measurement:\n";
-		text << "  area-equivalent magnification ratio (informational): " << *estimatedMagnificationChange << "\n";
-		text << "  image transform matrix: [[" << matrix.a << ", " << matrix.b << "], [" << matrix.c << ", " << matrix.d << "]]\n";
-		text << "  image translation (top-down, zero-based pixels): (" << registration.imageTranslation.x << ", " << registration.imageTranslation.y << ")\n";
-		text << "  reference/target image heights: " << refMat.rows << ", " << tgtMat.rows << "\n";
-		text << "  normalized correlation: " << registration.correlation << "\n";
+		text << "  rescaleFactor (reference->target, applied to reference before matching): " << rescaleFactor << "\n";
+		text << "  estimatedMagnificationChange (same value, exposed for the caller's sanity check): " << *estimatedMagnificationChange << "\n";
+		text << "  tau (raw match shift, target relative to reference, common pixel scale, px): (" << tau.x << ", " << tau.y << ")\n";
+		text << "  A_r*originPix_r - A_t*originPix_t (origin-consistency correction term, um): (" << (refOriginXUm - tgtOriginXUm) << ", " << (refOriginYUm - tgtOriginYUm) << ")\n";
 		text << "  fovOffsetUm (image-frame translation, um): (" << shiftUm->x << ", " << shiftUm->y << ")\n";
 		saveDebugCalibrationText(text.str(), "fovOffsetDebug");
 	}
@@ -1262,7 +1391,6 @@ void ScaleCalibration::captureFovOffsetReferenceImage(bool resetAccumulatedSampl
 }
 
 void ScaleCalibration::measureFovOffset() {
-	refreshActiveObjectiveForEditing();
 	if (!m_camera || !m_scanControl) {
 		return;
 	}

@@ -21,35 +21,6 @@ static void check(POINT2 actual, POINT2 expected) {
 	}
 }
 
-static void checkCameraFrameTransform() {
-	ScaleCalibrationData reference, target;
-	reference.pixToMicrometerX = { .04, -.47 };
-	reference.pixToMicrometerY = { .46, .03 };
-	target.pixToMicrometerX = { -.03, -.22 };
-	target.pixToMicrometerY = { .25, -.02 };
-	reference.originPix = { 123, 87 };
-	target.originPix = { 71, 95 };
-	ScaleCalibrationHelper::initializeCalibrationFromPixel(&reference);
-	ScaleCalibrationHelper::initializeCalibrationFromPixel(&target);
-	const double referenceHeight = 1024, targetHeight = 768;
-	const POINT2 translation{ -615, -293 };
-	auto m = ScaleCalibrationHelper::imageLinearTransform(reference, target);
-	auto offset = ScaleCalibrationHelper::fovOffsetFromImageTranslation(
-		reference, target, referenceHeight, targetHeight, translation);
-	for (POINT2 raw : { POINT2{ 10, 80 }, POINT2{ 420, 260 }, POINT2{ 760, 540 } }) {
-		POINT2 targetRaw{ m.a * raw.x + m.b * raw.y + translation.x,
-			m.c * raw.x + m.d * raw.y + translation.y };
-		POINT2 referencePlot{ raw.x + 1, referenceHeight - raw.y };
-		POINT2 targetPlot{ targetRaw.x + 1, targetHeight - targetRaw.y };
-		check(toPixel(target, toUm(reference, referencePlot) + offset), targetPlot);
-	}
-	auto reverse = ScaleCalibrationHelper::imageLinearTransform(target, reference);
-	POINT2 reverseTranslation{ -reverse.a * translation.x - reverse.b * translation.y,
-		-reverse.c * translation.x - reverse.d * translation.y };
-	check(ScaleCalibrationHelper::fovOffsetFromImageTranslation(target, reference,
-		targetHeight, referenceHeight, reverseTranslation), offset * -1.0);
-}
-
 static void exercise(POINT2 referenceOrigin, POINT2 targetOrigin, bool drawOnTarget) {
 	ScaleCalibrationData reference, target;
 	reference.originPix = referenceOrigin;
@@ -78,8 +49,6 @@ static void exercise(POINT2 referenceOrigin, POINT2 targetOrigin, bool drawOnTar
 		auto grid = toUm(firstScale, drawnPixel) - anchor.resolve(firstScanner, firstOffset);
 		auto absolute = toUm(firstScale, drawnPixel) + stage - firstOffset;
 		auto currentScanner = firstScanner;
-		auto pausedStart = stage + anchor.resolve(firstScanner, firstOffset);
-		auto previousOffset = firstOffset;
 		for (int cycle = 0; cycle < 100; ++cycle) {
 			for (bool useTarget : { true, false }) {
 				auto scanner = useTarget ? targetScanner : referenceScanner;
@@ -94,10 +63,6 @@ static void exercise(POINT2 referenceOrigin, POINT2 targetOrigin, bool drawOnTar
 				// Starting a relative acquisition must leave the preview unchanged.
 				auto start = stage + anchor.resolve(scanner, fov);
 				check(toPixel(scale, grid + start - stage), expected);
-				// A paused acquisition has a captured anchor; only its FOV delta changes.
-				pausedStart += fov - previousOffset;
-				previousOffset = fov;
-				check(toPixel(scale, grid + pausedStart - stage), expected);
 				// Moving to the target (backend subtracts scanner) puts it at the laser.
 				auto commandedStage = grid + start - scanner;
 				check(toPixel(scale, grid + start - commandedStage), markerPixel);
@@ -113,13 +78,6 @@ static void exercise(POINT2 referenceOrigin, POINT2 targetOrigin, bool drawOnTar
 
 int main() {
 	try {
-		checkCameraFrameTransform();
-		// The supplied 20x calibration and raw registration give this translation.
-		ScaleCalibrationData measuredReference, measuredTarget;
-		measuredTarget.pixToMicrometerX = { 0, -0.233900 };
-		measuredTarget.pixToMicrometerY = { 0.233918, 0 };
-		check(ScaleCalibrationHelper::fovOffsetFromTranslation(
-			measuredReference, measuredTarget, { 768, 510 }), { -119.29818, 179.6352 });
 		for (bool drawOnTarget : { false, true }) {
 			exercise({ 0, 0 }, { 0, 0 }, drawOnTarget);
 			exercise({ 640, 512 }, { 640, 512 }, drawOnTarget);

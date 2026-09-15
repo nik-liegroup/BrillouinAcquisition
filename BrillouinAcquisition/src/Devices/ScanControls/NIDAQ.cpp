@@ -102,11 +102,6 @@ void NIDAQ::setPosition(POINT2 position) {
 	}
 
 	m_positionScanner = position;
-	// See ScanControl::setScaleCalibration()'s use of this flag - NIDAQ's LaserScanner
-	// capability means locatePositionScanner() (the other place this flag is set) is always a
-	// no-op here, so this is this backend's own "the scanner position now means something real"
-	// event instead.
-	m_hasLocatedPositionScanner = true;
 
 	// Set the scan position
 	applyPosition();

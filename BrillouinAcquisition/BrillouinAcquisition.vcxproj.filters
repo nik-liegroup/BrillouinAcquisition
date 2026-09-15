@@ -203,9 +203,6 @@
     <ClInclude Include="src\Acquisition\AcquisitionModes\VoltageCalibrationHelper.h">
       <Filter>Header Files\Acquisition\AcquisitionModes</Filter>
     </ClInclude>
-    <ClInclude Include="src\Acquisition\AcquisitionModes\FovRegistration.h">
-      <Filter>Header Files\Acquisition\AcquisitionModes</Filter>
-    </ClInclude>
     <ClInclude Include="src\Acquisition\AcquisitionModes\ScaleCalibrationHelper.h">
       <Filter>Header Files\Acquisition\AcquisitionModes</Filter>
     </ClInclude>

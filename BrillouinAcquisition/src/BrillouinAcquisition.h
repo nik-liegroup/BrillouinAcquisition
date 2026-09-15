@@ -291,7 +291,6 @@ private:
 
 	Ui::Dialog m_scaleCalibrationDialogUi;
 	QDialog* m_scaleCalibrationDialog{ nullptr };
-	int m_scaleCalibrationDisplayedSlot{ -2 };
 
 	// Per-slot objective names ("" = unnamed), canonical/GUI-thread-owned. Persisted via
 	// writeSettings()/readSettings() (group "objective-setup"), pushed to ScanControl's live
@@ -466,7 +465,7 @@ private slots:
 	// directly, Objective Setup is the only place that changes them) and the "compare to"
 	// FOV-offset field enablement (greyed out for the reference objective - its offset is locked
 	// at {0,0}, see ObjectiveCalibrationData::isReferenceObjective). Also pushes the active
-	// slot's linked calibration file path into m_scaleCalibration (selectObjectiveForEditing())
+	// slot's linked calibration file path into m_scaleCalibration (setLinkedCalibrationFilePath())
 	// so Save writes into the same file. Called once when the dialog is opened and again from
 	// objectiveSwitched() every time the active slot changes while it is open.
 	void refreshScaleCalibrationObjectiveDisplay();

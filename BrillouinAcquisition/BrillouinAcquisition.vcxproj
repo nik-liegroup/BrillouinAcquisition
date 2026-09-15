@@ -257,7 +257,6 @@
 		<QtMoc Include="src\Acquisition\AcquisitionModes\ScaleCalibration.h" />
 		<ClInclude Include="src\Acquisition\Planning\ScanPlanner.h" />
 		<ClInclude Include="src\Acquisition\AcquisitionModes\ScaleCalibrationHelper.h" />
-		<ClInclude Include="src\Acquisition\AcquisitionModes\FovRegistration.h" />
 		<QtMoc Include="src\Acquisition\Acquisition.h" />
 		<QtMoc Include="src\Acquisition\AcquisitionModes\Brillouin.h" />
 		<QtMoc Include="src\Acquisition\AcquisitionModes\AcquisitionMode.h" />

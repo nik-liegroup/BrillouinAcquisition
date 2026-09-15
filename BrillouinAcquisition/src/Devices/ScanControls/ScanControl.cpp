@@ -141,10 +141,6 @@ void ScanControl::locatePositionScanner(POINT2 positionLaserPix) {
 	}
 
 	m_positionScanner = pixToMicroMeter(positionLaserPix);
-	// See setScaleCalibration()'s use of this flag: from here on, m_positionScanner is a real,
-	// operator-set value, so it's safe (and necessary) to preserve it across future scale
-	// changes.
-	m_hasLocatedPositionScanner = true;
 
 	announcePositionScanner();
 	announcePositions();
@@ -361,17 +357,7 @@ void ScanControl::setScaleCalibration(const ScaleCalibrationData& scaleCalibrati
 	auto posScanner = microMeterToPix(m_positionScanner);
 	m_scaleCalibration = scaleCalibration;
 	m_positionScanner = pixToMicroMeter(posScanner);
-	// m_hasLocatedPositionScanner guards against the very first real objective calibration
-	// loading over NIDAQ's/this backend's hardcoded startup placeholder (both are individually
-	// valid bases, so oldScaleValid alone doesn't catch this): before locatePositionScanner()
-	// has ever run, oldScanner is just wherever pixel (0,0) happens to reproject to under
-	// whatever placeholder calibration was in memory - not anything the operator ever set - so
-	// "preserving" the resulting reprojection jump bakes a large, meaningless constant into
-	// m_relativeGridAnchor that then silently shifts every relative-mode grid point off-screen
-	// for the rest of the session. Once the marker has been deliberately located at least once,
-	// oldScanner is always meaningful and every subsequent scale change is safe to preserve
-	// across.
-	if (m_hasLocatedPositionScanner && oldScaleValid && ScaleCalibrationHelper::isBasis(
+	if (oldScaleValid && ScaleCalibrationHelper::isBasis(
 		m_scaleCalibration.pixToMicrometerX, m_scaleCalibration.pixToMicrometerY)) {
 		// The laser marker stays at its calibrated screen pixel, but its new um value
 		// must not become a new anchor for an already drawn relative grid.

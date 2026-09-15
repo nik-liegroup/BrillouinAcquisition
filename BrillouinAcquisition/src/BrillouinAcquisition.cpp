@@ -3738,7 +3738,7 @@ void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 	}
 
 	// Initialize the scaleCalibration
-	QMetaObject::invokeMethod(m_scaleCalibration, "initialize", Qt::AutoConnection);
+	m_scaleCalibration->initialize();
 
 	populateObjectivePickerCombos();
 	refreshScaleCalibrationObjectiveDisplay();
@@ -3757,7 +3757,6 @@ void BrillouinAcquisition::updateScaleCalibrationTranslationValue(POINT2 transla
 }
 
 void BrillouinAcquisition::updateScaleCalibrationData(ScaleCalibrationData scaleCalibration) {
-	if (!m_scaleCalibrationDialog) return;
 	// We have to block the signals so that programmatically setting new values
 	// doesn't trigger a new round of calculations. Only pixToMicrometer is shown in the dialog -
 	// micrometerToPix is still tracked internally (see the .ui connect() comment above) but has
@@ -3774,9 +3773,6 @@ void BrillouinAcquisition::updateScaleCalibrationData(ScaleCalibrationData scale
 }
 
 void BrillouinAcquisition::updateObjectiveCalibrationData(ObjectiveCalibrationData calibration) {
-	if (!m_scaleCalibrationDialog) return;
-	if (!m_scanControl || calibration.objectiveSlot != m_scanControl->getActiveObjectiveSlot()) return;
-	m_scaleCalibrationDisplayedSlot = calibration.objectiveSlot;
 	// objectiveName/magnification are NOT set here - they are read-only, driven by
 	// m_objectiveSlotNames (refreshScaleCalibrationObjectiveDisplay()), not by whatever a
 	// calibration file/measurement happens to have stored for them.
@@ -3825,8 +3821,8 @@ void BrillouinAcquisition::showScaleCalibrationStatus(std::string title, std::st
 void BrillouinAcquisition::scaleCalibrationButtonSaveScale_clicked() {
 	QMetaObject::invokeMethod(
 		m_scaleCalibration,
-		[calibration = m_scaleCalibration, slot = m_scaleCalibrationDisplayedSlot]() {
-			calibration->saveScaleCalibration(slot);
+		[&m_scaleCalibration = m_scaleCalibration]() {
+			m_scaleCalibration->saveScaleCalibration();
 		},
 		Qt::AutoConnection
 	);
@@ -3835,8 +3831,8 @@ void BrillouinAcquisition::scaleCalibrationButtonSaveScale_clicked() {
 void BrillouinAcquisition::scaleCalibrationButtonSaveFov_clicked() {
 	QMetaObject::invokeMethod(
 		m_scaleCalibration,
-		[calibration = m_scaleCalibration, slot = m_scaleCalibrationDisplayedSlot]() {
-			calibration->saveFovOffsetCalibration(slot);
+		[&m_scaleCalibration = m_scaleCalibration]() {
+			m_scaleCalibration->saveFovOffsetCalibration();
 		},
 		Qt::AutoConnection
 	);
@@ -3966,31 +3962,19 @@ void BrillouinAcquisition::setTranslationDistanceY(double dy) {
 }
 
 void BrillouinAcquisition::setPixToMicrometerX_x(double value) {
-	QMetaObject::invokeMethod(m_scaleCalibration,
-		[calibration = m_scaleCalibration, slot = m_scaleCalibrationDisplayedSlot, value]() {
-			if (calibration->isEditingObjective(slot)) calibration->setPixToMicrometerX_x(value);
-		}, Qt::AutoConnection);
+	m_scaleCalibration->setPixToMicrometerX_x(value);
 }
 
 void BrillouinAcquisition::setPixToMicrometerX_y(double value) {
-	QMetaObject::invokeMethod(m_scaleCalibration,
-		[calibration = m_scaleCalibration, slot = m_scaleCalibrationDisplayedSlot, value]() {
-			if (calibration->isEditingObjective(slot)) calibration->setPixToMicrometerX_y(value);
-		}, Qt::AutoConnection);
+	m_scaleCalibration->setPixToMicrometerX_y(value);
 }
 
 void BrillouinAcquisition::setPixToMicrometerY_x(double value) {
-	QMetaObject::invokeMethod(m_scaleCalibration,
-		[calibration = m_scaleCalibration, slot = m_scaleCalibrationDisplayedSlot, value]() {
-			if (calibration->isEditingObjective(slot)) calibration->setPixToMicrometerY_x(value);
-		}, Qt::AutoConnection);
+	m_scaleCalibration->setPixToMicrometerY_x(value);
 }
 
 void BrillouinAcquisition::setPixToMicrometerY_y(double value) {
-	QMetaObject::invokeMethod(m_scaleCalibration,
-		[calibration = m_scaleCalibration, slot = m_scaleCalibrationDisplayedSlot, value]() {
-			if (calibration->isEditingObjective(slot)) calibration->setPixToMicrometerY_y(value);
-		}, Qt::AutoConnection);
+	m_scaleCalibration->setPixToMicrometerY_y(value);
 }
 
 void BrillouinAcquisition::setObjectiveName(QString name) {
@@ -4002,31 +3986,19 @@ void BrillouinAcquisition::setMagnification(double value) {
 }
 
 void BrillouinAcquisition::setHasFovOffset(bool hasFovOffset) {
-	QMetaObject::invokeMethod(m_scaleCalibration,
-		[calibration = m_scaleCalibration, slot = m_scaleCalibrationDisplayedSlot, hasFovOffset]() {
-			if (calibration->isEditingObjective(slot)) calibration->setHasFovOffset(hasFovOffset);
-		}, Qt::AutoConnection);
+	m_scaleCalibration->setHasFovOffset(hasFovOffset);
 }
 
 void BrillouinAcquisition::setFovOffsetX(double value) {
-	QMetaObject::invokeMethod(m_scaleCalibration,
-		[calibration = m_scaleCalibration, slot = m_scaleCalibrationDisplayedSlot, value]() {
-			if (calibration->isEditingObjective(slot)) calibration->setFovOffsetX(value);
-		}, Qt::AutoConnection);
+	m_scaleCalibration->setFovOffsetX(value);
 }
 
 void BrillouinAcquisition::setFovOffsetY(double value) {
-	QMetaObject::invokeMethod(m_scaleCalibration,
-		[calibration = m_scaleCalibration, slot = m_scaleCalibrationDisplayedSlot, value]() {
-			if (calibration->isEditingObjective(slot)) calibration->setFovOffsetY(value);
-		}, Qt::AutoConnection);
+	m_scaleCalibration->setFovOffsetY(value);
 }
 
 void BrillouinAcquisition::setFovOffsetSigma(double value) {
-	QMetaObject::invokeMethod(m_scaleCalibration,
-		[calibration = m_scaleCalibration, slot = m_scaleCalibrationDisplayedSlot, value]() {
-			if (calibration->isEditingObjective(slot)) calibration->setFovOffsetSigma(value);
-		}, Qt::AutoConnection);
+	m_scaleCalibration->setFovOffsetSigma(value);
 }
 
 std::string BrillouinAcquisition::defaultCalibrationsFolderPath() const {
@@ -4546,6 +4518,10 @@ void BrillouinAcquisition::refreshScaleCalibrationObjectiveDisplay() {
 	const QSignalBlocker blocker2(m_scaleCalibrationDialogUi.magnification);
 	m_scaleCalibrationDialogUi.objectiveName->setText(QString::fromStdString(activeName));
 	m_scaleCalibrationDialogUi.magnification->setValue(activeMagnification);
+	// Keep ScaleCalibration's own edit buffer in sync too, so Save persists the right
+	// name/magnification even though nothing in the dialog lets the operator type them anymore.
+	m_scaleCalibration->setObjectiveName(QString::fromStdString(activeName));
+	m_scaleCalibration->setMagnification(activeMagnification);
 
 	// Same idea for the linked calibration file - shown read-only so the operator can see which
 	// file Save will write into, and pushed into ScaleCalibration so it actually does.
@@ -4554,10 +4530,7 @@ void BrillouinAcquisition::refreshScaleCalibrationObjectiveDisplay() {
 	m_scaleCalibrationDialogUi.objectiveCalibrationFile->setToolTip(QString::fromStdString(activePath));
 	m_scaleCalibrationDialogUi.objectiveCalibrationFile->setText(activePath.empty() ? "(none)"
 		: QFileInfo(QString::fromStdString(activePath)).fileName());
-	QMetaObject::invokeMethod(m_scaleCalibration,
-		[calibration = m_scaleCalibration, activeSlot, activePath, activeName, activeMagnification]() {
-			calibration->selectObjectiveForEditing(activeSlot, activePath, activeName, activeMagnification);
-		}, Qt::AutoConnection);
+	m_scaleCalibration->setLinkedCalibrationFilePath(activePath);
 
 	// The reference objective's FOV-center offset is locked at {0,0}, sigma 0 - see
 	// ObjectiveCalibrationData::isReferenceObjective's own doc comment. Editing it here would be
