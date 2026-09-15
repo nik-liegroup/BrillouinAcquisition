@@ -247,6 +247,24 @@ void ScanControl::setRLShutterOpen(bool open) {
 	}
 }
 
+bool ScanControl::setBeamBlockOpen(bool open) {
+	for (gsl::index ii{ 0 }; ii < m_deviceElements.size(); ii++) {
+		if (m_deviceElements[ii].name == "Beam Block") {
+			// Same "Close" = 1, "Open" = 2 convention setRLShutterOpen() relies on - every
+			// backend with a Beam Block element declares it with optionNames = { "Close",
+			// "Open" } too, and translates this generic 1/2 into whatever its own hardware
+			// actually needs (a Thorlabs flip mount position, a raw DAQ TTL level, etc.) inside
+			// its own setElement() dispatch.
+			const double position = open ? 2.0 : 1.0;
+			setElement(m_deviceElements[ii], position);
+			m_elementPositions[ii] = position;
+			emit(elementPositionsChanged(m_elementPositions));
+			return true;
+		}
+	}
+	return false;
+}
+
 Preset ScanControl::getPreset(ScanPreset presetType) {
 	for (gsl::index ii{ 0 }; ii < m_presets.size(); ii++) {
 		if (m_presets[ii].index == presetType) {

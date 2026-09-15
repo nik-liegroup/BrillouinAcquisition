@@ -199,6 +199,15 @@ public slots:
 	// instead of relying on whatever a preset's table happens to say. No-op if this
 	// backend has no element named "RL Shutter".
 	void setRLShutterOpen(bool open);
+	// Same idea as setRLShutterOpen(), for the "Beam Block" device element (the excitation
+	// laser's own shutter, not a camera/exposure gate - see each backend's Beam Block
+	// implementation) - drives it directly through the same generic setElement() path the
+	// manual beampath button uses, using the same "Close"=1/"Open"=2 convention every
+	// backend that has this element shares. No-op if this backend has no element named
+	// "Beam Block" (e.g. ZeissMTB_Erlangen2, which has no such element wired up) - returns
+	// false in that case so a caller (e.g. a dose-protection settle delay) can skip work
+	// that would only make sense if this actually did something.
+	bool setBeamBlockOpen(bool open);
 	void announcePosition();
 	void startAnnouncing();
 	void stopAnnouncing();

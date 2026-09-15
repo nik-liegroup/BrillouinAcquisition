@@ -156,12 +156,15 @@ private:
 	QDoubleSpinBox* m_surfaceVerificationToleranceSpinBox{ nullptr };
 	QCheckBox* m_absoluteGridCheckbox{ nullptr };
 	QCheckBox* m_gridHysteresisCompensationCheckbox{ nullptr };
+	QCheckBox* m_doseProtectionCheckbox{ nullptr };
 	QCheckBox* m_saveOverviewBrightfieldPerZCheckbox{ nullptr };
 	QRadioButton* m_overviewSingleImageRadio{ nullptr };
 	QRadioButton* m_overviewFullGridRadio{ nullptr };
-	QCheckBox* m_overviewSampledGridCheckbox{ nullptr };
-	QSpinBox* m_overviewBinSpinBox{ nullptr };
-	QCheckBox* m_overviewFullStackCheckbox{ nullptr };
+	QCheckBox* m_overviewFullStackSingleCheckbox{ nullptr };
+	QCheckBox* m_overviewFullStackMosaicCheckbox{ nullptr };
+	QCheckBox* m_capturePerPointBrightfieldCheckbox{ nullptr };
+	QSpinBox* m_perPointBrightfieldEveryNSpinBox{ nullptr };
+	QCheckBox* m_perPointBrightfieldDuringAcquisitionCheckbox{ nullptr };
 	QAbstractButton* m_editSpectralProxyRoiCheckbox{ nullptr };
 	QCPItemRect* m_spectralProxyRoiRectItem{ nullptr };
 	QCPItemRect* m_spectralProxyRoi2RectItem{ nullptr };

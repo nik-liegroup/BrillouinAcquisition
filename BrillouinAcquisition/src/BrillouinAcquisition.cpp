@@ -652,12 +652,15 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_surfaceVerificationToleranceSpinBox = ui->surfaceVerificationToleranceSpinBox;
 			m_absoluteGridCheckbox = ui->absoluteGridCheckbox;
 			m_gridHysteresisCompensationCheckbox = ui->gridHysteresisCompensationCheckbox;
+			m_doseProtectionCheckbox = ui->doseProtectionCheckbox;
 			m_saveOverviewBrightfieldPerZCheckbox = ui->saveOverviewBrightfieldPerZCheckbox;
 			m_overviewSingleImageRadio = ui->overviewSingleImageRadio;
 			m_overviewFullGridRadio = ui->overviewFullGridRadio;
-			m_overviewSampledGridCheckbox = ui->overviewSampledGridCheckbox;
-			m_overviewBinSpinBox = ui->overviewBinSpinBox;
-			m_overviewFullStackCheckbox = ui->overviewFullStackCheckbox;
+			m_overviewFullStackSingleCheckbox = ui->overviewFullStackSingleCheckbox;
+			m_overviewFullStackMosaicCheckbox = ui->overviewFullStackMosaicCheckbox;
+			m_capturePerPointBrightfieldCheckbox = ui->capturePerPointBrightfieldCheckbox;
+			m_perPointBrightfieldEveryNSpinBox = ui->perPointBrightfieldEveryNSpinBox;
+			m_perPointBrightfieldDuringAcquisitionCheckbox = ui->perPointBrightfieldDuringAcquisitionCheckbox;
 			m_editSpectralProxyRoiCheckbox = ui->editSpectralProxyRoiCheckbox;
 
 			connect(m_useRoiMaskCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
@@ -791,6 +794,10 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				m_Brillouin->settings.useGridHysteresisCompensation = enabled;
 			});
 
+			connect(m_doseProtectionCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				m_Brillouin->settings.useDoseProtection = enabled;
+			});
+
 			connect(m_saveOverviewBrightfieldPerZCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
 				m_Brillouin->settings.saveOverviewBrightfieldPerZ = enabled;
 				updateEstimatedAcquisitionTime();
@@ -803,6 +810,10 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 					return;
 				}
 				m_Brillouin->settings.overviewBrightfieldFullGrid = false;
+				// Refreshes which of the two full-z-stack checkboxes is enabled (see
+				// updateBrillouinSettings()) - they're mode-scoped, so switching coverage
+				// mode changes which one currently applies.
+				updateBrillouinSettings();
 				updateEstimatedAcquisitionTime();
 				updateOverviewTileOutlines();
 			});
@@ -812,29 +823,39 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 					return;
 				}
 				m_Brillouin->settings.overviewBrightfieldFullGrid = true;
+				updateBrillouinSettings();
 				updateEstimatedAcquisitionTime();
 				updateOverviewTileOutlines();
 			});
 
-			connect(m_overviewSampledGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
-				// Independent of, and combinable with, the single-image/full-grid overview
-				// image above - see Brillouin::overviewCapturePoints().
-				m_Brillouin->settings.overviewBrightfieldSampledGrid = enabled;
-				if (m_overviewBinSpinBox) {
-					m_overviewBinSpinBox->setEnabled(m_Brillouin->settings.saveOverviewBrightfieldPerZ && enabled);
+			connect(m_overviewFullStackSingleCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				m_Brillouin->settings.overviewBrightfieldFullStackSingle = enabled;
+				updateEstimatedAcquisitionTime();
+			});
+
+			connect(m_overviewFullStackMosaicCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				m_Brillouin->settings.overviewBrightfieldFullStackMosaic = enabled;
+				updateEstimatedAcquisitionTime();
+			});
+
+			connect(m_capturePerPointBrightfieldCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				m_Brillouin->settings.capturePerPointBrightfield = enabled;
+				if (m_perPointBrightfieldEveryNSpinBox) {
+					m_perPointBrightfieldEveryNSpinBox->setEnabled(enabled);
+				}
+				if (m_perPointBrightfieldDuringAcquisitionCheckbox) {
+					m_perPointBrightfieldDuringAcquisitionCheckbox->setEnabled(enabled);
 				}
 				updateEstimatedAcquisitionTime();
-				updateOverviewTileOutlines();
 			});
 
-			connect(m_overviewBinSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
-				m_Brillouin->settings.overviewBrightfieldBin = std::max(1, value);
+			connect(m_perPointBrightfieldEveryNSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+				m_Brillouin->settings.perPointBrightfieldEveryN = std::max(1, value);
 				updateEstimatedAcquisitionTime();
-				updateOverviewTileOutlines();
 			});
 
-			connect(m_overviewFullStackCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
-				m_Brillouin->settings.overviewBrightfieldFullStack = enabled;
+			connect(m_perPointBrightfieldDuringAcquisitionCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				m_Brillouin->settings.perPointBrightfieldDuringAcquisition = enabled;
 				updateEstimatedAcquisitionTime();
 			});
 
@@ -5834,6 +5855,10 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		const QSignalBlocker blocker(*m_gridHysteresisCompensationCheckbox);
 		m_gridHysteresisCompensationCheckbox->setChecked(m_Brillouin->settings.useGridHysteresisCompensation);
 	}
+	if (m_doseProtectionCheckbox) {
+		const QSignalBlocker blocker(*m_doseProtectionCheckbox);
+		m_doseProtectionCheckbox->setChecked(m_Brillouin->settings.useDoseProtection);
+	}
 	if (m_saveOverviewBrightfieldPerZCheckbox) {
 		const QSignalBlocker blocker(*m_saveOverviewBrightfieldPerZCheckbox);
 		m_saveOverviewBrightfieldPerZCheckbox->setChecked(m_Brillouin->settings.saveOverviewBrightfieldPerZ);
@@ -5842,10 +5867,8 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		);
 	}
 	// Coverage-mode controls work in both absolute and relative grid mode (see
-	// Brillouin::overviewImageXY()/overviewSampledGridXY()) - they only actually need
-	// per-Z overview capture to be enabled at all, or they'd be settings that silently do
-	// nothing. "Sampled grid points" is independent of, and combinable with, the
-	// single-image/full-grid choice - see Brillouin::overviewCapturePoints().
+	// Brillouin::overviewImageXY()) - they only actually need per-Z overview capture to be
+	// enabled at all, or they'd be settings that silently do nothing.
 	{
 		const auto overviewPossible = m_Brillouin->settings.saveOverviewBrightfieldPerZ;
 		if (m_overviewSingleImageRadio) {
@@ -5858,25 +5881,38 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 			m_overviewFullGridRadio->setChecked(m_Brillouin->settings.overviewBrightfieldFullGrid);
 			m_overviewFullGridRadio->setEnabled(overviewPossible);
 		}
-		if (m_overviewSampledGridCheckbox) {
-			const QSignalBlocker blocker(*m_overviewSampledGridCheckbox);
-			m_overviewSampledGridCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldSampledGrid);
-			m_overviewSampledGridCheckbox->setEnabled(overviewPossible);
+		if (m_overviewFullStackSingleCheckbox) {
+			const QSignalBlocker blocker(*m_overviewFullStackSingleCheckbox);
+			m_overviewFullStackSingleCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldFullStackSingle);
+			m_overviewFullStackSingleCheckbox->setEnabled(overviewPossible && !m_Brillouin->settings.overviewBrightfieldFullGrid);
 		}
-		if (m_overviewBinSpinBox) {
-			const QSignalBlocker blocker(*m_overviewBinSpinBox);
-			m_overviewBinSpinBox->setValue(m_Brillouin->settings.overviewBrightfieldBin);
-			m_overviewBinSpinBox->setEnabled(overviewPossible && m_Brillouin->settings.overviewBrightfieldSampledGrid);
-		}
-		if (m_overviewFullStackCheckbox) {
-			const QSignalBlocker blocker(*m_overviewFullStackCheckbox);
-			m_overviewFullStackCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldFullStack);
-			// Only ever applies to the overview image itself (single-image/full-grid),
-			// regardless of whether "sampled grid points" is additionally on - see
-			// Brillouin::overviewCapturePoints().
-			m_overviewFullStackCheckbox->setEnabled(overviewPossible);
+		if (m_overviewFullStackMosaicCheckbox) {
+			const QSignalBlocker blocker(*m_overviewFullStackMosaicCheckbox);
+			m_overviewFullStackMosaicCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldFullStackMosaic);
+			m_overviewFullStackMosaicCheckbox->setEnabled(overviewPossible && m_Brillouin->settings.overviewBrightfieldFullGrid);
 		}
 		updateOverviewTileOutlines();
+	}
+	// Independent of the per-z overview above (capturePerPointBrightfield is its own,
+	// separate setting) - only needs the brightfield camera itself connected, same
+	// precondition saveOverviewBrightfieldPerZCheckbox above uses.
+	{
+		const auto perPointPossible = m_brightfieldCamera != nullptr && m_brightfieldCamera->getConnectionStatus();
+		if (m_capturePerPointBrightfieldCheckbox) {
+			const QSignalBlocker blocker(*m_capturePerPointBrightfieldCheckbox);
+			m_capturePerPointBrightfieldCheckbox->setChecked(m_Brillouin->settings.capturePerPointBrightfield);
+			m_capturePerPointBrightfieldCheckbox->setEnabled(perPointPossible);
+		}
+		if (m_perPointBrightfieldEveryNSpinBox) {
+			const QSignalBlocker blocker(*m_perPointBrightfieldEveryNSpinBox);
+			m_perPointBrightfieldEveryNSpinBox->setValue(m_Brillouin->settings.perPointBrightfieldEveryN);
+			m_perPointBrightfieldEveryNSpinBox->setEnabled(perPointPossible && m_Brillouin->settings.capturePerPointBrightfield);
+		}
+		if (m_perPointBrightfieldDuringAcquisitionCheckbox) {
+			const QSignalBlocker blocker(*m_perPointBrightfieldDuringAcquisitionCheckbox);
+			m_perPointBrightfieldDuringAcquisitionCheckbox->setChecked(m_Brillouin->settings.perPointBrightfieldDuringAcquisition);
+			m_perPointBrightfieldDuringAcquisitionCheckbox->setEnabled(perPointPossible && m_Brillouin->settings.capturePerPointBrightfield);
+		}
 	}
 	const auto homeControlsDisabled = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
 	ui->setHome->setDisabled(homeControlsDisabled);
@@ -6286,12 +6322,8 @@ void BrillouinAcquisition::update_AOI_preview() {
 void BrillouinAcquisition::updateOverviewTileOutlines() {
 	const bool overviewActive = m_showPositions && m_scanControl && m_Brillouin->settings.saveOverviewBrightfieldPerZ;
 	const bool showTiles = overviewActive && m_Brillouin->settings.overviewBrightfieldFullGrid;
-	// The single-image marker and "sampled grid points" markers are independent and
-	// combinable (see Brillouin::overviewCapturePoints()): the former shows whenever the
-	// overview image isn't the mosaic, the latter whenever that option is additionally on.
-	const bool showSingleImageMarker = overviewActive && !m_Brillouin->settings.overviewBrightfieldFullGrid;
-	const bool showSampledGridMarkers = overviewActive && m_Brillouin->settings.overviewBrightfieldSampledGrid;
-	const bool showPoints = showSingleImageMarker || showSampledGridMarkers;
+	// Shows whenever the overview image isn't the mosaic.
+	const bool showPoints = overviewActive && !m_Brillouin->settings.overviewBrightfieldFullGrid;
 	const bool gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
 	// See the comment below on offset/frame conventions - both the mosaic outlines and the
 	// point markers below live in the same frame and need the same conversion.
@@ -6340,22 +6372,14 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 		}
 	}
 
-	// Single-image center and/or "sampled grid points" markers: show exactly where the BF
-	// overview will be captured, in the same frame/offset convention as the mosaic
-	// outlines above.
+	// Single-image center marker: shows exactly where the BF overview will be captured, in
+	// the same frame/offset convention as the mosaic outlines above.
 	if (!showPoints) {
 		if (m_overviewPointMarker && ui->customplot_brightfield->removePlottable(m_overviewPointMarker)) {
 			m_overviewPointMarker = nullptr;
 		}
 	} else {
-		std::vector<POINT2> points;
-		if (showSingleImageMarker) {
-			points.push_back(m_Brillouin->overviewGridCenterXY());
-		}
-		if (showSampledGridMarkers) {
-			const auto sampled = m_Brillouin->overviewSampledGridXY();
-			points.insert(points.end(), sampled.begin(), sampled.end());
-		}
+		std::vector<POINT2> points{ m_Brillouin->overviewGridCenterXY() };
 
 		if (!m_overviewPointMarker) {
 			m_overviewPointMarker = new QCPCurve(ui->customplot_brightfield->xAxis, ui->customplot_brightfield->yAxis);
@@ -6928,13 +6952,16 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-absolute-grid-origin-y-um", m_Brillouin->settings.absoluteGridOriginUm.y);
 	settings.setValue("brillouin-absolute-grid-origin-z-um", m_Brillouin->settings.absoluteGridOriginUm.z);
 	settings.setValue("brillouin-use-grid-hysteresis-compensation", m_Brillouin->settings.useGridHysteresisCompensation);
+	settings.setValue("brillouin-use-dose-protection", m_Brillouin->settings.useDoseProtection);
 	settings.setValue("brillouin-save-overview-brightfield-per-z", m_Brillouin->settings.saveOverviewBrightfieldPerZ);
 	settings.setValue("brillouin-overview-brightfield-exposure-ms", m_Brillouin->settings.overviewBrightfieldExposureMs);
 	settings.setValue("brillouin-overview-brightfield-gain", m_Brillouin->settings.overviewBrightfieldGain);
 	settings.setValue("brillouin-overview-brightfield-full-grid", m_Brillouin->settings.overviewBrightfieldFullGrid);
-	settings.setValue("brillouin-overview-brightfield-sampled-grid", m_Brillouin->settings.overviewBrightfieldSampledGrid);
-	settings.setValue("brillouin-overview-brightfield-bin", m_Brillouin->settings.overviewBrightfieldBin);
-	settings.setValue("brillouin-overview-brightfield-full-stack", m_Brillouin->settings.overviewBrightfieldFullStack);
+	settings.setValue("brillouin-overview-brightfield-full-stack-single", m_Brillouin->settings.overviewBrightfieldFullStackSingle);
+	settings.setValue("brillouin-overview-brightfield-full-stack-mosaic", m_Brillouin->settings.overviewBrightfieldFullStackMosaic);
+	settings.setValue("brillouin-capture-per-point-brightfield", m_Brillouin->settings.capturePerPointBrightfield);
+	settings.setValue("brillouin-per-point-brightfield-every-n", m_Brillouin->settings.perPointBrightfieldEveryN);
+	settings.setValue("brillouin-per-point-brightfield-during-acquisition", m_Brillouin->settings.perPointBrightfieldDuringAcquisition);
 	settings.setValue("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft);
 	settings.setValue("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop);
 	settings.setValue("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth);
@@ -7091,13 +7118,16 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.absoluteGridOriginUm.y = settings.value("brillouin-absolute-grid-origin-y-um", m_Brillouin->settings.absoluteGridOriginUm.y).toDouble();
 	m_Brillouin->settings.absoluteGridOriginUm.z = settings.value("brillouin-absolute-grid-origin-z-um", m_Brillouin->settings.absoluteGridOriginUm.z).toDouble();
 	m_Brillouin->settings.useGridHysteresisCompensation = settings.value("brillouin-use-grid-hysteresis-compensation", m_Brillouin->settings.useGridHysteresisCompensation).toBool();
+	m_Brillouin->settings.useDoseProtection = settings.value("brillouin-use-dose-protection", m_Brillouin->settings.useDoseProtection).toBool();
 	m_Brillouin->settings.saveOverviewBrightfieldPerZ = settings.value("brillouin-save-overview-brightfield-per-z", m_Brillouin->settings.saveOverviewBrightfieldPerZ).toBool();
 	m_Brillouin->settings.overviewBrightfieldExposureMs = settings.value("brillouin-overview-brightfield-exposure-ms", m_Brillouin->settings.overviewBrightfieldExposureMs).toInt();
 	m_Brillouin->settings.overviewBrightfieldGain = settings.value("brillouin-overview-brightfield-gain", m_Brillouin->settings.overviewBrightfieldGain).toDouble();
 	m_Brillouin->settings.overviewBrightfieldFullGrid = settings.value("brillouin-overview-brightfield-full-grid", m_Brillouin->settings.overviewBrightfieldFullGrid).toBool();
-	m_Brillouin->settings.overviewBrightfieldSampledGrid = settings.value("brillouin-overview-brightfield-sampled-grid", m_Brillouin->settings.overviewBrightfieldSampledGrid).toBool();
-	m_Brillouin->settings.overviewBrightfieldBin = settings.value("brillouin-overview-brightfield-bin", m_Brillouin->settings.overviewBrightfieldBin).toInt();
-	m_Brillouin->settings.overviewBrightfieldFullStack = settings.value("brillouin-overview-brightfield-full-stack", m_Brillouin->settings.overviewBrightfieldFullStack).toBool();
+	m_Brillouin->settings.overviewBrightfieldFullStackSingle = settings.value("brillouin-overview-brightfield-full-stack-single", m_Brillouin->settings.overviewBrightfieldFullStackSingle).toBool();
+	m_Brillouin->settings.overviewBrightfieldFullStackMosaic = settings.value("brillouin-overview-brightfield-full-stack-mosaic", m_Brillouin->settings.overviewBrightfieldFullStackMosaic).toBool();
+	m_Brillouin->settings.capturePerPointBrightfield = settings.value("brillouin-capture-per-point-brightfield", m_Brillouin->settings.capturePerPointBrightfield).toBool();
+	m_Brillouin->settings.perPointBrightfieldEveryN = settings.value("brillouin-per-point-brightfield-every-n", m_Brillouin->settings.perPointBrightfieldEveryN).toInt();
+	m_Brillouin->settings.perPointBrightfieldDuringAcquisition = settings.value("brillouin-per-point-brightfield-during-acquisition", m_Brillouin->settings.perPointBrightfieldDuringAcquisition).toBool();
 	m_Brillouin->settings.surfaceProxyRoiLeft = settings.value("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft).toInt();
 	m_Brillouin->settings.surfaceProxyRoiTop = settings.value("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop).toInt();
 	m_Brillouin->settings.surfaceProxyRoiWidth = settings.value("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth).toInt();

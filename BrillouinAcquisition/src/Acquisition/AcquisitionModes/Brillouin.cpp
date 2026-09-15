@@ -597,7 +597,9 @@ void Brillouin::calibrate(std::unique_ptr <StorageWrapper>& storage) {
 		auto pointerPos = (int64_t)m_settings.camera.roi.bytesPerFrame * mm;
 
 		if (m_andor) {
-			m_andor->getImageForAcquisition(&images[pointerPos]);
+			// Back-to-back frames at the same (calibration) position - open once before the
+			// first, close once after the last, not between every one.
+			acquireAndorFrame(&images[pointerPos], mm == 0, mm == m_settings.nrCalibrationImages - 1);
 		}
 	}
 
@@ -1031,7 +1033,9 @@ std::optional<double> Brillouin::measureBoundarySurfaceZ(
 			if (m_abort) {
 				return std::nullopt;
 			}
-			m_andor->getImageForAcquisition(frame.data());
+			// Back-to-back frames at the same position - open once before the first, close
+			// once after the last, not between every one.
+			acquireAndorFrame(frame.data(), f == 0, f == frames - 1);
 			sum += estimateFrameMetric(frame);
 		}
 		return sum / frames;
@@ -1916,21 +1920,23 @@ std::vector<POINT2> Brillouin::overviewImageXY() const {
 }
 
 /*
- * z-targets to capture at the overview image's xy point(s) for this z-index. With
- * overviewBrightfieldFullStack off, this is just the single flat plan z (legacy behaviour,
- * 1 image per z-plane). With it on, this is zSteps values spanning either the grid's own
- * zMin..zMax (surface-follow off), or the global lowest-to-highest found surface offset by
- * zMin/zMax (surface-follow on) - e.g. lowest surface 100, highest 120, zMin/zMax -10/20 ->
- * stack from 90 to 140 at zSteps points. Falls back to the non-surface-follow range if
- * surface-follow is on but nothing was ever found, so this degrades gracefully instead of
- * using stale/default zero bounds.
- *
- * Only ever applies to the overview image (see overviewImageXY()) - "sampled grid points"
- * always captures a single flat image per point instead (see overviewCapturePoints()),
- * independent of this setting.
+ * z-targets to capture at the overview image's xy point(s) for this z-index. The relevant
+ * full-stack toggle is picked by which coverage mode is actually active
+ * (overviewBrightfieldFullGrid) - overviewBrightfieldFullStackSingle for "single image",
+ * overviewBrightfieldFullStackMosaic for "full grid (mosaic)", independent of each other. With
+ * the active one off, this is just the single flat plan z (legacy behaviour, 1 image per
+ * z-plane). With it on, this is zSteps values spanning either the grid's own zMin..zMax
+ * (surface-follow off), or the global lowest-to-highest found surface offset by zMin/zMax
+ * (surface-follow on) - e.g. lowest surface 100, highest 120, zMin/zMax -10/20 -> stack from
+ * 90 to 140 at zSteps points. Falls back to the non-surface-follow range if surface-follow is
+ * on but nothing was ever found, so this degrades gracefully instead of using stale/default
+ * zero bounds.
  */
 std::vector<double> Brillouin::overviewStackZAbs(int zIndex, const std::vector<double>& directionsZ) const {
-	if (!m_settings.overviewBrightfieldFullStack) {
+	const auto fullStackActive = m_settings.overviewBrightfieldFullGrid
+		? m_settings.overviewBrightfieldFullStackMosaic
+		: m_settings.overviewBrightfieldFullStackSingle;
+	if (!fullStackActive) {
 		return { overviewFlatZAbs(zIndex, directionsZ) };
 	}
 
@@ -1949,11 +1955,7 @@ std::vector<double> Brillouin::overviewStackZAbs(int zIndex, const std::vector<d
 /*
  * Every image actually captured for this z-index: the overview image's xy point(s)
  * (overviewImageXY()) each paired with overviewStackZAbs() (a full stack, if enabled, only
- * ever applies here), followed by - additionally, independent of the overview image's own
- * settings - "sampled grid points" (overviewSampledGridXY()) if overviewBrightfieldSampledGrid
- * is on, each paired with a single flat overviewFlatZAbs() (never a stack, no matter how
- * many sampled points there are). The two groups are simply concatenated, not merged or
- * deduplicated, even if they happen to coincide in xy.
+ * ever applies here).
  */
 std::vector<Brillouin::OverviewCapturePoint> Brillouin::overviewCapturePoints(int zIndex, const std::vector<double>& directionsZ) const {
 	const auto xyOrigin = m_settings.gridCoordinatesAbsolute
@@ -1965,13 +1967,6 @@ std::vector<Brillouin::OverviewCapturePoint> Brillouin::overviewCapturePoints(in
 	const auto stackZ = overviewStackZAbs(zIndex, directionsZ);
 	for (const auto& xy : overviewImageXY()) {
 		points.push_back(OverviewCapturePoint{ POINT2{ xy.x + xyOrigin.x, xy.y + xyOrigin.y }, stackZ });
-	}
-
-	if (m_settings.overviewBrightfieldSampledGrid) {
-		const std::vector<double> flatZ{ overviewFlatZAbs(zIndex, directionsZ) };
-		for (const auto& xy : overviewSampledGridXY()) {
-			points.push_back(OverviewCapturePoint{ POINT2{ xy.x + xyOrigin.x, xy.y + xyOrigin.y }, flatZ });
-		}
 	}
 
 	return points;
@@ -2159,13 +2154,13 @@ POINT2 Brillouin::overviewGridCenterXY() const {
 }
 
 /*
- * Real measurement-grid (x, y) points, coarse-binned by overviewBrightfieldBin using the
- * exact same coarse-grid reduction coarseXYSamples() shares with the surface pre-scan's
- * "Grid bin" - i.e. these coordinates are literally "the position the scanner would
+ * Real measurement-grid (x, y) points, coarse-binned by the given bin factor using
+ * coarseXYSamples() - i.e. these coordinates are literally "the position the scanner would
  * normally image at", not a synthesized tile center. ROI-mask filtered the same way
  * runSurfacePreScan()/the roi-scan-plan-mask metadata test it (raw xMin/xMax-based
  * coordinates, before the origin below is added). Returned in the same frame
- * overviewTileCentersXY() uses, so callers can treat all 3 coverage modes uniformly.
+ * overviewTileCentersXY() uses. Used by surfacePreScanGridXY() (preScanXYBin) - the only
+ * remaining caller since the "sampled grid points" overview coverage mode was removed.
  */
 std::vector<POINT2> Brillouin::coarseGridXYPoints(int bin) const {
 	const auto [xSamples, ySamples] = coarseXYSamples(bin);
@@ -2180,16 +2175,6 @@ std::vector<POINT2> Brillouin::coarseGridXYPoints(int bin) const {
 			}
 			points.push_back(POINT2{ x + origin.x, y + origin.y });
 		}
-	}
-	return points;
-}
-
-std::vector<POINT2> Brillouin::overviewSampledGridXY() const {
-	auto points = coarseGridXYPoints(m_settings.overviewBrightfieldBin);
-	if (points.empty()) {
-		// No point survived the ROI mask (or the grid is degenerate) - fall back to
-		// something sensible rather than capturing nothing at all.
-		points.push_back(overviewGridCenterXY());
 	}
 	return points;
 }
@@ -2317,8 +2302,24 @@ void enqueueOverviewBrightfieldImage(
 	CAMERA_SETTINGS& cameraSettings,
 	const std::vector<std::byte>& image,
 	const POINT3& targetPosition,
-	const POINT3& stagePosition
+	const POINT3& stagePosition,
+	const std::string& channel = "Brightfield z overview",
+	// Chunked + gzip-deflated HDF5 dataset layout instead of the default contiguous,
+	// uncompressed one - see FLUOIMAGE::compress's own comment. Off by default (the per-z
+	// overview's own call site below never passes true) - only
+	// Brillouin::capturePerPointBrightfieldImage()/finishPerPointBrightfieldDuring() opt in,
+	// by request: those are the ones captured once per measured grid point (potentially
+	// thousands per run), unlike the per-z overview's comparatively few images.
+	bool compress = false
 ) {
+	// imageNumber becomes this image's dataset name verbatim (H5BM::setPayloadData(): "name
+	// = std::to_string(image->ind)"), under the one Fluorescence/payloadData group every
+	// FLUOIMAGE writer in a run shares - channel is stored purely as metadata, NOT part of
+	// the dataset key, so two features writing into this group in the same run (the per-z
+	// overview above and Brillouin::capturePerPointBrightfieldImage() below) MUST use
+	// disjoint imageNumber ranges or one silently overwrites the other's dataset. See
+	// capturePerPointBrightfieldImage()'s own comment for how it stays disjoint from this
+	// one (negative numbers, vs. the per-z overview's non-negative ones).
 	auto date = QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc())
 		.toString(Qt::ISODateWithMs).toStdString();
 	int rankData{ 3 };
@@ -2334,14 +2335,15 @@ void enqueueOverviewBrightfieldImage(
 		rankData,
 		dimsData,
 		date,
-		"Brightfield z overview",
+		channel,
 		typedImage,
 		cameraSettings.exposureTime,
 		cameraSettings.gain,
 		cameraSettings.roi,
 		targetPosition,
 		true,
-		stagePosition
+		stagePosition,
+		compress
 	);
 
 	QMetaObject::invokeMethod(
@@ -2426,6 +2428,142 @@ void Brillouin::captureOverviewBrightfield(
 	m_scanControl->setRLShutterOpen(true);
 }
 
+// Whether measured point `ll` (its own index in m_orderedPositions, i.e. acquisition order)
+// should get a per-point brightfield capture, per capturePerPointBrightfield/
+// perPointBrightfieldEveryN.
+bool Brillouin::shouldCapturePerPointBrightfield(gsl::index ll) const {
+	if (!m_settings.capturePerPointBrightfield || !m_brightfieldCamera) {
+		return false;
+	}
+	const auto everyN = std::max(1, m_settings.perPointBrightfieldEveryN);
+	return (ll % everyN) == 0;
+}
+
+// "After" per-point capture (perPointBrightfieldDuringAcquisition == false, the default):
+// captured right after that point's Brillouin spectrum finishes - never before it, never
+// overlapping it - so the switch can never affect the spectrum itself; the only cost is the
+// extra time (a full preset switch + brightfield exposure + switch back, on every captured
+// point). A full, clean preset switch to Brightfield and back, exactly like
+// captureOverviewBrightfield() minus the position move (this point's Brillouin spectrum was
+// just measured right here, so there is nothing to approach). imageNumber is negative (see
+// enqueueOverviewBrightfieldImage()'s own comment on why) so it can never collide with
+// saveOverviewBrightfieldPerZ's own, non-negative numbering if both features are enabled in
+// the same run.
+void Brillouin::capturePerPointBrightfieldImage(
+	std::unique_ptr<StorageWrapper>& storage, gsl::index ll, const POINT3& position
+) {
+	if (!m_scanControl || !m_brightfieldCamera) {
+		return;
+	}
+
+	m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
+	// Same invariant captureOverviewBrightfield() enforces - brightfield capture must never
+	// happen with the RL shutter open.
+	m_scanControl->setRLShutterOpen(false);
+
+	const auto targetPosition = rawPositionToGridFrame(position);
+	const auto stagePosition = rawPositionToGridFrame(m_scanControl->getPosition());
+
+	auto brightfieldSettings = m_brightfieldCamera->getSettings();
+	brightfieldSettings.exposureTime = 1e-3 * std::max(1, m_settings.overviewBrightfieldExposureMs);
+	brightfieldSettings.gain = m_settings.overviewBrightfieldGain;
+	brightfieldSettings.frameCount = 1;
+	brightfieldSettings.readout.triggerMode = L"Software";
+	brightfieldSettings.readout.cycleMode = L"Fixed";
+
+	m_brightfieldCamera->startAcquisition(brightfieldSettings);
+	brightfieldSettings = m_brightfieldCamera->getSettings();
+
+	if (brightfieldSettings.roi.bytesPerFrame > 0) {
+		std::vector<std::byte> image(brightfieldSettings.roi.bytesPerFrame);
+		m_brightfieldCamera->getImageForAcquisition(image.data(), false);
+		m_brightfieldCamera->stopAcquisition();
+
+		const auto imageNumber = -(int)(ll + 1);
+		// compress=true - see enqueueOverviewBrightfieldImage()'s own comment on why only
+		// the per-point captures opt into this (potentially thousands per run, unlike the
+		// per-z overview's comparatively few images).
+		if (brightfieldSettings.readout.dataType == "unsigned short") {
+			enqueueOverviewBrightfieldImage<unsigned short>(
+				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, "Brightfield per-point", true);
+		} else if (brightfieldSettings.readout.dataType == "unsigned char") {
+			enqueueOverviewBrightfieldImage<unsigned char>(
+				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, "Brightfield per-point", true);
+		}
+	} else {
+		m_brightfieldCamera->stopAcquisition();
+	}
+
+	m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
+	m_scanControl->setRLShutterOpen(true);
+}
+
+// "During" per-point capture, part 1/2 (perPointBrightfieldDuringAcquisition == true): starts
+// the brightfield camera's own acquisition before this point's Brillouin exposure begins, so
+// its (normally much shorter) exposure/readout overlaps the Brillouin dwell time instead of
+// adding to it - this is the whole point of "during": zero added wall-clock time, not just
+// less than the "after" preset-switch cost. Deliberately does NOT touch the preset or RL
+// shutter - the whole point is to leave the excitation/detection path exactly as the
+// Brillouin preset already set it; see perPointBrightfieldDuringAcquisition's own doc comment
+// for the optical-isolation caveat this depends on. Returns the settings actually applied
+// (finishPerPointBrightfieldDuring() needs them to know the frame size/dtype to retrieve), or
+// std::nullopt if the brightfield camera isn't available or gave an invalid frame size
+// (nothing was started in that case).
+std::optional<CAMERA_SETTINGS> Brillouin::startPerPointBrightfieldDuring() {
+	if (!m_brightfieldCamera) {
+		return std::nullopt;
+	}
+	auto brightfieldSettings = m_brightfieldCamera->getSettings();
+	brightfieldSettings.exposureTime = 1e-3 * std::max(1, m_settings.overviewBrightfieldExposureMs);
+	brightfieldSettings.gain = m_settings.overviewBrightfieldGain;
+	brightfieldSettings.frameCount = 1;
+	brightfieldSettings.readout.triggerMode = L"Software";
+	brightfieldSettings.readout.cycleMode = L"Fixed";
+
+	m_brightfieldCamera->startAcquisition(brightfieldSettings);
+	brightfieldSettings = m_brightfieldCamera->getSettings();
+	if (brightfieldSettings.roi.bytesPerFrame <= 0) {
+		m_brightfieldCamera->stopAcquisition();
+		return std::nullopt;
+	}
+	return brightfieldSettings;
+}
+
+// "During" per-point capture, part 2/2 - retrieves the frame startPerPointBrightfieldDuring()
+// started, once this point's Brillouin spectrum has finished. By the time this runs, the
+// brightfield exposure (normally much shorter than the Brillouin dwell time it overlapped)
+// has long since finished and the frame is just sitting in the camera's own buffer, so this
+// call should return essentially immediately rather than waiting out a fresh exposure - that
+// is what makes "during" add no measurable time. Same negative-imageNumber convention as
+// capturePerPointBrightfieldImage() (a point is only ever captured through one of the two
+// paths per run, governed by perPointBrightfieldDuringAcquisition, but sharing the convention
+// keeps a reader's expectation simple regardless of which mode produced a given file).
+void Brillouin::finishPerPointBrightfieldDuring(
+	std::unique_ptr<StorageWrapper>& storage, gsl::index ll, const POINT3& position,
+	CAMERA_SETTINGS brightfieldSettings
+) {
+	if (!m_scanControl || !m_brightfieldCamera) {
+		return;
+	}
+	const auto targetPosition = rawPositionToGridFrame(position);
+	const auto stagePosition = rawPositionToGridFrame(m_scanControl->getPosition());
+
+	std::vector<std::byte> image(brightfieldSettings.roi.bytesPerFrame);
+	m_brightfieldCamera->getImageForAcquisition(image.data(), false);
+	m_brightfieldCamera->stopAcquisition();
+
+	const auto imageNumber = -(int)(ll + 1);
+	// compress=true - see enqueueOverviewBrightfieldImage()'s own comment on why only the
+	// per-point captures opt into this.
+	if (brightfieldSettings.readout.dataType == "unsigned short") {
+		enqueueOverviewBrightfieldImage<unsigned short>(
+			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, "Brightfield per-point", true);
+	} else if (brightfieldSettings.readout.dataType == "unsigned char") {
+		enqueueOverviewBrightfieldImage<unsigned char>(
+			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, "Brightfield per-point", true);
+	}
+}
+
 std::string Brillouin::getRepetitionFilename() {
 	auto rawFilename = m_baseFilename.substr(0, m_baseFilename.find_last_of("."));
 	auto fileEnding = m_baseFilename.substr(m_baseFilename.find_last_of("."), std::string::npos);
@@ -2490,6 +2628,14 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		m_startPosition = POINT3{ stagePosition.x + fovOffsetUm.x, stagePosition.y + fovOffsetUm.y, stagePosition.z };
 		// Enable measurement mode (so the AOI display is correct).
 		m_scanControl->enableMeasurementMode(true);
+		// Dose protection's resting state is "closed" - acquireAndorFrame() is solely
+		// responsible for opening it, right around each actual exposure, for the rest of
+		// this acquisition. This one-time close only matters for whatever state the beam
+		// happened to be left in before "Start" (e.g. open from live preview) - after the
+		// first frame, it would already be closed anyway.
+		if (m_settings.useDoseProtection) {
+			m_scanControl->setBeamBlockOpen(false);
+		}
 	} else {
 		m_abort = true;
 		return;
@@ -2612,10 +2758,57 @@ void Brillouin::continueAfterSurfaceReview(bool fullGrid) {
 	finishRepetition();
 }
 
+// Grabs one Andor frame, with dose protection folded in: opens the beam block a short, fixed
+// margin before this call actually needs it (kDoseProtectionOpenMarginMs - a DAQ TTL line is
+// essentially instant, but a mechanical Beam Block on some backends may not be; tune this if
+// you find it's cutting exposures short or wastefully long on yours) and closes it again right
+// after - so the excitation laser is only ever on for the narrow window right around an actual
+// exposure, not for the whole acquisition. Deliberately NOT hooked into approachGridPosition()
+// or any other single call site - every m_andor->getImageForAcquisition() call in this class
+// (calibration, surface pre-scan, the main measurement loop) goes through this instead, so
+// "closed" is the default resting state everywhere else (a move, a per-point brightfield
+// capture, a live calibration switch, ...) without needing to special-case any of them.
+//
+// openBeam/closeBeam let a caller grabbing several frames back-to-back at the same position
+// (frame averaging, camera.frameCount > 1, ...) open once before the first frame and close
+// once after the last, instead of flapping the shutter between every frame for no reason -
+// there is nothing to protect against in a gap that doesn't exist, and it only costs an extra
+// margin wait each time. Both default to true, so a lone call (the common case - surface
+// pre-scan's per-z-step measurements, which really are separate positions) still gets its own
+// full open-before/close-after cycle with no caller changes needed.
+//
+// No-op wrapper (just calls getImageForAcquisition() directly, no margin added, openBeam/
+// closeBeam ignored) if dose protection is off or this scan controller has no Beam Block
+// element - matching this class's pre-dose-protection behavior exactly in that case.
+void Brillouin::acquireAndorFrame(std::byte* buffer, bool openBeam, bool closeBeam) {
+	if (!m_andor) {
+		return;
+	}
+	const auto doseProtect = m_settings.useDoseProtection && m_scanControl;
+	if (doseProtect && openBeam) {
+		constexpr auto kDoseProtectionOpenMarginMs = 20;
+		if (m_scanControl->setBeamBlockOpen(true)) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(kDoseProtectionOpenMarginMs));
+		}
+	}
+	m_andor->getImageForAcquisition(buffer);
+	if (doseProtect && closeBeam) {
+		m_scanControl->setBeamBlockOpen(false);
+	}
+}
+
 void Brillouin::approachGridPosition(const POINT3& position) {
 	if (!m_scanControl) {
 		return;
 	}
+	// Dose protection does NOT hook in here any more - it used to close the beam block
+	// around a move and reopen it afterward, but that only protected against travel time,
+	// not every other non-integrating moment (between two frames at the same point,
+	// per-point brightfield capture, a live calibration switch, ...). See
+	// acquireAndorFrame() for the current approach: the beam is closed by default and only
+	// opened for the narrow window immediately around an actual camera exposure, so a move
+	// (like any other non-integrating moment) is simply left in whatever state the last
+	// acquireAndorFrame() call left it - already closed, with nothing extra to do here.
 	if (m_settings.useGridHysteresisCompensation) {
 		m_scanControl->setPositionCompensated(position);
 	} else {
@@ -2894,14 +3087,17 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	// themselves weren't recorded, unlike useSurfaceFollow/useRoiMask above).
 	storage->setPositions("overview-brightfield-save-per-z-used", std::vector<double>{ m_settings.saveOverviewBrightfieldPerZ ? 1.0 : 0.0 }, 1, originDims);
 	storage->setPositions("overview-brightfield-full-grid-used", std::vector<double>{ m_settings.overviewBrightfieldFullGrid ? 1.0 : 0.0 }, 1, originDims);
-	storage->setPositions("overview-brightfield-sampled-grid-used", std::vector<double>{ m_settings.overviewBrightfieldSampledGrid ? 1.0 : 0.0 }, 1, originDims);
-	storage->setPositions("overview-brightfield-bin-used", std::vector<double>{ (double)m_settings.overviewBrightfieldBin }, 1, originDims);
-	storage->setPositions("overview-brightfield-full-stack-used", std::vector<double>{ m_settings.overviewBrightfieldFullStack ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("overview-brightfield-full-stack-single-used", std::vector<double>{ m_settings.overviewBrightfieldFullStackSingle ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("overview-brightfield-full-stack-mosaic-used", std::vector<double>{ m_settings.overviewBrightfieldFullStackMosaic ? 1.0 : 0.0 }, 1, originDims);
 	storage->setPositions("overview-brightfield-exposure-ms-used", std::vector<double>{ (double)m_settings.overviewBrightfieldExposureMs }, 1, originDims);
 	storage->setPositions("overview-brightfield-gain-used", std::vector<double>{ m_settings.overviewBrightfieldGain }, 1, originDims);
 
 	// Grid-stepping/camera settings not otherwise recorded per-image.
 	storage->setPositions("use-grid-hysteresis-compensation-used", std::vector<double>{ m_settings.useGridHysteresisCompensation ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("use-dose-protection-used", std::vector<double>{ m_settings.useDoseProtection ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("capture-per-point-brightfield-used", std::vector<double>{ m_settings.capturePerPointBrightfield ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("per-point-brightfield-every-n-used", std::vector<double>{ (double)m_settings.perPointBrightfieldEveryN }, 1, originDims);
+	storage->setPositions("per-point-brightfield-during-acquisition-used", std::vector<double>{ m_settings.perPointBrightfieldDuringAcquisition ? 1.0 : 0.0 }, 1, originDims);
 	storage->setPositions("camera-frame-count-used", std::vector<double>{ (double)m_settings.camera.frameCount }, 1, originDims);
 	storage->setPositions("camera-spurious-noise-filter-used", std::vector<double>{ m_settings.camera.spuriousNoiseFilter ? 1.0 : 0.0 }, 1, originDims);
 
@@ -2949,12 +3145,11 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	if (m_settings.saveOverviewBrightfieldPerZ) {
 		// Flattened as [z0_point0_stack0, z0_point0_stack1, ..., z0_point1_stack0, ...,
 		// z1_point0_stack0, ...]; both the number of capture points (the overview image's
-		// xy point(s), plus "sampled grid points" if that's additionally on) and each
-		// point's own stack depth are constant across z (each only depends on
-		// z-independent settings), so the shape can be read once from z-index 0.
+		// own xy point(s)) and each point's own stack depth are constant across z (each only
+		// depends on z-independent settings), so the shape can be read once from z-index 0.
 		// overview-brightfield-point-count/-point-stack-counts let a reader reshape this
-		// back into each point's own stack - stack depth is 1 for every point except the
-		// overview image's own when overviewBrightfieldFullStack is on (see
+		// back into each point's own stack - stack depth is 1 for every point unless the
+		// active coverage mode's own full-stack toggle is on (see overviewStackZAbs()/
 		// overviewCapturePoints()).
 		const auto shape = overviewCapturePoints(0, directionsZ);
 		const auto pointCount = shape.size();
@@ -3084,6 +3279,16 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 
 		std::vector<std::byte> images(m_settings.camera.roi.bytesPerFrame * m_settings.camera.frameCount);
 
+		// "During" per-point brightfield: started here, before this point's Brillouin
+		// exposure begins, so its own (normally much shorter) exposure/readout overlaps the
+		// Brillouin dwell time below instead of adding to it - see
+		// startPerPointBrightfieldDuring()'s own comment.
+		const auto capturePerPoint = shouldCapturePerPointBrightfield(ll);
+		auto duringBrightfieldSettings = std::optional<CAMERA_SETTINGS>{};
+		if (capturePerPoint && m_settings.perPointBrightfieldDuringAcquisition) {
+			duringBrightfieldSettings = startPerPointBrightfieldDuring();
+		}
+
 		for (gsl::index mm{ 0 }; mm < m_settings.camera.frameCount; mm++) {
 			if (m_abort) {
 				m_abort = true;
@@ -3097,11 +3302,26 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 			auto pointerPos = (int64_t)m_settings.camera.roi.bytesPerFrame * mm;
 
 			if (m_andor) {
-				m_andor->getImageForAcquisition(&images[pointerPos]);
+				// Back-to-back frames at the same point - open the beam block once before
+				// the first, close once after the last, not between every one (see
+				// acquireAndorFrame()'s own comment).
+				acquireAndorFrame(&images[pointerPos], mm == 0, mm == m_settings.camera.frameCount - 1);
 			} else {
 				m_abort = true;
 				return;
 			}
+		}
+
+		// Per-point brightfield, continued: "during" retrieves the frame started above, now
+		// that this point's Brillouin spectrum has finished; "after" (the default) does its
+		// own clean preset switch + capture + switch-back here instead, since nothing was
+		// started early for it.
+		if (capturePerPoint && m_settings.perPointBrightfieldDuringAcquisition) {
+			if (duringBrightfieldSettings) {
+				finishPerPointBrightfieldDuring(storage, ll, m_orderedPositions[ll], *duringBrightfieldSettings);
+			}
+		} else if (capturePerPoint) {
+			capturePerPointBrightfieldImage(storage, ll, m_orderedPositions[ll]);
 		}
 
 
