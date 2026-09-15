@@ -344,6 +344,11 @@ private:
 	CAMERA_OPTIONS m_cameraOptions;
 	CAMERA_OPTIONS m_cameraOptionsODT;
 	StoragePath m_storagePath{ "", "." };
+	// Persisted (readSettings()/writeSettings()) folder proposed for a brand new acquisition
+	// file (on_actionNew_Acquisition_triggered()) whenever nothing has been saved yet this
+	// session - set via the File menu's "Set Default Save Folder...". Empty means "no
+	// default configured", in which case the pre-existing "." fallback applies.
+	std::string m_defaultAcquisitionFolder;
 	bool m_previewRunning{ false };
 	bool m_brightfieldPreviewRunning{ false };
 	// True only while the brightfield live view was auto-started for a surface-scan
@@ -756,6 +761,7 @@ private slots:
 	void on_actionNew_Acquisition_triggered();
 	void on_actionOpen_Acquisition_triggered();
 	void on_actionClose_Acquisition_triggered();
+	void on_actionSetDefaultAcquisitionFolder_triggered();
 
 	// acquisition AOI
 	void on_startX_valueChanged(double);
