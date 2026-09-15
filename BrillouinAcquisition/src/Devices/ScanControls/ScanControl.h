@@ -302,6 +302,11 @@ protected:
 	POINT2 m_positionStage{ 0, 0 };			// [um]	position of the stage (x-y-position)
 	POINT2 m_positionScanner{ 0, 0 };		// [um]	position of the scanner (x-y-position)
 	RelativeGridAnchor m_relativeGridAnchor;
+	// False until locatePositionScanner() has run at least once - guards
+	// setScaleCalibration()'s m_relativeGridAnchor update against the startup transition from a
+	// hardcoded placeholder scale calibration to the first real one, before m_positionScanner
+	// has ever meant anything. See setScaleCalibration()'s own comment for the full reasoning.
+	bool m_hasLocatedPositionScanner{ false };
 
 	bool m_isCompatible{ false };
 	POINT3 m_homePosition{ 0, 0, 0 };

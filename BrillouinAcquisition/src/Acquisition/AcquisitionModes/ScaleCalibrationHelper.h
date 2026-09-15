@@ -94,6 +94,32 @@ struct Matrix2{
 class ScaleCalibrationHelper {
 
 public:
+	// Plot coordinates are one-based and bottom-up. Camera buffers/OpenCV are
+	// zero-based and top-down: p = D*r + (1,height), D = diag(1,-1).
+	static Matrix2 imageLinearTransform(const ScaleCalibrationData& reference,
+		const ScaleCalibrationData& target) {
+		auto inverse = invert({ target.pixToMicrometerX.x, target.pixToMicrometerY.x,
+			target.pixToMicrometerX.y, target.pixToMicrometerY.y });
+		return {
+			inverse.a * reference.pixToMicrometerX.x + inverse.b * reference.pixToMicrometerX.y,
+			-(inverse.a * reference.pixToMicrometerY.x + inverse.b * reference.pixToMicrometerY.y),
+			-(inverse.c * reference.pixToMicrometerX.x + inverse.d * reference.pixToMicrometerX.y),
+			inverse.c * reference.pixToMicrometerY.x + inverse.d * reference.pixToMicrometerY.y
+		};
+	}
+
+	// Input: r_target = M_image*r_reference + imageTranslation.
+	static POINT2 fovOffsetFromImageTranslation(const ScaleCalibrationData& reference,
+		const ScaleCalibrationData& target, double referenceHeight, double targetHeight,
+		POINT2 imageTranslation) {
+		auto m = imageLinearTransform(reference, target);
+		POINT2 plotTranslation{
+			imageTranslation.x + 1.0 - m.a + m.b * referenceHeight,
+			-imageTranslation.y + targetHeight + m.c - m.d * referenceHeight
+		};
+		return fovOffsetFromTranslation(reference, target, plotTranslation * -1.0);
+	}
+
 	// Registration gives p_target = M*p_reference - translation, where M is
 	// the scale transform. Convert its translation using the stored pixel origins.
 	static POINT2 fovOffsetFromTranslation(const ScaleCalibrationData& reference,

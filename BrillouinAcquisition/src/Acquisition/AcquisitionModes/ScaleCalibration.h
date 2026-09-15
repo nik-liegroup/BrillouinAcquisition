@@ -2,6 +2,7 @@
 #define SCALECALIBRATION_H
 
 #include <QtCore>
+#include <map>
 #include <gsl/gsl>
 #include "H5Cpp.h"
 
@@ -68,7 +69,8 @@ public slots:
 	// saveFovOffsetCalibration() write into, so editing/measuring a calibration actually
 	// persists into the same file Objective Setup links for this slot, instead of only updating
 	// the in-memory registration. "" if this slot has no linked file yet.
-	void setLinkedCalibrationFilePath(std::string path);
+	bool isEditingObjective(int slot) const;
+	void selectObjectiveForEditing(int slot, std::string path, std::string name, double magnification);
 
 	// The two "Save" buttons (one in each box) are deliberately independent - each commits only
 	// its own half of the calibration, starting from whatever is currently stored for the active
@@ -83,12 +85,12 @@ public slots:
 
 	// Persists only the scale-calibration (pix<->um) fields into the active slot's linked file
 	// and live registration - leaves whatever FOV-offset fields are currently stored untouched.
-	void saveScaleCalibration();
+	void saveScaleCalibration(int expectedSlot);
 	// Persists only the FOV-offset fields into the active slot's linked file and live
 	// registration - leaves whatever scale-calibration fields are currently stored untouched.
 	// Tolerant of a still-degenerate (not yet "Acquire"d) scale calibration, since it never
 	// touches that half at all.
-	void saveFovOffsetCalibration();
+	void saveFovOffsetCalibration(int expectedSlot);
 
 	void acquire(std::unique_ptr <StorageWrapper>& storage) override;
 	void acquire();
@@ -245,31 +247,11 @@ private:
 	// to be 8-bit. Empty on failure (no camera).
 	std::vector<std::byte> captureBrightfieldImageForFovOffset();
 
-	// The actual rescale-then-template-match: brings referenceImage/targetImage to a common
-	// approximate pixel scale (using each side's own calibration's isotropic-equivalent pixel
-	// pitch - sqrt(|determinant|) of its pix->um matrix, which is correct regardless of any
-	// rotation between the camera's pixel axes and the stage axes, unlike averaging the
-	// matrix's diagonal terms; shear beyond a pure rotation is still not corrected for, this is
-	// only used to get the two images' scale roughly aligned so matchTemplate has a chance),
-	// locates the best match, and
-	// converts the resulting pixel shift to micrometers using the target's full (exact,
-	// non-approximated) calibration. referenceDataType/targetDataType are each image's
-	// CAMERA_SETTINGS.readout.dataType ("unsigned char" or "unsigned short") at capture time -
-	// a 16-bit source is read at its real depth then downscaled to 8-bit before matching (see
-	// the .cpp definition), matching the same fix applied to __acquire(). Returns false
-	// (leaves *shiftUm and *estimatedMagnificationChange untouched) if either image is empty,
-	// either calibration is degenerate, or no image fits inside the other after rescaling -
-	// *failureReason is set to a specific, human-readable explanation of which of those it was
-	// (none of them are actually about image content/matching - this function never rejects a
-	// match based on how good it looks, see the .cpp definition - so do not describe any of
-	// them to the operator as "no distinct structures", which was misleading every previous
-	// caller of this).
-	// *estimatedMagnificationChange is the reference->target pixel-scale rescale factor this
-	// function actually used to bring the two images to a common scale before matching -
-	// exposed so the caller can sanity-check it against the nominal magnification ratio typed
-	// into the two objectives' "Magnification" fields (see measureFovOffset()). A large
-	// disagreement between the two means the pixel-scale calibration for one of the objectives
-	// (not the FOV-offset measurement itself) is the thing to re-check.
+	// Warps by the complete calibrated camera-to-camera matrix, matches a valid
+	// overlapping region, then converts the top-down image translation to the
+	// bottom-up plot frame used by the grid. Returns false for invalid calibrations,
+	// absent overlap, textureless images, or poor correlation. The magnification
+	// output is an area-equivalent ratio for reporting, not the registration model.
 	bool computeFovOffsetShiftUm(
 		const std::vector<std::byte>& referenceImage, const CAMERA_ROI& referenceRoi, const ScaleCalibrationData& referenceScale, const std::string& referenceDataType,
 		const std::vector<std::byte>& targetImage, const CAMERA_ROI& targetRoi, const ScaleCalibrationData& targetScale, const std::string& targetDataType,
@@ -383,6 +365,10 @@ private:
 	// m_scaleCalibration.<scale calibration field> is unaffected by this - only the objective-
 	// identity/FOV-offset fields declared on top of it are new.
 	ObjectiveCalibrationData m_scaleCalibration;
+	int m_editingObjectiveSlot{ -2 };
+	std::map<int, std::string> m_objectiveFilePaths;
+	// Runs on the acquisition thread, also for hardware/automated objective switches.
+	void refreshActiveObjectiveForEditing(bool discardEdits = false);
 	POINT2 m_Ds{ 10.0, 10.0 };	// [µm]	shift in x- and y-direction
 
 	// Set by __acquire() - false at the start of every startRepetitions() call, true only once
@@ -391,7 +377,7 @@ private:
 	// startRepetitions() call to know whether that cycle's result is safe to average in.
 	bool m_lastAcquireSucceeded{ false };
 
-	// See setLinkedCalibrationFilePath()/writeLinkedCalibrationFile().
+	// See selectObjectiveForEditing()/writeLinkedCalibrationFile().
 	std::string m_linkedCalibrationFilePath;
 
 signals:
