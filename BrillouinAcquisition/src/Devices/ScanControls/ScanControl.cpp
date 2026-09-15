@@ -170,9 +170,7 @@ void ScanControl::setPositionInPix(POINT2 positionPix) {
 	// the first place. Clicking exactly on the marker's own drawn pixel is the sanity check
 	// this must satisfy (must always be a true no-op, for any fovOffsetUm) - it only holds
 	// once announcePositionScanner() and locatePositionScanner() apply the matching
-	// correction too, which they now do. For the same reason, getPositionOffset() adds this
-	// term on top of m_positionScanner when displaying grids/AOI markers, and
-	// Brillouin::acquire() folds it into m_startPosition at Start.
+	// correction too, which they now do.
 	positionMicrometer -= getActiveObjectiveFovOffsetUm();
 	/**
 	 * Prevent moving more than 1 cm at a time
@@ -374,14 +372,23 @@ void ScanControl::announceSavedPositionsNormalized() {
 }
 
 void ScanControl::setScaleCalibration(const ScaleCalibrationData& scaleCalibration) {
-	/*
-	 * In order to prevent having to relocate the scanner position,
-	 * we convert the scanner position to pixel using the old scale calibration
-	 * and back to micro meter using the new scale.
-	 */
-	auto posScanner = microMeterToPix(m_positionScanner);
+	// m_positionScanner is deliberately left as-is (same [um] value) across a scale-calibration
+	// change - it marks a real, physical, sample-relative location (e.g. where the beam
+	// actually lands on this particular dish, which can be off-axis for sample-dependent
+	// optical reasons - refraction/meniscus/mounting, not a fixed camera pixel), not a pixel on
+	// the sensor. An earlier version of this function reprojected it through the old/new pixel
+	// round-trip instead ("posScanner = microMeterToPix(m_positionScanner); ... m_positionScanner
+	// = pixToMicroMeter(posScanner);"), which kept the marker's ON-SCREEN PIXEL position fixed
+	// across an objective switch - but for an off-axis, physically-real marker position, that
+	// silently rescales its true [um] distance from the optical axis by the two objectives'
+	// magnification ratio (e.g. a real 100um offset at 10x became only 50um at 20x), corrupting
+	// every relative-mode grid point anchored to it (see getPositionOffset()) by that same wrong
+	// factor. Leaving the [um] value untouched here means the marker (and everything anchored to
+	// it) now transforms exactly like any other physical location - through microMeterToPix()
+	// under whichever calibration is active - so it correctly reappears further from/closer to
+	// center on screen after a magnification change, instead of silently drifting in physical
+	// terms while looking visually unchanged.
 	m_scaleCalibration = scaleCalibration;
-	m_positionScanner = pixToMicroMeter(posScanner);
 
 	calculateBounds();
 	calculateHomePositionBounds();
@@ -504,8 +511,9 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 
 	auto hasCalibration = hasObjectiveCalibration(newSlot);
 	if (hasCalibration) {
-		// Reuses setScaleCalibration()'s existing re-projection of m_positionScanner from the
-		// old pixel mapping into the new one, so the laser marker stays visually correct.
+		// setScaleCalibration() itself now leaves m_positionScanner's [um] value untouched - see
+		// its own comment for why a pixel-preserving reprojection was wrong for a physically-real,
+		// possibly off-axis marker position.
 		setScaleCalibration(getObjectiveCalibration(newSlot));
 	}
 	auto calibration = getObjectiveCalibration(newSlot);
