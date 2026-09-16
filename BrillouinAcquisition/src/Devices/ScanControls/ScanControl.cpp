@@ -646,44 +646,32 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	// stage. What looks like "the marker moving through the grid" is actually the grid
 	// sliding past a fixed marker.
 	//
-	// In normal (live-preview) mode, the positions are shown relative to the scanner
-	// position, so they track wherever the laser currently points within the FOV - plus the
-	// active objective's own FOV-center offset, so a relative-mode grid visibly shifts (relative
-	// to the fixed marker) on an objective switch, exactly like it needs to physically shift once
-	// a measurement is actually started (see enableMeasurementMode()'s identical formula for the
-	// measurement-mode case below, and Brillouin::acquire()'s analogous capture of its own
-	// m_startPosition) - without this, switching objectives only ever rescaled the preview, never
-	// translated it, even with a real, saved FOV offset.
-	auto offset = m_positionScanner + getActiveObjectiveFovOffsetUm();
+	// getActiveObjectiveFovOffsetUm() is deliberately NOT added here (it used to be, in both
+	// this base value and the absolute branch below) - by explicit operator requirement,
+	// confirmed against fresh logs: grid points are a plan of fixed PHYSICAL sample targets,
+	// and switching objectives with the stage stationary must not visibly move them, even by
+	// the small calibrated parcentricity correction. Two logged repros (absolute AND relative
+	// mode) both showed every grid point shifting in lockstep by exactly fovOffsetUm on every
+	// objective switch, with no stage motion - confirmed as the mechanism responsible, not a
+	// coincidence. The marker itself (announcePositionScanner()) still adds fovOffsetUm to its
+	// own drawn pixel - it represents where the beam genuinely, physically lands, which really
+	// does shift with a non-reference objective's real parcentricity error - so grid and marker
+	// are now allowed to visibly separate slightly right after a switch instead of being forced
+	// to co-pan; that's the accepted, intentional tradeoff (confirmed with the operator) of
+	// showing the true physical picture instead of hiding the parcentricity error by dragging
+	// the whole grid along with it.
+	auto offset = m_positionScanner;
 	if (positionIsAbsolute) {
 		// Absolute positions are stored as the raw target stage+scanner position directly
 		// (absoluteGridOriginUm + gridOffset, see gridOffsetToAbsoluteTarget()), so the
 		// scanner contribution is already baked into the stored value itself - subtracting
 		// it again here would double-count it and shift the whole grid by that amount.
 		// Only the stage position (which is what actually changes as the grid is scanned)
-		// needs to be undone, exactly like the measurement-mode branch below - PLUS the
-		// active objective's own FOV-center offset, for the same reason the live-preview
-		// branch above and the measurement-mode branch below both need it (m_startPosition
-		// there already has it baked in, see enableMeasurementMode()). resolvedGridOriginUm()
-		// bakes fovOffsetUm into every absolute target (see Brillouin::resolvedGridOriginUm()),
-		// but m_positionStage never does - every backend's setPosition() only ever subtracts
-		// m_positionScanner, which is stored objective-invariant (see locatePositionScanner()).
-		// Without this term, the point currently at the absolute target drew at
-		// m_positionScanner instead of m_positionScanner + fovOffsetUm - i.e. exactly
-		// fovOffsetUm away from where announcePositionScanner() draws the blue marker itself,
-		// so on any non-reference objective the grid/overview-tile preview never quite lines
-		// up with the marker, even though the stage is already at the correct physical target.
-		offset = POINT2{} - m_positionStage + getActiveObjectiveFovOffsetUm();
-		// [FOVDIAG] Temporary - re-investigating "10x -> 20x switch in absolute mode" plus the new
-		// report that afterwards, starting a measurement in RELATIVE mode no longer tracks the
-		// marker correctly (starting in absolute mode is reported fine). m_positionScanner added
-		// now too - it's the fixed reference announcePositionScanner() draws the marker at
-		// (+ the active objective's fovOffset, same as here), so logging it lets the actual
-		// marker pixel be reconstructed and compared against this offset directly, instead of
-		// just trusting the formula. Remove once resolved.
+		// needs to be undone, exactly like the measurement-mode branch below.
+		offset = POINT2{} - m_positionStage;
 		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(absolute): m_positionStage=("
 			<< m_positionStage.x << "," << m_positionStage.y << ") m_positionScanner=("
-			<< m_positionScanner.x << "," << m_positionScanner.y << ") fovOffset=("
+			<< m_positionScanner.x << "," << m_positionScanner.y << ") fovOffset(not applied)=("
 			<< getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
 			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
 	}
@@ -714,7 +702,7 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	else {
 		qInfo(logInfo()) << "[GRIDDIAG] getPositionOffset(live-preview, relative): m_positionScanner=("
 			<< m_positionScanner.x << "," << m_positionScanner.y
-			<< ") fovOffset=(" << getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
+			<< ") fovOffset(not applied)=(" << getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
 			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
 	}
 	return offset;

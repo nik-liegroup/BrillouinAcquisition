@@ -5514,40 +5514,16 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 		QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
 	}
 
-	// Relative-mode grids anchor to Brillouin::m_startPosition (a stage position captured once,
-	// at "Start" - see its doc comment), not recomputed fresh on every read the way absolute
-	// mode's resolvedGridOriginUm() is. Without correcting that anchor here, an objective switch
-	// would leave any not-yet-visited grid point targeted at the OLD objective's FOV center.
-	//
-	// This is a pure in-memory shift of that anchor (Brillouin::adjustStartPositionForFovOffsetChange()),
-	// NOT a physical stage move - a previous version of this code moved the actual stage by delta
-	// here, which was wrong: it yanked the sample out from under the live view/blue dot on every
-	// switch (unrequested motion the operator never asked for), and - since m_startPosition is
-	// only ever captured fresh at "Start" - had no lasting effect anyway once a real target
-	// (m_startPosition + gridOffset, from the value captured BEFORE this switch) was next
-	// commanded, silently undoing the nudge. Shifting the bookkeeping anchor instead means the
-	// blue dot stays exactly where the operator left it, and it's the (not-yet-visited) grid that
-	// moves under it - matching how absolute mode already behaves, and how the stage only ever
-	// actually moves once a real measurement point is visited.
-	// Only fires when both the objective being left and the one just switched to have a
-	// calibrated offset - otherwise there is no valid delta to apply.
-	if (m_Brillouin && !m_Brillouin->settings.gridCoordinatesAbsolute && hasFovOffset && m_scanControl) {
-		auto previousCalibration = m_scanControl->getObjectiveCalibration(previousSlot);
-		if (previousCalibration.hasFovOffset) {
-			auto deltaX = offsetUm.x - previousCalibration.fovOffsetUm.x;
-			auto deltaY = offsetUm.y - previousCalibration.fovOffsetUm.y;
-			qInfo(logInfo()) << "Objective switch" << previousSlot << "->" << newSlot
-				<< ": relative grid mode, shifting grid origin by (" << deltaX << "," << deltaY
-				<< ") um to preserve FOV-offset alignment (no stage motion).";
-			auto deltaUm = POINT2{ deltaX, deltaY };
-			QMetaObject::invokeMethod(
-				m_Brillouin,
-				"adjustStartPositionForFovOffsetChange",
-				Qt::AutoConnection,
-				Q_ARG(POINT2, deltaUm)
-			);
-		}
-	}
+	// Previously, relative-mode grids anchored to Brillouin::m_startPosition were nudged here by
+	// the calibrated FOV-offset delta on every objective switch, so not-yet-visited grid points
+	// would target the new objective's FOV center instead of the old one's. Removed by explicit
+	// operator requirement: grid points are a plan of fixed PHYSICAL sample targets, and since a
+	// pure objective switch never moves the stage, those targets must not move either - not on
+	// screen (see getPositionOffset()'s own comment) and not in the real stage-move target
+	// computed from m_startPosition. The blue marker is still allowed to show a genuine small
+	// shift (it tracks where the beam actually, physically lands, which a non-reference
+	// objective's real parcentricity error does change) - only the plan of targets is now held
+	// fixed across a switch.
 	// [FOVDIAG] Temporary - re-investigating the absolute-mode variant of the objective-switch
 	// FOV-translation bug (10x -> 20x while gridCoordinatesAbsolute is true), plus a new report
 	// that a subsequent Start in RELATIVE mode afterwards no longer tracks the marker. Absolute
