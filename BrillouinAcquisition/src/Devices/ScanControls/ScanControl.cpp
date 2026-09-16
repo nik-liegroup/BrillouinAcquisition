@@ -646,24 +646,25 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	// stage. What looks like "the marker moving through the grid" is actually the grid
 	// sliding past a fixed marker.
 	//
-	// getActiveObjectiveFovOffsetUm() is deliberately NOT added in the absolute branch below
-	// (it used to be) - absolute-mode grid points are re-baked fresh, with the CURRENT
-	// objective's own fovOffsetUm, by Brillouin::resolvedGridOriginUm() every time
-	// updatePositions() runs - which objectiveSwitched() already triggers on every switch. Also
-	// adding it live here on top double-applied it, which is what made the whole absolute grid
-	// visibly pan on a pure objective switch even with the stage stationary (confirmed fixed
-	// against logs, operator-verified).
+	// getActiveObjectiveFovOffsetUm() is added in every branch below. Proven algebraically (not
+	// just empirically): whatever point is CURRENTLY being targeted satisfies
+	// "target = m_positionStage + m_positionScanner" once the stage arrives (every backend's
+	// setPosition() enforces this - see locatePositionScanner()). For that point's own DISPLAYED
+	// pixel to always equal the marker's ("target + offset" == "m_positionScanner + fovOffset",
+	// i.e. announcePositionScanner()'s own formula), the term "-m_positionStage" alone is not
+	// enough - it only cancels back to "m_positionScanner", missing the "+ fovOffset" the marker
+	// itself always adds. Dropping it here (tried earlier) decouples the grid from a real,
+	// necessary correction instead of a phantom one - it broke the "grid moves through the
+	// marker" behavior during an actual measurement, which matters far more than the small,
+	// unavoidable pan this same correction causes on a pure idle objective switch (the grid
+	// panning slightly then is the visible cost of keeping the CURRENT point pixel-accurate on
+	// the marker, not a separate bug - the two can't both be zero at once).
 	//
-	// This base value keeps its own "+ fovOffsetUm(active)" term, though, for the live-preview
-	// (pre-Start, relative) case below - relative-mode grid points are stored as pure deltas
-	// with nothing baked into them anywhere else (Brillouin::updatePositions()'s relative branch
-	// never touches resolvedGridOriginUm()), so this is the ONLY place that translates
-	// m_positionScanner - stored objective-invariant, a real physical location - into the
-	// CURRENTLY active objective's own raw pixel frame. Removing it too (tried, then reverted)
-	// didn't decouple the grid from a phantom pan the way it did for absolute mode - it just
-	// left every relative-mode point silently using the WRONG objective's calibration, which a
-	// fresh log showed as a genuine miss on objective pairs with a real magnification difference
-	// (spacing and reference point both landing wrong), not merely the marker/grid separating.
+	// The measurement-mode branch below was previously missing this term entirely (not
+	// something removed today - it was never there). That is very likely the original,
+	// long-reported "relative-mode measurement doesn't track the marker" bug: on any
+	// non-reference objective (fovOffset != 0), the actively-measured point's displayed pixel
+	// was off from the marker by exactly fovOffset, with no objective switch even required.
 	auto offset = m_positionScanner + getActiveObjectiveFovOffsetUm();
 	if (positionIsAbsolute) {
 		// Absolute positions are stored as the raw target stage+scanner position directly
@@ -671,11 +672,13 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 		// scanner contribution is already baked into the stored value itself - subtracting
 		// it again here would double-count it and shift the whole grid by that amount.
 		// Only the stage position (which is what actually changes as the grid is scanned)
-		// needs to be undone, exactly like the measurement-mode branch below.
-		offset = POINT2{} - m_positionStage;
+		// needs to be undone, exactly like the measurement-mode branch below - PLUS the active
+		// objective's own FOV-center offset, for the same reason every branch here needs it now
+		// (see this function's own top comment).
+		offset = POINT2{} - m_positionStage + getActiveObjectiveFovOffsetUm();
 		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(absolute): m_positionStage=("
 			<< m_positionStage.x << "," << m_positionStage.y << ") m_positionScanner=("
-			<< m_positionScanner.x << "," << m_positionScanner.y << ") fovOffset(not applied - baked into m_orderedPositions instead)=("
+			<< m_positionScanner.x << "," << m_positionScanner.y << ") fovOffset=("
 			<< getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
 			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
 	}
@@ -684,12 +687,12 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 		// m_startPosition is captured as getPosition(BOTH) (stage + scanner) in
 		// enableMeasurementMode(), but the scanner term cancels exactly the same way as
 		// above - only stage needs to be subtracted here. This is the literal formula from
-		// commit 0c70d11; adding a "- m_positionScanner" term here (as a previous revision
-		// of this function did) shifts the whole grid by the scanner offset instead of
+		// commit 0c70d11 PLUS the active objective's own FOV-center offset (previously missing
+		// here - see this function's own top comment for why that was a real, standing bug, not
+		// a deliberate omission); adding a "- m_positionScanner" term here (as a previous
+		// revision of this function did) shifts the whole grid by the scanner offset instead of
 		// leaving it centered on the marker.
-		offset = m_startPosition - m_positionStage;
-		// [FOVDIAG] Temporary - see the matching log in the absolute branch above for why
-		// m_positionScanner is included now too.
+		offset = m_startPosition - m_positionStage + getActiveObjectiveFovOffsetUm();
 		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(measurementMode, relative): m_startPosition=("
 			<< m_startPosition.x << "," << m_startPosition.y << ") m_positionStage=("
 			<< m_positionStage.x << "," << m_positionStage.y << ") m_positionScanner=("
