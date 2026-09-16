@@ -238,7 +238,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		m_Brillouin,
 		&Brillouin::s_orderedPositionsChanged,
 		this,
-		[this](std::vector<POINT3> orderedPositions) { AOI_changed(orderedPositions); }
+		[this](std::vector<POINT3> orderedPositions, bool isAbsolute) { AOI_changed(orderedPositions, isAbsolute); }
 	);
 	connection = QWidget::connect(
 		m_Brillouin,
@@ -1917,7 +1917,7 @@ void BrillouinAcquisition::applyBrightfieldViewTransformChanged() {
 	m_ODTPlot.plotHandle->xAxis->setRange(QCPRange(1, brightfieldDisplayWidth()));
 	m_ODTPlot.plotHandle->yAxis->setRange(QCPRange(1, brightfieldDisplayHeight()));
 	if (m_scanControl) {
-		AOI_changed(m_positionsMicrometer);
+		AOI_changed(m_positionsMicrometer, m_positionsMicrometerIsAbsolute);
 		excludedAOI_changed(m_excludedPositionsMicrometer);
 		drawPositionScannerMarker(m_positionScanner);
 	}
@@ -4858,7 +4858,7 @@ void BrillouinAcquisition::initScanControl() {
 	initializeLaserPositionLocation();
 
 	// Update positions preview
-	AOI_changed(m_positionsMicrometer);
+	AOI_changed(m_positionsMicrometer, m_positionsMicrometerIsAbsolute);
 	excludedAOI_changed(m_excludedPositionsMicrometer);
 
 	// reestablish m_scanControl connections
@@ -6064,10 +6064,16 @@ void BrillouinAcquisition::on_showOverlay_stateChanged(int show) {
 /*
  * React when the ordered positions have changed
  */
-void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositions) {
+void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositions, bool isAbsolute) {
+	m_positionsMicrometerIsAbsolute = isAbsolute;
 	if (m_scanControl) {
 		m_positionsMicrometer = orderedPositions;
-		m_positionsPixel = m_scanControl->getPositionsPix(m_positionsMicrometer, m_Brillouin->settings.gridCoordinatesAbsolute);
+		// isAbsolute is the mode these positions were actually computed under (travels with
+		// the signal - see Brillouin::s_orderedPositionsChanged()'s own comment), NOT
+		// m_Brillouin->settings.gridCoordinatesAbsolute's current, possibly-already-changed-
+		// again live value - using the live value here reintroduced exactly the race this
+		// parameter exists to avoid.
+		m_positionsPixel = m_scanControl->getPositionsPix(m_positionsMicrometer, isAbsolute);
 		std::transform(m_positionsPixel.begin(), m_positionsPixel.end(), m_positionsPixel.begin(),
 			[this](POINT2 point) { return brightfieldRawToDisplay(point); }
 		);
@@ -6142,7 +6148,14 @@ void BrillouinAcquisition::update_AOI_preview() {
 			// something there (e.g. enableMeasurementMode(false) at acquisition end) changes
 			// mid-way through this function - which is exactly what let this coloring pass
 			// disagree with the ROI polygon in relative grid mode.
-			const auto gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
+			//
+			// m_positionsMicrometerIsAbsolute - the mode m_positionsMicrometer/
+			// m_excludedPositionsMicrometer were actually computed under (see AOI_changed()) -
+			// not the live m_Brillouin->settings.gridCoordinatesAbsolute: this function runs
+			// synchronously on the GUI thread, but those arrays were populated asynchronously
+			// by an earlier queued signal, so the live mode can already have changed again by
+			// the time this runs - the same stale-mode race AOI_changed() itself had.
+			const auto gridAbsolute = m_positionsMicrometerIsAbsolute;
 			const auto offset = currentGridOffset(gridAbsolute);
 			positionsPixelForRoi.clear();
 			positionsPixelForRoi.reserve(m_positionsMicrometer.size());

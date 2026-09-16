@@ -730,10 +730,10 @@ void Brillouin::updatePositions() {
 	m_excludedPositionsRelative = std::move(plan.excludedPositionsRelative);
 
 	if (m_settings.gridCoordinatesAbsolute) {
-		emit(s_orderedPositionsChanged(m_orderedPositions));
+		emit(s_orderedPositionsChanged(m_orderedPositions, true));
 		emit(s_excludedPositionsChanged(m_excludedPositions));
 	} else {
-		emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
+		emit(s_orderedPositionsChanged(m_orderedPositionsRelative, false));
 		emit(s_excludedPositionsChanged(m_excludedPositionsRelative));
 	}
 }
@@ -1924,9 +1924,9 @@ void Brillouin::applySurfaceFollowPlan() {
 	const auto result = runSurfacePreScan();
 	if (result.success) {
 		if (m_settings.gridCoordinatesAbsolute) {
-			emit(s_orderedPositionsChanged(m_orderedPositions));
+			emit(s_orderedPositionsChanged(m_orderedPositions, true));
 		} else {
-			emit(s_orderedPositionsChanged(m_orderedPositionsRelative));
+			emit(s_orderedPositionsChanged(m_orderedPositionsRelative, false));
 		}
 		// Left at 100% (no further scan-progress emits follow) so this stays visible in
 		// the status bar rather than being immediately overwritten by the next column's

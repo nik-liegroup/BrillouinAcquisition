@@ -239,6 +239,12 @@ private:
 	// polygon becomes valid again, without fighting a genuine user choice.
 	bool m_roiMaskAutoDisabled{ false };
 	std::vector<POINT3> m_positionsMicrometer;	// [µm]		Positions to raster, relative to current start point
+	// The mode m_positionsMicrometer was actually computed under - set by AOI_changed() from
+	// the flag that travels with Brillouin::s_orderedPositionsChanged() (see its own comment).
+	// Reused by callers that just need to re-display the same, already-stored positions under
+	// a new view transform (rotation/mirror) rather than react to freshly computed ones - those
+	// have no fresh mode of their own to pass.
+	bool m_positionsMicrometerIsAbsolute{ false };
 	std::vector<POINT2> m_positionsPixel;		// [pix]	Positions to raster
 	// Grid points the ROI mask excludes from the actual scan - preview-only (see
 	// ScanPlannerOutput::excludedPositionsAbsolute/Relative), shown as the red "outside ROI"
@@ -782,7 +788,7 @@ private slots:
 	void on_stepsY_valueChanged(int);
 	void on_stepsZ_valueChanged(int);
 	void on_showOverlay_stateChanged(int);
-	void AOI_changed(const std::vector<POINT3>& orderedPositions);
+	void AOI_changed(const std::vector<POINT3>& orderedPositions, bool isAbsolute);
 	void excludedAOI_changed(const std::vector<POINT3>& excludedPositions);
 	void on_scaleCalibrationChanged(const std::vector<POINT2>& positions);
 	void on_gridOffsetChanged(POINT2 offsetUm, bool positionIsAbsolute);

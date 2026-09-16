@@ -762,7 +762,15 @@ signals:
 	void s_timeToCalibration(int);	// time to next calibration
 	void s_calibrationRunning(bool);	// is calibration running
 	void s_scanOrderChanged(SCAN_ORDER);
-	void s_orderedPositionsChanged(std::vector<POINT3>);
+	// The mode flag travels with the positions rather than being re-read by the receiver -
+	// this signal crosses threads via a queued connection, so by the time a receiver's slot
+	// actually runs, gridCoordinatesAbsolute may already have changed again (e.g. the operator
+	// toggled the checkbox right after this emit). Re-deriving "was this absolute" from the
+	// live setting at receive time would then reinterpret positions computed under the OLD mode
+	// using the NEW mode's pixel-conversion formula - a purely visual grid/marker misalignment
+	// with no effect on the actual measurement (which reads the flag synchronously, on this
+	// same thread, right when it plans/moves) - see BrillouinAcquisition::AOI_changed().
+	void s_orderedPositionsChanged(std::vector<POINT3>, bool isAbsolute);
 	void s_excludedPositionsChanged(std::vector<POINT3>);
 	void s_surfaceScanProgress(double progress, QString message);
 };
