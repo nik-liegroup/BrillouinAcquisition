@@ -801,6 +801,7 @@ private slots:
 	// manual stage control
 	void on_savePosition_clicked();
 	void on_setHome_clicked();
+	void on_setPlane_clicked();
 	void on_moveHome_clicked();
 
 	void on_setPositionX_valueChanged(double);

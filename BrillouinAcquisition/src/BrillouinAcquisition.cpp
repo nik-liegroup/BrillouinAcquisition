@@ -1487,16 +1487,19 @@ void BrillouinAcquisition::preservePhysicalGridForAbsoluteMode(bool enabled) {
 	}
 
 	const auto oldAbsoluteMode = m_Brillouin->settings.gridCoordinatesAbsolute;
-	const auto oldAbsoluteOrigin = m_Brillouin->settings.absoluteGridOriginUm;
-	// Z has no scanner/stage split - getPosition().z is always just the focus position -
-	// so the plain origin-difference used below is not subject to the X/Y mismatch this
-	// function used to have and is kept as its own, simpler path.
-	const auto currentFocus = m_scanControl->getPosition().z;
 	if (enabled) {
 		m_Brillouin->settings.absoluteGridOriginUm = m_scanControl->getHomePosition();
 	}
 
-	// X/Y: round-trip each stored point through gridOffsetToImagePlaneUm()/
+	// X/Y only - "absolute grid coordinates" only ever meant x/y anchored to a fixed physical
+	// point, independent of wherever Start happens to be pressed. Z is deliberately NOT part of
+	// that split (see Brillouin::resolvedGridOriginUm()'s own comment): it always follows
+	// m_startPosition.z, refreshed at every Start or on demand via "Set plane"
+	// (setCurrentFocusAsZOrigin()), regardless of gridCoordinatesAbsolute. zMin/zMax are
+	// therefore left untouched by a mode toggle - the operator's configured z sweep survives
+	// switching to/from absolute mode instead of being silently reinterpreted.
+	//
+	// Round-trip each stored x/y point through gridOffsetToImagePlaneUm()/
 	// imagePlaneUmToGridOffset() - the exact functions the grid and the ROI polygon are
 	// actually drawn with - instead of re-deriving the offset a third time. That guarantees
 	// whatever currently renders on screen is preserved exactly, in both directions, because
@@ -1505,23 +1508,14 @@ void BrillouinAcquisition::preservePhysicalGridForAbsoluteMode(bool enabled) {
 		const auto imagePlaneUm = gridOffsetToImagePlaneUm(gridOffset, oldAbsoluteMode);
 		return imagePlaneUmToGridOffset(imagePlaneUm, enabled);
 	};
-	auto convertZ = [&](double gridOffsetZ) {
-		const auto oldOriginZ = oldAbsoluteMode ? oldAbsoluteOrigin.z : currentFocus;
-		const auto newOriginZ = enabled ? m_Brillouin->settings.absoluteGridOriginUm.z : currentFocus;
-		return (oldOriginZ + gridOffsetZ) - newOriginZ;
-	};
 
 	const auto newMinXY = convertXY(POINT2{ m_Brillouin->settings.xMin, m_Brillouin->settings.yMin });
 	const auto newMaxXY = convertXY(POINT2{ m_Brillouin->settings.xMax, m_Brillouin->settings.yMax });
-	const auto newMinZ = convertZ(m_Brillouin->settings.zMin);
-	const auto newMaxZ = convertZ(m_Brillouin->settings.zMax);
 
 	m_Brillouin->settings.setXMin(newMinXY.x);
 	m_Brillouin->settings.setXMax(newMaxXY.x);
 	m_Brillouin->settings.setYMin(newMinXY.y);
 	m_Brillouin->settings.setYMax(newMaxXY.y);
-	m_Brillouin->settings.setZMin(newMinZ);
-	m_Brillouin->settings.setZMax(newMaxZ);
 
 	for (auto& point : m_Brillouin->settings.roiPolygonUm) {
 		point = convertXY(point);
@@ -2220,20 +2214,28 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 	// can't be read off them without also knowing the (separately displayed) origin. Locked to
 	// read-only in absolute mode for that reason, on top of (not instead of) the pre-existing
 	// running-state lock.
-	const bool gridLocked = running || m_Brillouin->settings.gridCoordinatesAbsolute;
-	ui->startX->setDisabled(gridLocked);
-	ui->startY->setDisabled(gridLocked);
-	ui->startZ->setDisabled(gridLocked);
-	ui->endX->setDisabled(gridLocked);
-	ui->endY->setDisabled(gridLocked);
-	ui->endZ->setDisabled(gridLocked);
-	ui->stepsX->setDisabled(gridLocked);
-	ui->stepsY->setDisabled(gridLocked);
-	ui->stepsZ->setDisabled(gridLocked);
+	// Z is deliberately excluded from the absolute-mode lock - see
+	// Brillouin::resolvedGridOriginUm()'s comment for why z is not part of "absolute" at all
+	// anymore. Its own read-only meaning issue (editing offsets from a fixed origin you can't
+	// see here) doesn't apply: z's origin is always m_startPosition.z, refreshed at every Start
+	// or via "Set plane", so zMin/zMax stay exactly as intuitive here as they already are in
+	// relative mode.
+	const bool gridLockedXY = running || m_Brillouin->settings.gridCoordinatesAbsolute;
+	const bool gridLockedZ = running;
+	ui->startX->setDisabled(gridLockedXY);
+	ui->startY->setDisabled(gridLockedXY);
+	ui->startZ->setDisabled(gridLockedZ);
+	ui->endX->setDisabled(gridLockedXY);
+	ui->endY->setDisabled(gridLockedXY);
+	ui->endZ->setDisabled(gridLockedZ);
+	ui->stepsX->setDisabled(gridLockedXY);
+	ui->stepsY->setDisabled(gridLockedXY);
+	ui->stepsZ->setDisabled(gridLockedZ);
 	ui->camera_playPause->setDisabled(running);
 	ui->camera_singleShot->setDisabled(running);
 	ui->setHome->setDisabled(running || m_Brillouin->settings.gridCoordinatesAbsolute);
 	ui->moveHome->setDisabled(running || m_Brillouin->settings.gridCoordinatesAbsolute);
+	ui->setPlane->setDisabled(running);
 	ui->setPositionX->setDisabled(running);
 	ui->setPositionY->setDisabled(running);
 	ui->setPositionZ->setDisabled(running);
@@ -5492,6 +5494,20 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 			);
 		}
 	}
+	// [FOVDIAG] Temporary - re-investigating the absolute-mode variant of the objective-switch
+	// FOV-translation bug (10x -> 20x while gridCoordinatesAbsolute is true), plus a new report
+	// that a subsequent Start in RELATIVE mode afterwards no longer tracks the marker. Absolute
+	// mode has no equivalent branch above - resolvedGridOriginUm() is meant to recompute fresh
+	// on every read, needing no bookkeeping shift here - this just confirms that assumption
+	// against what the offset cache/preview actually show right after the switch. Remove once
+	// resolved.
+	if (m_Brillouin) {
+		qInfo(logInfo()) << "[FOVDIAG] objectiveSwitched" << previousSlot << "->" << newSlot
+			<< ": gridCoordinatesAbsolute=" << m_Brillouin->settings.gridCoordinatesAbsolute
+			<< "offsetUm=(" << offsetUm.x << "," << offsetUm.y << ")"
+			<< "m_currentGridOffsetUm=(" << m_currentGridOffsetUm.x << "," << m_currentGridOffsetUm.y << ")"
+			<< "m_currentGridOffsetIsAbsolute=" << m_currentGridOffsetIsAbsolute;
+	}
 }
 
 void BrillouinAcquisition::onFovOffsetSaved(int slot, POINT2 oldOffsetUm, bool oldHasFovOffset, POINT2 newOffsetUm, bool newHasFovOffset) {
@@ -5931,19 +5947,22 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 	const auto homeControlsDisabled = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
 	ui->setHome->setDisabled(homeControlsDisabled);
 	ui->moveHome->setDisabled(homeControlsDisabled);
+	ui->setPlane->setDisabled(m_enabledModes != ACQUISITION_MODE::NONE);
 	// See the comment on this same lock in the ACQUISITION_STATUS handler - repeated here so
 	// it stays correct across every path that refreshes the grid UI (e.g. an objective switch
-	// re-running updatePositions()), not just the toggle handler and the status handler.
-	const auto gridLocked = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
-	ui->startX->setDisabled(gridLocked);
-	ui->startY->setDisabled(gridLocked);
-	ui->startZ->setDisabled(gridLocked);
-	ui->endX->setDisabled(gridLocked);
-	ui->endY->setDisabled(gridLocked);
-	ui->endZ->setDisabled(gridLocked);
-	ui->stepsX->setDisabled(gridLocked);
-	ui->stepsY->setDisabled(gridLocked);
-	ui->stepsZ->setDisabled(gridLocked);
+	// re-running updatePositions()), not just the toggle handler and the status handler. Z is
+	// excluded from the absolute-mode part of the lock - see that comment for why.
+	const auto gridLockedXY = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
+	const auto gridLockedZ = m_enabledModes != ACQUISITION_MODE::NONE;
+	ui->startX->setDisabled(gridLockedXY);
+	ui->startY->setDisabled(gridLockedXY);
+	ui->startZ->setDisabled(gridLockedZ);
+	ui->endX->setDisabled(gridLockedXY);
+	ui->endY->setDisabled(gridLockedXY);
+	ui->endZ->setDisabled(gridLockedZ);
+	ui->stepsX->setDisabled(gridLockedXY);
+	ui->stepsY->setDisabled(gridLockedXY);
+	ui->stepsZ->setDisabled(gridLockedZ);
 	if (m_editSpectralProxyRoiCheckbox) {
 		m_editSpectralProxyRoiCheckbox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
 	}
@@ -6569,6 +6588,13 @@ void BrillouinAcquisition::on_setHome_clicked() {
 		},
 		Qt::AutoConnection
 	);
+}
+
+void BrillouinAcquisition::on_setPlane_clicked() {
+	if (!m_Brillouin) {
+		return;
+	}
+	QMetaObject::invokeMethod(m_Brillouin, "setCurrentFocusAsZOrigin", Qt::AutoConnection);
 }
 
 void BrillouinAcquisition::on_moveHome_clicked() {

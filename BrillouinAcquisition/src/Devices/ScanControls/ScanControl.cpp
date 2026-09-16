@@ -203,6 +203,10 @@ void ScanControl::enableMeasurementMode(bool enabled) {
 		// across any later switch/FOV-offset save.
 		auto fovOffsetUm = getActiveObjectiveFovOffsetUm();
 		m_startPosition = POINT2{ pos.x + fovOffsetUm.x, pos.y + fovOffsetUm.y };
+		// [FOVDIAG] Temporary - see the matching logs in getPositionOffset(). Remove once resolved.
+		qInfo(logInfo()) << "[FOVDIAG] enableMeasurementMode(true): pos=(" << pos.x << "," << pos.y
+			<< ") fovOffset=(" << fovOffsetUm.x << "," << fovOffsetUm.y << ") -> m_startPosition=("
+			<< m_startPosition.x << "," << m_startPosition.y << ")";
 	}
 	m_measurementMode = enabled;
 }
@@ -540,6 +544,21 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 	m_objectiveOffsetWarningAccepted = false;
 
 	auto hasCalibration = hasObjectiveCalibration(newSlot);
+	// [FOVDIAG] Temporary - "No Scale Calibration" warning reportedly fires on every objective
+	// switch regardless of target slot, even though the transform ends up correctly applied.
+	// Logs the exact key this lookup used and everything actually stored, to tell apart an
+	// indexing mismatch (setup dialog numbers objectives differently than the live hardware
+	// readout does - see handleObjectiveSlotObserved()'s caller) from the map simply being
+	// empty at this point. Remove once the real cause is found.
+	{
+		QStringList storedKeys;
+		for (const auto& entry : m_objectiveCalibrations) {
+			storedKeys << QString::number(entry.first);
+		}
+		qInfo(logInfo()) << "[FOVDIAG] handleObjectiveSlotObserved: newSlot=" << newSlot
+			<< "previousSlot=" << previousSlot << "hasCalibration=" << hasCalibration
+			<< "m_objectiveCalibrations keys=[" << storedKeys.join(",") << "]";
+	}
 	if (hasCalibration) {
 		// setScaleCalibration() itself now leaves m_positionScanner's [um] value untouched - see
 		// its own comment for why a pixel-preserving reprojection was wrong for a physically-real,
@@ -644,6 +663,13 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 		// so on any non-reference objective the grid/overview-tile preview never quite lines
 		// up with the marker, even though the stage is already at the correct physical target.
 		offset = POINT2{} - m_positionStage + getActiveObjectiveFovOffsetUm();
+		// [FOVDIAG] Temporary - re-investigating "10x -> 20x switch in absolute mode" plus the new
+		// report that afterwards, starting a measurement in RELATIVE mode no longer tracks the
+		// marker correctly (starting in absolute mode is reported fine). Remove once resolved.
+		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(absolute): m_positionStage=("
+			<< m_positionStage.x << "," << m_positionStage.y << ") fovOffset=("
+			<< getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
+			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
 	}
 	// In measurement mode, the positions are shown relative to the start position.
 	else if (m_measurementMode) {
@@ -654,6 +680,10 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 		// of this function did) shifts the whole grid by the scanner offset instead of
 		// leaving it centered on the marker.
 		offset = m_startPosition - m_positionStage;
+		// [FOVDIAG] Temporary - see the matching log in the absolute branch above.
+		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(measurementMode, relative): m_startPosition=("
+			<< m_startPosition.x << "," << m_startPosition.y << ") m_positionStage=("
+			<< m_positionStage.x << "," << m_positionStage.y << ") -> offset=(" << offset.x << "," << offset.y << ")";
 	}
 	return offset;
 }

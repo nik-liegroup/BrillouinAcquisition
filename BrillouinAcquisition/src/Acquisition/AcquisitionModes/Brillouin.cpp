@@ -746,6 +746,14 @@ void Brillouin::adjustStartPositionForFovOffsetChange(POINT2 deltaUm) {
 	m_startPosition.y += deltaUm.y;
 }
 
+void Brillouin::setCurrentFocusAsZOrigin() {
+	if (!m_scanControl) {
+		return;
+	}
+	m_startPosition.z = m_scanControl->getPosition().z;
+	updatePositions();
+}
+
 bool Brillouin::remapProxyRoi(
 	int roiLeft, int roiTop, int roiWidth, int roiHeight,
 	const PROXY_ROI_FRAME& from, const PROXY_ROI_FRAME& to,
@@ -975,7 +983,13 @@ std::vector<POINT2> Brillouin::additionalBoundaryXYPoints(int count) const {
 	// doesn't blow up the (candidates x reference-points) search below.
 	const auto candidateCount = std::clamp(count * 12, 60, 400);
 	const auto candidates = polygonPerimeterPoints(boundary, candidateCount);
-	const auto idealPoints = farthestPointSequence(candidates, uniformAnchors, count);
+	// Ask for the whole candidate pool, not just `count` - a non-axis-aligned boundary point can
+	// still get rejected below (outside-ROI after per-axis snapping, or a duplicate index), and
+	// farthestPointSequence()'s k-th pick never moves an earlier one (see its own comment), so the
+	// extra entries are a strictly-ordered fallback pool to backfill from rather than a wasted
+	// computation. Without this, a rejection just silently shrank the result below `count` instead
+	// of falling through to the next-best candidate.
+	const auto idealPoints = farthestPointSequence(candidates, uniformAnchors, candidateCount);
 
 	// Snap each ideal point to its nearest real grid index, independently per axis - same
 	// "always land on a real measurement point" rule coarseXYSamples() follows.
@@ -1003,6 +1017,9 @@ std::vector<POINT2> Brillouin::additionalBoundaryXYPoints(int count) const {
 	}
 	std::vector<POINT2> result;
 	for (const auto& ideal : idealPoints) {
+		if ((int)result.size() >= count) {
+			break;
+		}
 		const POINT2 snapped{ nearestValue(ideal.x, denseX), nearestValue(ideal.y, denseY) };
 		// ideal sits exactly on the (clipped) boundary curve by construction, but snapping
 		// each axis to its own nearest grid line independently can walk a non-axis-aligned
@@ -1158,11 +1175,31 @@ POINT3 Brillouin::rawPositionToGridFrame(const POINT3& rawPosition) const {
 
 POINT3 Brillouin::resolvedGridOriginUm() const {
 	const auto offsetUm = m_scanControl ? m_scanControl->getActiveObjectiveFovOffsetUm() : POINT2{ 0, 0 };
-	return POINT3{
+	// z is deliberately NOT part of the absolute/relative origin split x/y gets above -
+	// "absolute grid coordinates" only ever meant "x/y anchored to a fixed physical point,
+	// independent of wherever Start happens to be pressed", which is meaningless for z: there
+	// is no separate scanner/stage-frame split for focus, and unlike x/y there is no per-
+	// objective FOV-center shift to compensate for either. z always uses m_startPosition.z -
+	// refreshed at every "Start" the same way relative mode's x/y already are, or on demand via
+	// setCurrentFocusAsZOrigin() ("Set plane", offered specifically while gridCoordinatesAbsolute
+	// is true and Set home is disabled) - so an objective switch that changes only the focus
+	// offset, not x/y, never needs its own separate z-specific handling the way x/y's FOV offset
+	// does. m_settings.absoluteGridOriginUm.z itself is still written (it round-trips through
+	// preservePhysicalGridForAbsoluteMode()'s POINT3 assignment) but is otherwise unused.
+	const POINT3 result{
 		m_settings.absoluteGridOriginUm.x + offsetUm.x,
 		m_settings.absoluteGridOriginUm.y + offsetUm.y,
-		m_settings.absoluteGridOriginUm.z
+		m_startPosition.z
 	};
+	// [FOVDIAG] Temporary - re-investigating the absolute-mode objective-switch FOV translation
+	// bug, plus a new report that a subsequent Start in RELATIVE mode no longer tracks the
+	// marker. Remove once resolved.
+	qInfo(logInfo()) << "[FOVDIAG] resolvedGridOriginUm(): absoluteGridOriginUm=("
+		<< m_settings.absoluteGridOriginUm.x << "," << m_settings.absoluteGridOriginUm.y << ","
+		<< m_settings.absoluteGridOriginUm.z << ") fovOffset=(" << offsetUm.x << "," << offsetUm.y
+		<< ") m_startPosition=(" << m_startPosition.x << "," << m_startPosition.y << "," << m_startPosition.z
+		<< ") -> result=(" << result.x << "," << result.y << "," << result.z << ")";
+	return result;
 }
 
 Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {

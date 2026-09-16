@@ -865,6 +865,19 @@ QTabBar::tab:!selected {
                      </property>
                     </widget>
                    </item>
+                   <item row="0" column="3">
+                    <widget class="QPushButton" name="setPlane">
+                     <property name="enabled">
+                      <bool>true</bool>
+                     </property>
+                     <property name="toolTip">
+                      <string>Zero the z grid at the current focus position, without touching x/y. Available in absolute grid mode, where Set home is disabled.</string>
+                     </property>
+                     <property name="text">
+                      <string>Set plane</string>
+                     </property>
+                    </widget>
+                   </item>
                    <item row="1" column="0">
                     <widget class="QLabel" name="positionX_label_2">
                      <property name="text">

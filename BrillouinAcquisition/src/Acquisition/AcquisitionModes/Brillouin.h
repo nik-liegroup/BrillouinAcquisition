@@ -717,6 +717,15 @@ private slots:
 	// remaining not-yet-visited points correctly targeted.
 	void adjustStartPositionForFovOffsetChange(POINT2 deltaUm);
 
+	// "Set plane": zeroes the z grid at the current focus position without touching x/y -
+	// the z counterpart to ScanControl::setHome(), offered specifically as its replacement in
+	// absolute grid-coordinate mode, where Set home is disabled (see BrillouinAcquisition's
+	// on_setHome_clicked()/homeControlsDisabled). Unlike x/y, the z grid origin is now always
+	// m_startPosition.z regardless of gridCoordinatesAbsolute (see resolvedGridOriginUm()'s own
+	// comment for why) - so this is the only way to re-anchor it before the next "Start"
+	// overwrites it anyway with a fresh live capture.
+	void setCurrentFocusAsZOrigin();
+
 signals:
 	// current position in x, y and z, as well as the current image number
 	void s_positionChanged(POINT3, int);
