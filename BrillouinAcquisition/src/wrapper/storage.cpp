@@ -31,6 +31,18 @@ StorageWrapper::~StorageWrapper() {
 			auto img = m_payloadQueueFluorescence_short.dequeue();
 			delete img;
 		}
+		while (!m_backgroundQueueBrillouin_char.isEmpty()) {
+			auto img = m_backgroundQueueBrillouin_char.dequeue();
+			delete img;
+		}
+		while (!m_backgroundQueueBrillouin_short.isEmpty()) {
+			auto img = m_backgroundQueueBrillouin_short.dequeue();
+			delete img;
+		}
+		while (!m_backgroundQueueBrillouin_int.isEmpty()) {
+			auto img = m_backgroundQueueBrillouin_int.dequeue();
+			delete img;
+		}
 		while (!m_calibrationQueue_char.isEmpty()) {
 			auto cal = m_calibrationQueue_char.dequeue();
 			delete cal;
@@ -87,6 +99,18 @@ void StorageWrapper::s_enqueuePayload(FLUOIMAGE<unsigned char>*img) {
 
 void StorageWrapper::s_enqueuePayload(FLUOIMAGE<unsigned short>* img) {
 	m_payloadQueueFluorescence_short.enqueue(img);
+}
+
+void StorageWrapper::s_enqueueBackground(FLUOIMAGE<unsigned char>* img) {
+	m_backgroundQueueBrillouin_char.enqueue(img);
+}
+
+void StorageWrapper::s_enqueueBackground(FLUOIMAGE<unsigned short>* img) {
+	m_backgroundQueueBrillouin_short.enqueue(img);
+}
+
+void StorageWrapper::s_enqueueBackground(FLUOIMAGE<unsigned int>* img) {
+	m_backgroundQueueBrillouin_int.enqueue(img);
 }
 
 void StorageWrapper::s_enqueueCalibration(CALIBRATION<unsigned char>*cal) {
@@ -221,6 +245,40 @@ void StorageWrapper::s_writeQueues() {
 		setPayloadData(img);
 		//std::string info = "Image written " + std::to_string(m_writtenImagesNr);
 		//qInfo(logInfo()) << info.c_str();
+		m_writtenImagesNr++;
+		delete img;
+		img = nullptr;
+	}
+
+	while (!m_backgroundQueueBrillouin_char.isEmpty()) {
+		if (m_abort) {
+			stopWritingQueues();
+			return;
+		}
+		auto img = m_backgroundQueueBrillouin_char.dequeue();
+		setBackgroundPayloadData(img);
+		m_writtenImagesNr++;
+		delete img;
+		img = nullptr;
+	}
+	while (!m_backgroundQueueBrillouin_short.isEmpty()) {
+		if (m_abort) {
+			stopWritingQueues();
+			return;
+		}
+		auto img = m_backgroundQueueBrillouin_short.dequeue();
+		setBackgroundPayloadData(img);
+		m_writtenImagesNr++;
+		delete img;
+		img = nullptr;
+	}
+	while (!m_backgroundQueueBrillouin_int.isEmpty()) {
+		if (m_abort) {
+			stopWritingQueues();
+			return;
+		}
+		auto img = m_backgroundQueueBrillouin_int.dequeue();
+		setBackgroundPayloadData(img);
 		m_writtenImagesNr++;
 		delete img;
 		img = nullptr;

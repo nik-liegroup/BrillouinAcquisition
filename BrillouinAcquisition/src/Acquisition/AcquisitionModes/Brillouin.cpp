@@ -2409,6 +2409,163 @@ void enqueueOverviewBrightfieldImage(
 	);
 }
 
+// Mirrors enqueueOverviewBrightfieldImage() above, but for a background reference point's
+// Andor frame stack (frameCount frames, like a regular grid point - not a single brightfield
+// snap) and routed through s_enqueueBackground() into the separate "background" HDF5 group
+// instead of s_enqueuePayload()'s Fluorescence/payloadData one. See
+// Brillouin::captureBackgroundPoints()'s own comment for why that separation matters.
+template <typename T>
+void enqueueBackgroundImage(
+	std::unique_ptr<StorageWrapper>& storage,
+	int imageNumber,
+	CAMERA_SETTINGS& cameraSettings,
+	const std::vector<std::byte>& images,
+	const POINT3& targetPosition,
+	const POINT3& stagePosition
+) {
+	auto date = QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc())
+		.toString(Qt::ISODateWithMs).toStdString();
+	int rankData{ 3 };
+	auto dimsData = new hsize_t[3]{
+		(hsize_t)cameraSettings.frameCount,
+		(hsize_t)cameraSettings.roi.height_binned,
+		(hsize_t)cameraSettings.roi.width_binned
+	};
+	const auto pixelCount = (size_t)cameraSettings.frameCount
+		* (size_t)cameraSettings.roi.height_binned * (size_t)cameraSettings.roi.width_binned;
+	auto typedImages = std::vector<T>(pixelCount);
+	const auto bytesToCopy = std::min(images.size(), typedImages.size() * sizeof(T));
+	if (bytesToCopy > 0) {
+		std::memcpy(typedImages.data(), images.data(), bytesToCopy);
+	}
+	auto img = new FLUOIMAGE<T>(
+		imageNumber,
+		rankData,
+		dimsData,
+		date,
+		"Background",
+		typedImages,
+		cameraSettings.exposureTime,
+		cameraSettings.gain,
+		cameraSettings.roi,
+		targetPosition,
+		true,
+		stagePosition,
+		// compress=true - background point counts times z-steps can add up like the per-point
+		// brightfield case does, see that call site's own comment.
+		true
+	);
+
+	QMetaObject::invokeMethod(
+		storage.get(),
+		[&storage = storage, img]() { storage.get()->s_enqueueBackground(img); },
+		Qt::AutoConnection
+	);
+}
+
+std::vector<POINT2> Brillouin::backgroundGridPoints() const {
+	if (!m_settings.useBackgroundRoiMask || m_settings.backgroundRoiPolygonUm.size() < 3) {
+		return {};
+	}
+
+	const auto& poly = m_settings.backgroundRoiPolygonUm;
+	auto xMin = poly.front().x, xMax = poly.front().x;
+	auto yMin = poly.front().y, yMax = poly.front().y;
+	for (const auto& p : poly) {
+		xMin = std::min(xMin, p.x);
+		xMax = std::max(xMax, p.x);
+		yMin = std::min(yMin, p.y);
+		yMax = std::max(yMax, p.y);
+	}
+
+	// Same point spacing as the main grid - not the main grid's own xMin/xMax/yMin/yMax extent,
+	// which the background polygon is deliberately free to sit entirely outside of.
+	const auto spacingX = m_settings.xSteps > 1
+		? (m_settings.xMax - m_settings.xMin) / (m_settings.xSteps - 1) : (xMax - xMin);
+	const auto spacingY = m_settings.ySteps > 1
+		? (m_settings.yMax - m_settings.yMin) / (m_settings.ySteps - 1) : (yMax - yMin);
+
+	auto samplesAlong = [](double lo, double hi, double spacing) {
+		std::vector<double> out;
+		if (spacing <= 0.0 || hi < lo) {
+			out.push_back(lo);
+			return out;
+		}
+		for (auto v = lo; v <= hi + 1e-9; v += spacing) {
+			out.push_back(v);
+		}
+		if (out.empty()) {
+			out.push_back(lo);
+		}
+		return out;
+	};
+	const auto xSamples = samplesAlong(xMin, xMax, spacingX);
+	const auto ySamples = samplesAlong(yMin, yMax, spacingY);
+
+	std::vector<POINT2> result;
+	for (const auto y : ySamples) {
+		for (const auto x : xSamples) {
+			const POINT2 candidate{ x, y };
+			if (isPointInPolygonUm(candidate, poly)) {
+				result.push_back(candidate);
+			}
+		}
+	}
+	return result;
+}
+
+void Brillouin::captureBackgroundPoints(std::unique_ptr<StorageWrapper>& storage) {
+	if (!m_settings.useBackgroundRoiMask || !m_scanControl || !m_andor) {
+		return;
+	}
+	const auto points = backgroundGridPoints();
+	if (points.empty()) {
+		return;
+	}
+
+	// Same z sweep as the main grid, same non-surface-follow direct target - a background
+	// point never gets surface-following treatment (there is no surface search here, by
+	// design - see this function's own header comment).
+	const auto directionsZ = simplemath::linspace(m_settings.zMin, m_settings.zMax, m_settings.zSteps);
+	const auto gridOrigin = resolvedGridOriginUm();
+
+	auto imageIndex = 0;
+	for (const auto& xy : points) {
+		const auto xyPosition = m_settings.gridCoordinatesAbsolute
+			? POINT2{ xy.x + gridOrigin.x, xy.y + gridOrigin.y }
+			: POINT2{ m_startPosition.x + xy.x, m_startPosition.y + xy.y };
+		for (const auto zRel : directionsZ) {
+			if (m_abort) {
+				return;
+			}
+			const auto target = POINT3{ xyPosition.x, xyPosition.y, gridOrigin.z + zRel };
+			approachGridPosition(target);
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+			const auto targetPosition = rawPositionToGridFrame(target);
+			const auto stagePosition = rawPositionToGridFrame(m_scanControl->getPosition());
+
+			auto images = std::vector<std::byte>((int64_t)m_settings.camera.roi.bytesPerFrame * m_settings.camera.frameCount);
+			for (gsl::index mm{ 0 }; mm < m_settings.camera.frameCount; mm++) {
+				if (m_abort) {
+					return;
+				}
+				const auto pointerPos = (int64_t)m_settings.camera.roi.bytesPerFrame * mm;
+				acquireAndorFrame(&images[pointerPos], mm == 0, mm == m_settings.camera.frameCount - 1);
+			}
+
+			if (m_settings.camera.readout.dataType == "unsigned short") {
+				enqueueBackgroundImage<unsigned short>(storage, imageIndex, m_settings.camera, images, targetPosition, stagePosition);
+			} else if (m_settings.camera.readout.dataType == "unsigned char") {
+				enqueueBackgroundImage<unsigned char>(storage, imageIndex, m_settings.camera, images, targetPosition, stagePosition);
+			} else if (m_settings.camera.readout.dataType == "unsigned int") {
+				enqueueBackgroundImage<unsigned int>(storage, imageIndex, m_settings.camera, images, targetPosition, stagePosition);
+			}
+			imageIndex++;
+		}
+	}
+}
+
 void Brillouin::captureOverviewBrightfield(
 	std::unique_ptr <StorageWrapper>& storage,
 	int imageNumber,
@@ -3517,6 +3674,16 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		auto remaining{ (int)(1e-3 * measurementTimer.elapsed() / (ll + 1) * ((int64_t)nrPositions - ll + 1)) };
 		emit(s_repetitionProgress(percentage, remaining));
 	}
+
+	// Background reference points, if configured - a separate pass, after the main grid
+	// finishes and before post-calibration, using whatever optics preset/shutter state the
+	// main loop already left active (SCAN_BRILLOUIN, shutter open) - see its own header
+	// comment for why this never touches overview/per-point-brightfield/surface-follow logic.
+	captureBackgroundPoints(storage);
+	if (m_abort) {
+		return;
+	}
+
 	// do post calibration
 	if (m_settings.postCalibration) {
 		calibrate(storage);
