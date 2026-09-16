@@ -646,21 +646,25 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	// stage. What looks like "the marker moving through the grid" is actually the grid
 	// sliding past a fixed marker.
 	//
-	// getActiveObjectiveFovOffsetUm() is deliberately NOT added here (it used to be, in both
-	// this base value and the absolute branch below) - by explicit operator requirement,
-	// confirmed against fresh logs: grid points are a plan of fixed PHYSICAL sample targets,
-	// and switching objectives with the stage stationary must not visibly move them, even by
-	// the small calibrated parcentricity correction. Two logged repros (absolute AND relative
-	// mode) both showed every grid point shifting in lockstep by exactly fovOffsetUm on every
-	// objective switch, with no stage motion - confirmed as the mechanism responsible, not a
-	// coincidence. The marker itself (announcePositionScanner()) still adds fovOffsetUm to its
-	// own drawn pixel - it represents where the beam genuinely, physically lands, which really
-	// does shift with a non-reference objective's real parcentricity error - so grid and marker
-	// are now allowed to visibly separate slightly right after a switch instead of being forced
-	// to co-pan; that's the accepted, intentional tradeoff (confirmed with the operator) of
-	// showing the true physical picture instead of hiding the parcentricity error by dragging
-	// the whole grid along with it.
-	auto offset = m_positionScanner;
+	// getActiveObjectiveFovOffsetUm() is deliberately NOT added in the absolute branch below
+	// (it used to be) - absolute-mode grid points are re-baked fresh, with the CURRENT
+	// objective's own fovOffsetUm, by Brillouin::resolvedGridOriginUm() every time
+	// updatePositions() runs - which objectiveSwitched() already triggers on every switch. Also
+	// adding it live here on top double-applied it, which is what made the whole absolute grid
+	// visibly pan on a pure objective switch even with the stage stationary (confirmed fixed
+	// against logs, operator-verified).
+	//
+	// This base value keeps its own "+ fovOffsetUm(active)" term, though, for the live-preview
+	// (pre-Start, relative) case below - relative-mode grid points are stored as pure deltas
+	// with nothing baked into them anywhere else (Brillouin::updatePositions()'s relative branch
+	// never touches resolvedGridOriginUm()), so this is the ONLY place that translates
+	// m_positionScanner - stored objective-invariant, a real physical location - into the
+	// CURRENTLY active objective's own raw pixel frame. Removing it too (tried, then reverted)
+	// didn't decouple the grid from a phantom pan the way it did for absolute mode - it just
+	// left every relative-mode point silently using the WRONG objective's calibration, which a
+	// fresh log showed as a genuine miss on objective pairs with a real magnification difference
+	// (spacing and reference point both landing wrong), not merely the marker/grid separating.
+	auto offset = m_positionScanner + getActiveObjectiveFovOffsetUm();
 	if (positionIsAbsolute) {
 		// Absolute positions are stored as the raw target stage+scanner position directly
 		// (absoluteGridOriginUm + gridOffset, see gridOffsetToAbsoluteTarget()), so the
@@ -671,7 +675,7 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 		offset = POINT2{} - m_positionStage;
 		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(absolute): m_positionStage=("
 			<< m_positionStage.x << "," << m_positionStage.y << ") m_positionScanner=("
-			<< m_positionScanner.x << "," << m_positionScanner.y << ") fovOffset(not applied)=("
+			<< m_positionScanner.x << "," << m_positionScanner.y << ") fovOffset(not applied - baked into m_orderedPositions instead)=("
 			<< getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
 			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
 	}
@@ -702,7 +706,7 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	else {
 		qInfo(logInfo()) << "[GRIDDIAG] getPositionOffset(live-preview, relative): m_positionScanner=("
 			<< m_positionScanner.x << "," << m_positionScanner.y
-			<< ") fovOffset(not applied)=(" << getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
+			<< ") fovOffset(applied)=(" << getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
 			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
 	}
 	return offset;
