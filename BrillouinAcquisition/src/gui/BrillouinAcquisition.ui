@@ -850,6 +850,9 @@ QTabBar::tab:!selected {
                      <property name="enabled">
                       <bool>true</bool>
                      </property>
+                     <property name="toolTip">
+                      <string>Relative grid mode: set home (x/y/z). Absolute grid mode: set plane (zero the z grid at the current focus, x/y unchanged).</string>
+                     </property>
                      <property name="text">
                       <string>Set home</string>
                      </property>
@@ -862,19 +865,6 @@ QTabBar::tab:!selected {
                      </property>
                      <property name="text">
                       <string>Move home</string>
-                     </property>
-                    </widget>
-                   </item>
-                   <item row="0" column="3">
-                    <widget class="QPushButton" name="setPlane">
-                     <property name="enabled">
-                      <bool>true</bool>
-                     </property>
-                     <property name="toolTip">
-                      <string>Zero the z grid at the current focus position, without touching x/y. Available in absolute grid mode, where Set home is disabled.</string>
-                     </property>
-                     <property name="text">
-                      <string>Set plane</string>
                      </property>
                     </widget>
                    </item>

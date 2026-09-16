@@ -538,6 +538,22 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 	if (newSlot == m_activeObjectiveSlot) {
 		return;
 	}
+	// The turret can report a transient, invalid slot (observed: 0) while still mechanically
+	// settling after a real switch - confirmed from a two-day log capture: 110+ occurrences,
+	// every single one a "0" sandwiched between the real previous slot and the real new slot,
+	// corrected again within under a second, never once persisting. Treating that dip as a
+	// real switch used to set m_activeObjectiveSlot to 0, trigger "no calibration for slot 0"
+	// (silently, via the early-return branch below, which is why this never showed up in a
+	// plain qInfo search - it's a QMessageBox, not a log line), and then leave the very next,
+	// genuine re-detection of the real slot logged with a bogus previousSlot of 0 instead of
+	// the actual one. Ignoring invalid readings here - the same way the initial startup read
+	// (previousSlot == -1) is already ignored below - stops the dip from ever being treated as
+	// a real switch in the first place. If a real objective is ever actually mounted at slot 0,
+	// this needs revisiting - but no observation of "0" in that capture ever lasted longer than
+	// one poll tick, which a deliberately-selected slot would.
+	if (!isValidObjectiveSlot(newSlot)) {
+		return;
+	}
 	auto previousSlot = m_activeObjectiveSlot;
 	m_activeObjectiveSlot = newSlot;
 	// A fresh switch always needs a fresh decision - a warning accepted for the previous
@@ -545,21 +561,6 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 	m_objectiveOffsetWarningAccepted = false;
 
 	auto hasCalibration = hasObjectiveCalibration(newSlot);
-	// [FOVDIAG] Temporary - "No Scale Calibration" warning reportedly fires on every objective
-	// switch regardless of target slot, even though the transform ends up correctly applied.
-	// Logs the exact key this lookup used and everything actually stored, to tell apart an
-	// indexing mismatch (setup dialog numbers objectives differently than the live hardware
-	// readout does - see handleObjectiveSlotObserved()'s caller) from the map simply being
-	// empty at this point. Remove once the real cause is found.
-	{
-		QStringList storedKeys;
-		for (const auto& entry : m_objectiveCalibrations) {
-			storedKeys << QString::number(entry.first);
-		}
-		qInfo(logInfo()) << "[FOVDIAG] handleObjectiveSlotObserved: newSlot=" << newSlot
-			<< "previousSlot=" << previousSlot << "hasCalibration=" << hasCalibration
-			<< "m_objectiveCalibrations keys=[" << storedKeys.join(",") << "]";
-	}
 	if (hasCalibration) {
 		// setScaleCalibration() itself now leaves m_positionScanner's [um] value untouched - see
 		// its own comment for why a pixel-preserving reprojection was wrong for a physically-real,

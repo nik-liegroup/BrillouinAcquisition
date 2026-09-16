@@ -2265,9 +2265,11 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 	ui->stepsZ->setDisabled(gridLockedZ);
 	ui->camera_playPause->setDisabled(running);
 	ui->camera_singleShot->setDisabled(running);
-	ui->setHome->setDisabled(running || m_Brillouin->settings.gridCoordinatesAbsolute);
+	// Enabled in both modes now - see on_setHome_clicked()'s comment for why it does something
+	// useful (Set plane) in absolute mode too, instead of being disabled there.
+	ui->setHome->setDisabled(running);
+	ui->setHome->setText(m_Brillouin->settings.gridCoordinatesAbsolute ? "Set plane" : "Set home");
 	ui->moveHome->setDisabled(running || m_Brillouin->settings.gridCoordinatesAbsolute);
-	ui->setPlane->setDisabled(running);
 	ui->setPositionX->setDisabled(running);
 	ui->setPositionY->setDisabled(running);
 	ui->setPositionZ->setDisabled(running);
@@ -5978,10 +5980,11 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 			m_perPointBrightfieldDuringAcquisitionCheckbox->setEnabled(perPointPossible && m_Brillouin->settings.capturePerPointBrightfield);
 		}
 	}
-	const auto homeControlsDisabled = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
-	ui->setHome->setDisabled(homeControlsDisabled);
-	ui->moveHome->setDisabled(homeControlsDisabled);
-	ui->setPlane->setDisabled(m_enabledModes != ACQUISITION_MODE::NONE);
+	// See the ACQUISITION_STATUS handler's identical setHome lines for why it's enabled/
+	// relabeled rather than disabled in absolute mode.
+	ui->setHome->setDisabled(m_enabledModes != ACQUISITION_MODE::NONE);
+	ui->setHome->setText(m_Brillouin->settings.gridCoordinatesAbsolute ? "Set plane" : "Set home");
+	ui->moveHome->setDisabled(m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE);
 	// See the comment on this same lock in the ACQUISITION_STATUS handler - repeated here so
 	// it stays correct across every path that refreshes the grid UI (e.g. an objective switch
 	// re-running updatePositions()), not just the toggle handler and the status handler. Z is
@@ -6612,7 +6615,18 @@ void BrillouinAcquisition::on_savePosition_clicked() {
 }
 
 void BrillouinAcquisition::on_setHome_clicked() {
+	// Same button, two roles - "Set home" (x/y/z) in relative mode, "Set plane" (z only) in
+	// absolute mode, where Set home doesn't have a sensible x/y meaning any more (the absolute
+	// origin is a fixed point, not something a button click should silently redefine) but z
+	// still needs a way to re-anchor before the next Start does it automatically - see
+	// Brillouin::resolvedGridOriginUm()'s comment for why z always follows m_startPosition.z
+	// regardless of mode. Swapping roles on the one button (rather than a separate, always-
+	// visible "Set plane" button) keeps the control count the same in both modes.
 	if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+		if (!m_Brillouin) {
+			return;
+		}
+		QMetaObject::invokeMethod(m_Brillouin, "setCurrentFocusAsZOrigin", Qt::AutoConnection);
 		return;
 	}
 	QMetaObject::invokeMethod(
@@ -6622,13 +6636,6 @@ void BrillouinAcquisition::on_setHome_clicked() {
 		},
 		Qt::AutoConnection
 	);
-}
-
-void BrillouinAcquisition::on_setPlane_clicked() {
-	if (!m_Brillouin) {
-		return;
-	}
-	QMetaObject::invokeMethod(m_Brillouin, "setCurrentFocusAsZOrigin", Qt::AutoConnection);
 }
 
 void BrillouinAcquisition::on_moveHome_clicked() {

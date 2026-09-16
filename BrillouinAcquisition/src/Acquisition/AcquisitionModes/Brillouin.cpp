@@ -509,17 +509,14 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 		m_scanControl->setPreset(ScanPreset::SCAN_LASEROFF);
 		// Acquisition is aborting - don't leave the RL shutter forced open.
 		m_scanControl->setRLShutterOpen(false);
-		// m_startPosition ("wherever the stage physically was right before Start" - see
-		// acquire()) is only a meaningful place to return to in relative mode, where the grid
-		// itself is anchored to it. In absolute mode the grid is anchored to
-		// resolvedGridOriginUm() instead, which can be anywhere on the stage - unconditionally
-		// returning to m_startPosition there left the live view stranded far from the grid just
-		// scanned, even though the grid/data themselves are unaffected (same "gridCoordinatesAbsolute
-		// ? resolvedGridOriginUm() : m_startPosition" choice this file already makes elsewhere
-		// whenever an origin is needed).
-		m_scanControl->setPositionCompensated(
-			m_settings.gridCoordinatesAbsolute
-				? resolvedGridOriginUm() : m_startPosition);
+		// Always back to m_startPosition ("wherever the stage physically was right before
+		// Start" - see acquire()), in both modes - the operator wants to end up back where they
+		// started measuring from, not at the grid's mathematical origin. A previous version of
+		// this went to resolvedGridOriginUm() in absolute mode instead, on the theory that
+		// m_startPosition wasn't a meaningful place to return to there - that was wrong: by
+		// request, "come back to where I started, like relative mode" is the desired behavior
+		// unconditionally.
+		m_scanControl->setPositionCompensated(m_startPosition);
 		m_scanControl->enableMeasurementMode(false);
 		QMetaObject::invokeMethod(
 			m_scanControl,
@@ -3702,12 +3699,10 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		// Acquisition has finished - don't leave the RL shutter forced open.
 		m_scanControl->setRLShutterOpen(false);
 
-		// See the identical branch in abortMode() for why this can't unconditionally be
-		// m_startPosition - in absolute mode it leaves the view stranded far from the grid
-		// that was just measured.
-		m_scanControl->setPositionCompensated(
-			m_settings.gridCoordinatesAbsolute
-				? resolvedGridOriginUm() : m_startPosition);
+		// Always back to m_startPosition, both modes - see abortMode()'s identical branch for
+		// why (by request: return to where the operator started measuring from, not the grid's
+		// origin).
+		m_scanControl->setPositionCompensated(m_startPosition);
 		m_scanControl->enableMeasurementMode(false);
 		emit(s_positionChanged({ 0, 0, 0 }, 0));
 		QMetaObject::invokeMethod(
