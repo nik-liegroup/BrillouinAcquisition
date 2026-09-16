@@ -410,6 +410,18 @@ void ScanControl::setScaleCalibration(const ScaleCalibrationData& scaleCalibrati
 
 	calculateBounds();
 	calculateHomePositionBounds();
+	// A pure objective/calibration switch changes neither m_positionStage nor
+	// m_positionScanner, so announcePositions() (the usual path to this) never runs and its own
+	// s_gridOffsetChanged emission is skipped - leaving the UI-side cached offset snapshot
+	// (BrillouinAcquisition::m_currentGridOffsetUm) stale at the pre-switch value even though
+	// convertPositionsToPix() below is about to (re)send pixel positions computed from the new,
+	// post-switch offset. update_AOI_preview()'s ROI-colored overlay path in particular relies
+	// entirely on that cached snapshot rather than positions it can trust to be fresh (see its
+	// own comment on why), so a switch with an ROI active would keep redrawing it as if the
+	// pre-switch FOV offset were still active. Emitted first, same as announcePositions(), so a
+	// queued receiver processes the offset snapshot before the pixel positions that were
+	// computed from the exact same offset.
+	emit(s_gridOffsetChanged(getPositionOffset(m_AOI_positionsAbsolute), m_AOI_positionsAbsolute));
 	emit(s_scaleCalibrationChanged(convertPositionsToPix()));
 	// The marker's own drawn pixel (announcePositionScanner()'s microMeterToPix(m_positionScanner))
 	// is calibration-dependent too, exactly like the AOI/grid positions convertPositionsToPix()

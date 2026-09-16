@@ -509,7 +509,17 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 		m_scanControl->setPreset(ScanPreset::SCAN_LASEROFF);
 		// Acquisition is aborting - don't leave the RL shutter forced open.
 		m_scanControl->setRLShutterOpen(false);
-		m_scanControl->setPositionCompensated(m_startPosition);
+		// m_startPosition ("wherever the stage physically was right before Start" - see
+		// acquire()) is only a meaningful place to return to in relative mode, where the grid
+		// itself is anchored to it. In absolute mode the grid is anchored to
+		// resolvedGridOriginUm() instead, which can be anywhere on the stage - unconditionally
+		// returning to m_startPosition there left the live view stranded far from the grid just
+		// scanned, even though the grid/data themselves are unaffected (same "gridCoordinatesAbsolute
+		// ? resolvedGridOriginUm() : m_startPosition" choice this file already makes elsewhere
+		// whenever an origin is needed).
+		m_scanControl->setPositionCompensated(
+			m_settings.gridCoordinatesAbsolute
+				? resolvedGridOriginUm() : m_startPosition);
 		m_scanControl->enableMeasurementMode(false);
 		QMetaObject::invokeMethod(
 			m_scanControl,
@@ -994,6 +1004,15 @@ std::vector<POINT2> Brillouin::additionalBoundaryXYPoints(int count) const {
 	std::vector<POINT2> result;
 	for (const auto& ideal : idealPoints) {
 		const POINT2 snapped{ nearestValue(ideal.x, denseX), nearestValue(ideal.y, denseY) };
+		// ideal sits exactly on the (clipped) boundary curve by construction, but snapping
+		// each axis to its own nearest grid line independently can walk a non-axis-aligned
+		// edge point outside the ROI polygon - unlike uniformAnchors above, nothing has
+		// checked that yet. A boundary point outside the ROI is worse than one simply
+		// dropped (this call already tolerates returning fewer than `count` points via the
+		// usedIndices dedup below), so skip it rather than keep it.
+		if (m_settings.useRoiMask && !isPointInPolygonUm(snapped, m_settings.roiPolygonUm)) {
+			continue;
+		}
 		const auto key = std::make_pair(snapped.x, snapped.y);
 		if (usedIndices.count(key)) {
 			continue;
@@ -3468,7 +3487,12 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		// Acquisition has finished - don't leave the RL shutter forced open.
 		m_scanControl->setRLShutterOpen(false);
 
-		m_scanControl->setPositionCompensated(m_startPosition);
+		// See the identical branch in abortMode() for why this can't unconditionally be
+		// m_startPosition - in absolute mode it leaves the view stranded far from the grid
+		// that was just measured.
+		m_scanControl->setPositionCompensated(
+			m_settings.gridCoordinatesAbsolute
+				? resolvedGridOriginUm() : m_startPosition);
 		m_scanControl->enableMeasurementMode(false);
 		emit(s_positionChanged({ 0, 0, 0 }, 0));
 		QMetaObject::invokeMethod(

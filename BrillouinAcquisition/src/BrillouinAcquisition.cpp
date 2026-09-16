@@ -1640,6 +1640,15 @@ void BrillouinAcquisition::addListToComboBox(QComboBox* box, const std::vector<s
 }
 
 void BrillouinAcquisition::cameraSettingsChanged(const CAMERA_SETTINGS& settings) {
+	// The driver-reported ROI is the only place .bottom/.right/.width_binned/.height_binned
+	// (as opposed to .left/.top/.width_physical/.height_physical, which the live crop UI's own
+	// value-changed handlers already push into m_deviceSettings.camera.roi via
+	// settingsCameraUpdate()) ever get computed correctly - see andor.cpp's ROI application.
+	// Without this, those fields stayed frozen at CAMERA_ROI's defaults forever, silently
+	// breaking anything that needs the camera frame's real vertical/right origin, e.g.
+	// remapProxyRoi()'s "drawnFrame" vs "currentFrame" comparison for the spectral proxy ROI.
+	m_deviceSettings.camera.roi = settings.roi;
+
 	ui->exposureTime->setValue(settings.exposureTime);
 	ui->frameCount->setValue(settings.frameCount);
 	//ui->ROILeft->setValue(settings.roi.left);
@@ -5702,11 +5711,16 @@ void BrillouinAcquisition::on_BrillouinStart_clicked() {
 			return;
 		}
 
-	// set camera ROI
-	m_Brillouin->settings.camera.roi.top = m_deviceSettings.camera.roi.top;
-		m_Brillouin->settings.camera.roi.left = m_deviceSettings.camera.roi.left;
-		m_Brillouin->settings.camera.roi.width_physical = m_deviceSettings.camera.roi.width_physical;
-		m_Brillouin->settings.camera.roi.height_physical = m_deviceSettings.camera.roi.height_physical;
+		// set camera ROI
+		// Copy the whole struct, not just top/left/width_physical/height_physical - .bottom in
+		// particular is what remapProxyRoi() needs for the spectral proxy ROI's vertical origin
+		// (see cameraSettingsChanged(), which is what keeps m_deviceSettings.camera.roi's copy
+		// of it live/correct). A partial copy here left .bottom stale at whatever
+		// m_Brillouin->settings.camera.roi last held (its CAMERA_ROI default, in practice, since
+		// nothing else ever wrote it) even once everything else was updated to the real crop -
+		// exactly the kind of same-looking-but-wrong desync that made a spectral ROI drawn under
+		// one crop silently misalign against the signal once a measurement actually started.
+		m_Brillouin->settings.camera.roi = m_deviceSettings.camera.roi;
 		m_Brillouin->setSettings(m_Brillouin->settings);
 		QMetaObject::invokeMethod(
 			m_Brillouin,
