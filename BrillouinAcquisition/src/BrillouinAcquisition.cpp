@@ -788,6 +788,15 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			});
 
 			connect(m_absoluteGridCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				// [GRIDDIAG] Temporary - tracing the absolute/relative switch bug end-to-end.
+				// updatePositions() below is invoked via Qt::AutoConnection onto m_Brillouin's
+				// own thread (queued), so this toggle handler returns - and update_AOI_preview()
+				// a few lines down runs - well before the recomputed positions actually arrive
+				// back via AOI_changed(). This line marks exactly when/what the toggle set, so a
+				// repro log can show how long that gap actually is.
+				qInfo(logInfo()) << "[GRIDDIAG] absoluteGridCheckbox toggled: oldMode=" << m_Brillouin->settings.gridCoordinatesAbsolute
+					<< " newMode=" << enabled
+					<< " m_positionsMicrometerIsAbsolute(stale, pre-toggle)=" << m_positionsMicrometerIsAbsolute;
 				preservePhysicalGridForAbsoluteMode(enabled);
 				m_Brillouin->settings.gridCoordinatesAbsolute = enabled;
 				ui->setHome->setDisabled(enabled);
@@ -807,6 +816,15 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
 				updateBrillouinSettings();
 				updateAbsoluteGridStatus();
+				// [GRIDDIAG] This redraw still runs against the PRE-toggle m_positionsMicrometer/
+				// m_positionsPixel/m_positionsMicrometerIsAbsolute - the queued updatePositions()
+				// call above hasn't reached AOI_changed() yet. If the grid/marker visibly looks
+				// wrong right after a toggle and never self-corrects, compare this log's
+				// "isAbsolute" against the next AOI_changed() log's - if AOI_changed() never
+				// follows within the same repro, the recompute chain itself is broken, not just
+				// racing.
+				qInfo(logInfo()) << "[GRIDDIAG] update_AOI_preview() called synchronously right after toggle, using stale mode="
+					<< m_positionsMicrometerIsAbsolute << " (" << m_positionsMicrometer.size() << " positions cached)";
 				update_AOI_preview();
 			});
 
@@ -6077,6 +6095,17 @@ void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositio
 		std::transform(m_positionsPixel.begin(), m_positionsPixel.end(), m_positionsPixel.begin(),
 			[this](POINT2 point) { return brightfieldRawToDisplay(point); }
 		);
+		// [GRIDDIAG] This is when the recomputed grid actually lands - compare its timestamp
+		// against the last "[GRIDDIAG] absoluteGridCheckbox toggled" line to see how long the
+		// stale-preview window actually was, and check isAbsolute here matches what the toggle
+		// requested (if it's the mode BEFORE the toggle, the queued call itself picked up a
+		// stale m_settings.gridCoordinatesAbsolute somehow).
+		qInfo(logInfo()) << "[GRIDDIAG] AOI_changed(): isAbsolute=" << isAbsolute
+			<< " count=" << orderedPositions.size()
+			<< " first_um=(" << (orderedPositions.empty() ? 0.0 : orderedPositions.front().x)
+			<< "," << (orderedPositions.empty() ? 0.0 : orderedPositions.front().y) << ")"
+			<< " first_pix=(" << (m_positionsPixel.empty() ? 0.0 : m_positionsPixel.front().x)
+			<< "," << (m_positionsPixel.empty() ? 0.0 : m_positionsPixel.front().y) << ")";
 		update_AOI_preview();
 	}
 	updateEstimatedAcquisitionTime();

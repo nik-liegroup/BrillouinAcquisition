@@ -620,6 +620,15 @@ std::vector<POINT2> ScanControl::getPositionsPix(const std::vector<POINT3>& posi
 	// in case the scale calibration changes
 	m_AOI_positions = positionsMicrometer;
 	m_AOI_positionsAbsolute = positionsAreAbsolute;
+	// [GRIDDIAG] Temporary - this is the only place m_AOI_positionsAbsolute is ever written.
+	// Every later announcePositions() (fired by ANY stage/scanner move, not just an explicit
+	// grid recompute) reuses this cached flag together with m_AOI_positions - so if this call
+	// doesn't happen again after a mode toggle (e.g. the queued updatePositions() call never
+	// arrives, or arrives but AOI_changed() isn't reached for some reason), every subsequent
+	// stage move keeps redrawing the grid under the OLD mode indefinitely, not just for one
+	// transient frame.
+	qInfo(logInfo()) << "[GRIDDIAG] getPositionsPix(): positionsAreAbsolute=" << positionsAreAbsolute
+		<< " count=" << positionsMicrometer.size();
 
 	return convertPositionsToPix();
 };
@@ -692,6 +701,18 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(measurementMode, relative): m_startPosition=("
 			<< m_startPosition.x << "," << m_startPosition.y << ") m_positionStage=("
 			<< m_positionStage.x << "," << m_positionStage.y << ") m_positionScanner=("
+			<< m_positionScanner.x << "," << m_positionScanner.y
+			<< ") fovOffset=(" << getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
+			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
+	}
+	// [GRIDDIAG] Temporary - the plain live-preview branch (not absolute, not mid-measurement)
+	// previously had no log at all, even though this is the formula active for the entire time
+	// an operator is setting up a relative grid and switching objectives BEFORE pressing Start -
+	// exactly the scenario being reproduced. Logging every call (not just on change) is
+	// deliberate: this function is called once per convertPositionsToPix()/getPositionPix(), so
+	// its call frequency alone shows how often the grid is actually being repositioned.
+	else {
+		qInfo(logInfo()) << "[GRIDDIAG] getPositionOffset(live-preview, relative): m_positionScanner=("
 			<< m_positionScanner.x << "," << m_positionScanner.y
 			<< ") fovOffset=(" << getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
 			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
@@ -779,6 +800,14 @@ void ScanControl::announcePositions() {
 
 	m_positionStageOld = m_positionStage;
 	m_positionScannerOld = m_positionScanner;
+	// [GRIDDIAG] Temporary - every repaint of the grid overlay in response to a stage/scanner
+	// move goes through here, using whatever m_AOI_positionsAbsolute currently holds (see
+	// getPositionsPix()'s own comment on why that can go stale). Logging it here catches the
+	// "moved after switching mode and the grid panned using the WRONG offset formula" case,
+	// which the mode-toggle-time logs alone wouldn't show.
+	qInfo(logInfo()) << "[GRIDDIAG] announcePositions(): m_AOI_positionsAbsolute=" << m_AOI_positionsAbsolute
+		<< " m_positionStage=(" << m_positionStage.x << "," << m_positionStage.y << ")"
+		<< " m_positionScanner=(" << m_positionScanner.x << "," << m_positionScanner.y << ")";
 
 	// Emitted first so a queued receiver processes the offset snapshot before the pixel
 	// positions that were computed from the exact same offset (see s_gridOffsetChanged()).
@@ -798,6 +827,12 @@ void ScanControl::announcePositionScanner() {
 	// reference objective (fovOffsetUm == {0,0}) and landed off by fovOffsetUm on every other
 	// one - exactly the "close but not exact" / clicking-misses-only-on-20x symptom.
 	const auto positionScannerPix = microMeterToPix(m_positionScanner + getActiveObjectiveFovOffsetUm());
+	// [GRIDDIAG] Temporary - the marker's own drawn pixel, logged every time it's (re)announced,
+	// so it can be directly compared in the log against the grid dots' pixels from
+	// convertPositionsToPix()/AOI_changed() at the same point in time, instead of only trusting
+	// that the two formulas agree on paper.
+	qInfo(logInfo()) << "[GRIDDIAG] announcePositionScanner(): positionScannerPix=("
+		<< positionScannerPix.x << "," << positionScannerPix.y << ")";
 	emit(s_positionScannerChanged(positionScannerPix));
 }
 

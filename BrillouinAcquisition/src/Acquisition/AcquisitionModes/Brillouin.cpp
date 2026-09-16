@@ -729,6 +729,15 @@ void Brillouin::updatePositions() {
 	m_excludedPositions = std::move(plan.excludedPositionsAbsolute);
 	m_excludedPositionsRelative = std::move(plan.excludedPositionsRelative);
 
+	// [GRIDDIAG] Temporary - tracing the absolute/relative switch bug end-to-end. This runs
+	// synchronously on Brillouin's own thread (invoked via QMetaObject::invokeMethod from the
+	// checkbox toggle handler), so m_settings.gridCoordinatesAbsolute here is whatever the GUI
+	// thread had set at the moment the queued call was actually dequeued - compare this
+	// timestamp/mode against the "[GRIDDIAG] absoluteGridCheckbox toggled" line to see the real
+	// queuing delay for a given repro.
+	qInfo(logInfo()) << "[GRIDDIAG] updatePositions(): gridCoordinatesAbsolute=" << m_settings.gridCoordinatesAbsolute
+		<< " orderedPositions.size()=" << m_orderedPositions.size()
+		<< " orderedPositionsRelative.size()=" << m_orderedPositionsRelative.size();
 	if (m_settings.gridCoordinatesAbsolute) {
 		emit(s_orderedPositionsChanged(m_orderedPositions, true));
 		emit(s_excludedPositionsChanged(m_excludedPositions));
