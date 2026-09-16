@@ -856,5 +856,21 @@ std::vector<POINT2> ScanControl::convertPositionsToPix() {
 			return this->microMeterToPix(POINT2{ point.x, point.y } + offset);
 		}
 	);
+	// [GRIDDIAG] Temporary - this is the ONLY place the actual on-screen grid-dot pixels are
+	// computed, and it runs on every objective/calibration switch via setScaleCalibration()
+	// DIRECTLY (s_scaleCalibrationChanged(convertPositionsToPix())), completely bypassing
+	// getPositionsPix()/AOI_changed() - a pure objective switch never touches those, since the
+	// underlying µm-space grid (m_AOI_positions) hasn't changed, only the pixel mapping has.
+	// getPositionsPix()'s own log only ever fires from the OTHER call path (a real grid
+	// recompute), so it was blind to exactly the case being reported: grid dots moving wrong
+	// specifically WHILE switching objectives. Logging every point (not just the first) here so
+	// a systematic error (e.g. only some points shift, or all shift by the wrong amount/sign)
+	// is visible instead of hidden behind a single sampled value.
+	auto dbg = qInfo(logInfo());
+	dbg << "[GRIDDIAG] convertPositionsToPix(): m_AOI_positionsAbsolute=" << m_AOI_positionsAbsolute
+		<< " offset=(" << offset.x << "," << offset.y << ") count=" << (int)positionsPix.size() << " pix=";
+	for (const auto& p : positionsPix) {
+		dbg << "(" << p.x << "," << p.y << ")";
+	}
 	return positionsPix;
 }

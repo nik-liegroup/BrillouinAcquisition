@@ -6100,12 +6100,14 @@ void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositio
 		// stale-preview window actually was, and check isAbsolute here matches what the toggle
 		// requested (if it's the mode BEFORE the toggle, the queued call itself picked up a
 		// stale m_settings.gridCoordinatesAbsolute somehow).
-		qInfo(logInfo()) << "[GRIDDIAG] AOI_changed(): isAbsolute=" << isAbsolute
-			<< " count=" << orderedPositions.size()
-			<< " first_um=(" << (orderedPositions.empty() ? 0.0 : orderedPositions.front().x)
-			<< "," << (orderedPositions.empty() ? 0.0 : orderedPositions.front().y) << ")"
-			<< " first_pix=(" << (m_positionsPixel.empty() ? 0.0 : m_positionsPixel.front().x)
-			<< "," << (m_positionsPixel.empty() ? 0.0 : m_positionsPixel.front().y) << ")";
+		{
+			auto dbg = qInfo(logInfo());
+			dbg << "[GRIDDIAG] AOI_changed(): isAbsolute=" << isAbsolute
+				<< " count=" << (int)orderedPositions.size() << " pix=";
+			for (const auto& p : m_positionsPixel) {
+				dbg << "(" << p.x << "," << p.y << ")";
+			}
+		}
 		update_AOI_preview();
 	}
 	updateEstimatedAcquisitionTime();
@@ -6130,6 +6132,21 @@ void BrillouinAcquisition::on_scaleCalibrationChanged(const std::vector<POINT2>&
 	std::transform(m_positionsPixel.begin(), m_positionsPixel.end(), m_positionsPixel.begin(),
 		[this](POINT2 point) { return brightfieldRawToDisplay(point); }
 	);
+	// [GRIDDIAG] Temporary - this is the path a PURE objective switch actually takes to move
+	// the on-screen grid dots (ScanControl::setScaleCalibration() -> convertPositionsToPix() ->
+	// this slot), completely separate from AOI_changed()/m_positionsMicrometerIsAbsolute - this
+	// function overwrites m_positionsPixel directly from whatever ScanControl computed, using
+	// ScanControl's OWN cached m_AOI_positionsAbsolute (see convertPositionsToPix()'s own log),
+	// not this class's mode flag at all. If those two ever disagree, the plain (non-ROI) grid
+	// dots drawn from m_positionsPixel would be wrong while everything else here still claims
+	// the "right" mode - logging m_positionsMicrometerIsAbsolute alongside the received pixels
+	// lets that mismatch actually be caught instead of assumed away.
+	auto dbg = qInfo(logInfo());
+	dbg << "[GRIDDIAG] on_scaleCalibrationChanged(): m_positionsMicrometerIsAbsolute="
+		<< m_positionsMicrometerIsAbsolute << " count=" << (int)m_positionsPixel.size() << " pix=";
+	for (const auto& p : m_positionsPixel) {
+		dbg << "(" << p.x << "," << p.y << ")";
+	}
 	update_AOI_preview();
 }
 
