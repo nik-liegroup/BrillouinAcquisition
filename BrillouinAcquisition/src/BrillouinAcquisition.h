@@ -143,6 +143,12 @@ private:
 	QCheckBox* m_useRoiMaskCheckbox{ nullptr };
 	QAbstractButton* m_editRoiCheckbox{ nullptr };
 	QPushButton* m_clearRoiButton{ nullptr };
+	// Backup of the last polygon "Clear ROI" wiped, restored by its "Reset ROI" state (same
+	// button - the label swaps depending on whether there's currently anything to clear vs.
+	// restore) so an accidental click doesn't lose a drawn ROI outright. Not persisted to
+	// settings/file - a per-session convenience only.
+	std::vector<POINT2> m_lastClearedRoiPolygonUm;
+	bool m_lastClearedRoiUseMask{ false };
 	QCheckBox* m_useSurfaceFollowCheckbox{ nullptr };
 	QSpinBox* m_preScanXYBinSpinBox{ nullptr };
 	QSpinBox* m_additionalBoundaryPointsSpinBox{ nullptr };

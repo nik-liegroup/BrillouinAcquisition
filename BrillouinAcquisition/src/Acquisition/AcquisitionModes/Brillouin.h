@@ -66,6 +66,8 @@ struct BRILLOUIN_SETTINGS {
 			repetitions = settings.repetitions;
 			useRoiMask = settings.useRoiMask;
 			roiPolygonUm = settings.roiPolygonUm;
+			useBackgroundRoiMask = settings.useBackgroundRoiMask;
+			backgroundRoiPolygonUm = settings.backgroundRoiPolygonUm;
 			useSurfaceFollow = settings.useSurfaceFollow;
 			surfaceZOffsetUm = settings.surfaceZOffsetUm;
 			surfaceFollowHalfRangeUm = settings.surfaceFollowHalfRangeUm;
@@ -139,6 +141,15 @@ struct BRILLOUIN_SETTINGS {
 		// Advanced scan planning (future extensions, disabled by default)
 		bool useRoiMask{ false };
 		std::vector<POINT2> roiPolygonUm;
+		// A second, independent ROI polygon - drawn/edited/plotted the same way roiPolygonUm is,
+		// but with its own points, own on-screen overlay and no bearing on the main ROI mask.
+		// Marks an extra region (e.g. water beside the sample) sampled for reference points
+		// alongside the main grid - deliberately NOT clipped to xMin/xMax/yMin/yMax like the main
+		// ROI is, since the whole point is a region outside the main grid's own extent. Surface
+		// pre-scan (runSurfacePreScan(), additionalBoundaryXYPoints()) never looks at this -
+		// only the main roiPolygonUm/useRoiMask.
+		bool useBackgroundRoiMask{ false };
+		std::vector<POINT2> backgroundRoiPolygonUm;
 		bool useSurfaceFollow{ false };
 		double surfaceZOffsetUm{ 0.0 };
 		double surfaceFollowHalfRangeUm{ 10.0 };

@@ -700,11 +700,32 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			});
 
 			connect(m_clearRoiButton, &QPushButton::clicked, this, [this]() {
-				m_Brillouin->settings.roiPolygonUm.clear();
-				m_Brillouin->settings.useRoiMask = false;
-				if (m_useRoiMaskCheckbox) {
-					const QSignalBlocker blocker(m_useRoiMaskCheckbox);
-					m_useRoiMaskCheckbox->setChecked(false);
+				if (!m_Brillouin->settings.roiPolygonUm.empty()) {
+					// Clear: back up what's there first, so an accidental click is recoverable
+					// via "Reset ROI" below rather than losing the drawn polygon outright.
+					m_lastClearedRoiPolygonUm = m_Brillouin->settings.roiPolygonUm;
+					m_lastClearedRoiUseMask = m_Brillouin->settings.useRoiMask;
+					m_Brillouin->settings.roiPolygonUm.clear();
+					m_Brillouin->settings.useRoiMask = false;
+					if (m_useRoiMaskCheckbox) {
+						const QSignalBlocker blocker(m_useRoiMaskCheckbox);
+						m_useRoiMaskCheckbox->setChecked(false);
+					}
+				} else if (!m_lastClearedRoiPolygonUm.empty()) {
+					// Reset: nothing left to clear - restore the backup instead. Re-drawing a
+					// different ROI after this and clicking again (now showing "Clear ROI")
+					// overwrites the backup with that new one, same as any other clear.
+					m_Brillouin->settings.roiPolygonUm = m_lastClearedRoiPolygonUm;
+					m_Brillouin->settings.useRoiMask = m_lastClearedRoiUseMask;
+					if (m_useRoiMaskCheckbox) {
+						const QSignalBlocker blocker(m_useRoiMaskCheckbox);
+						m_useRoiMaskCheckbox->setChecked(m_lastClearedRoiUseMask);
+					}
+				}
+				if (m_clearRoiButton) {
+					m_clearRoiButton->setText(
+						m_Brillouin->settings.roiPolygonUm.empty() && !m_lastClearedRoiPolygonUm.empty()
+						? "Reset ROI" : "Clear ROI");
 				}
 				QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
 				update_AOI_preview();
@@ -1025,8 +1046,16 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 		};
 
 		if (event->button() == Qt::RightButton) {
+			if (!m_Brillouin->settings.roiPolygonUm.empty()) {
+				// Same backup "Clear ROI" gets elsewhere - see m_clearRoiButton's handler.
+				m_lastClearedRoiPolygonUm = m_Brillouin->settings.roiPolygonUm;
+				m_lastClearedRoiUseMask = m_Brillouin->settings.useRoiMask;
+			}
 			m_Brillouin->settings.roiPolygonUm.clear();
 			m_Brillouin->settings.useRoiMask = false;
+			if (m_clearRoiButton) {
+				m_clearRoiButton->setText(!m_lastClearedRoiPolygonUm.empty() ? "Reset ROI" : "Clear ROI");
+			}
 			m_draggingRoiVertex = false;
 			m_draggedRoiVertexIndex = -1;
 			updateRoiPolygonPreview();
@@ -1046,6 +1075,9 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 			m_Brillouin->settings.roiPolygonUm.push_back(positionInUm);
 			if (m_Brillouin->settings.roiPolygonUm.size() >= 3) {
 				m_Brillouin->settings.useRoiMask = true;
+			}
+			if (m_clearRoiButton) {
+				m_clearRoiButton->setText("Clear ROI");
 			}
 			updateRoiPolygonPreview();
 			QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
@@ -5420,25 +5452,27 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 				Qt::AutoConnection
 			);
 		} else {
-			auto reply = QMessageBox::warning(
+			// Plain acknowledgment, not a "Continue anyway?" choice - the objective switch has
+			// already physically happened by the time this fires, so declining doesn't undo or
+			// prevent anything (unlike, say, a confirmation before a destructive action). The
+			// only thing a "No" ever did was leave the offset unaccepted so this same dialog
+			// would just reappear next time - not a meaningful safeguard. Always accept, same
+			// effect as the operator clicking "Yes" always used to have.
+			QMessageBox::warning(
 				this,
 				"No FOV-Center Offset For This Objective Switch",
 				QString("No calibrated FOV-center offset is stored for this objective switch (slot %1 -> %2).\n\n"
 					"In absolute grid-coordinate mode, grids, ROIs and overview tiles will NOT be translated "
 					"to compensate for this objective's field-of-view center shift, and measurements may no "
 					"longer target the same physical sample location as before the switch. Relative-mode grids "
-					"are not affected, since they anchor to wherever the stage is when a measurement starts.\n\n"
-					"Continue anyway?").arg(previousSlot).arg(newSlot),
-				QMessageBox::Yes | QMessageBox::No,
-				QMessageBox::No
+					"are not affected, since they anchor to wherever the stage is when a measurement starts.")
+					.arg(previousSlot).arg(newSlot)
 			);
-			if (reply == QMessageBox::Yes) {
-				QMetaObject::invokeMethod(
-					m_scanControl,
-					[scanControl = m_scanControl]() { scanControl->acceptMissingObjectiveOffset(); },
-					Qt::AutoConnection
-				);
-			}
+			QMetaObject::invokeMethod(
+				m_scanControl,
+				[scanControl = m_scanControl]() { scanControl->acceptMissingObjectiveOffset(); },
+				Qt::AutoConnection
+			);
 		}
 	} else {
 		// hasCalibration && hasFovOffset: nothing needs the operator's attention beyond a log

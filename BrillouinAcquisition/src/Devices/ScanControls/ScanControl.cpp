@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "ScanControl.h"
+#include "src/helper/logger.h"
 
 #include <chrono>
 #include <thread>

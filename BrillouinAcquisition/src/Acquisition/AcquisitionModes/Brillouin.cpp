@@ -2420,9 +2420,13 @@ void Brillouin::captureOverviewBrightfield(
 		return;
 	}
 
-	m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
-	// Brightfield capture must never happen with the RL shutter open.
-	m_scanControl->setRLShutterOpen(false);
+	// Preset/RL-shutter are the caller's responsibility now, not this function's - a full
+	// stack/mosaic overview calls this back-to-back, many times in a row, with no Brillouin
+	// spectrum interleaved between any of them. Switching the beampath preset (a slow physical
+	// filter-wheel/mirror move) on every single one of those calls was pure wasted time; the
+	// caller enters brightfield preset once before the whole batch and leaves it once after -
+	// see its own comment. The RL-shutter-closed invariant below still has to hold for the
+	// whole batch either way, just no longer needs restating per image.
 	m_scanControl->setPositionCompensated(position);
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
@@ -2449,8 +2453,6 @@ void Brillouin::captureOverviewBrightfield(
 
 	if (brightfieldSettings.roi.bytesPerFrame <= 0) {
 		m_brightfieldCamera->stopAcquisition();
-		m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
-		m_scanControl->setRLShutterOpen(true);
 		emit(s_surfaceScanProgress(
 			100.0 * (double)(zIndex + 1) / std::max(1, m_settings.zSteps),
 			QString("Skipped brightfield overview for z slice %1/%2: invalid frame size")
@@ -2479,9 +2481,6 @@ void Brillouin::captureOverviewBrightfield(
 			QString("Saved brightfield overview for z slice %1/%2").arg(zIndex + 1).arg(m_settings.zSteps)
 		));
 	}
-
-	m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
-	m_scanControl->setRLShutterOpen(true);
 }
 
 // Whether measured point `ll` (its own index in m_orderedPositions, i.e. acquisition order)
@@ -3467,6 +3466,16 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 			for (const auto& point : capturePoints) {
 				totalPerZ += point.zAbs.size();
 			}
+			// One preset switch for the whole batch, not one per image - every call below is a
+			// brightfield capture with no Brillouin spectrum interleaved between any of them, so
+			// there is nothing for a per-image switch back to SCAN_BRILLOUIN to protect; it was
+			// pure wasted time (a full physical filter-wheel/mirror move) repeated for every
+			// point x z-slice a full stack/mosaic overview captures. Restored once, after the
+			// whole batch, below - an abort mid-batch is still safe either way, since
+			// abortMode() unconditionally forces SCAN_LASEROFF + shutter closed regardless of
+			// whatever preset this loop was interrupted in.
+			m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
+			m_scanControl->setRLShutterOpen(false);
 			auto flatIndexWithinZ = size_t{ 0 };
 			for (const auto& point : capturePoints) {
 				for (const auto z : point.zAbs) {
@@ -3479,6 +3488,8 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 					}
 				}
 			}
+			m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
+			m_scanControl->setRLShutterOpen(true);
 			if (m_scanControl) {
 				// The overview brightfield capture moves the stage away from the grid point,
 				// so approach it again from a consistent direction to avoid hysteresis error.
