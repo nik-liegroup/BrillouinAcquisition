@@ -667,9 +667,14 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 		offset = POINT2{} - m_positionStage + getActiveObjectiveFovOffsetUm();
 		// [FOVDIAG] Temporary - re-investigating "10x -> 20x switch in absolute mode" plus the new
 		// report that afterwards, starting a measurement in RELATIVE mode no longer tracks the
-		// marker correctly (starting in absolute mode is reported fine). Remove once resolved.
+		// marker correctly (starting in absolute mode is reported fine). m_positionScanner added
+		// now too - it's the fixed reference announcePositionScanner() draws the marker at
+		// (+ the active objective's fovOffset, same as here), so logging it lets the actual
+		// marker pixel be reconstructed and compared against this offset directly, instead of
+		// just trusting the formula. Remove once resolved.
 		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(absolute): m_positionStage=("
-			<< m_positionStage.x << "," << m_positionStage.y << ") fovOffset=("
+			<< m_positionStage.x << "," << m_positionStage.y << ") m_positionScanner=("
+			<< m_positionScanner.x << "," << m_positionScanner.y << ") fovOffset=("
 			<< getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
 			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
 	}
@@ -682,10 +687,14 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 		// of this function did) shifts the whole grid by the scanner offset instead of
 		// leaving it centered on the marker.
 		offset = m_startPosition - m_positionStage;
-		// [FOVDIAG] Temporary - see the matching log in the absolute branch above.
+		// [FOVDIAG] Temporary - see the matching log in the absolute branch above for why
+		// m_positionScanner is included now too.
 		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(measurementMode, relative): m_startPosition=("
 			<< m_startPosition.x << "," << m_startPosition.y << ") m_positionStage=("
-			<< m_positionStage.x << "," << m_positionStage.y << ") -> offset=(" << offset.x << "," << offset.y << ")";
+			<< m_positionStage.x << "," << m_positionStage.y << ") m_positionScanner=("
+			<< m_positionScanner.x << "," << m_positionScanner.y
+			<< ") fovOffset=(" << getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
+			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
 	}
 	return offset;
 }
