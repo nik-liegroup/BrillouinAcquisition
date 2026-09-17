@@ -255,6 +255,11 @@ private:
 	QCPCurve* m_positionsMarkerOutsideRoi{ nullptr };
 	QCPCurve* m_positionsMarkerSquareInsideRoi{ nullptr };
 	QCPCurve* m_positionsMarkerSquareOutsideRoi{ nullptr };
+	// The actual points Brillouin::backgroundGridPoints() would measure inside the background
+	// ROI polygon - see updateBackgroundPositionsPreview(). Unlike the main grid's ROI overlay,
+	// there is no "outside" counterpart to draw: backgroundGridPoints() only ever returns points
+	// already inside the polygon, so there's nothing excluded to show.
+	QCPCurve* m_backgroundPositionsMarker{ nullptr };
 	QCPCurve* m_roiPolygonMarker{ nullptr };
 	int m_draggedRoiVertexIndex{ -1 };
 	bool m_draggingRoiVertex{ false };
@@ -427,11 +432,16 @@ private:
 	SETTINGS_DEVICES m_deviceSettings;
 	CAMERA_OPTIONS m_cameraOptions;
 	CAMERA_OPTIONS m_cameraOptionsODT;
+	// .folder is persisted (readSettings()/writeSettings(), plus immediately on every actual
+	// save/open via rememberAcquisitionFolder()) so New/Open Acquisition propose the
+	// last-used folder automatically, across restarts - not just within one session. .filename
+	// is deliberately NOT persisted: a brand new acquisition always gets a fresh timestamped
+	// name (see on_actionNew_Acquisition_triggered()), never the last one reused.
 	StoragePath m_storagePath{ "", "." };
 	// Persisted (readSettings()/writeSettings()) folder proposed for a brand new acquisition
-	// file (on_actionNew_Acquisition_triggered()) whenever nothing has been saved yet this
-	// session - set via the File menu's "Set Default Save Folder...". Empty means "no
-	// default configured", in which case the pre-existing "." fallback applies.
+	// file (on_actionNew_Acquisition_triggered()) only when m_storagePath.folder is still the
+	// unconfigured "." default (i.e. nothing has ever been saved/opened) - set via the File
+	// menu's "Set Default Save Folder...". Empty means "no default configured" either.
 	std::string m_defaultAcquisitionFolder;
 	bool m_previewRunning{ false };
 	bool m_brightfieldPreviewRunning{ false };
@@ -488,6 +498,10 @@ private slots:
 
 	void initializeLaserPositionLocation();
 	void on_addFocusMarker_brightfield_clicked();
+	void setLaserPositionLocationArmed(bool armed);
+	void on_relocateFocusMarker_brightfield_clicked();
+	void setRelocateFocusMarkerArmed(bool armed);
+	void relocateBeamKeepingGridFixed(POINT2 newMarkerPix);
 
 	void showEvent(QShowEvent* event);
 	void on_actionAbout_triggered();
@@ -846,6 +860,7 @@ private slots:
 	void on_actionOpen_Acquisition_triggered();
 	void on_actionClose_Acquisition_triggered();
 	void on_actionSetDefaultAcquisitionFolder_triggered();
+	void rememberAcquisitionFolder(const std::string& folder);
 
 	// acquisition AOI
 	void on_startX_valueChanged(double);
@@ -864,6 +879,7 @@ private slots:
 	void on_gridOffsetChanged(POINT2 offsetUm, bool positionIsAbsolute);
 	void update_AOI_preview();
 	void updateRoiPolygonPreview();
+	void updateBackgroundPositionsPreview();
 
 	// live calibration
 	void on_preCalibration_stateChanged(int);
