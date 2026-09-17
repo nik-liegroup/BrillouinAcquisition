@@ -302,6 +302,18 @@ public:
 	std::vector<double> getBackgroundData();
 	std::string getBackgroundDate();
 
+	// Background reference points (Brillouin::captureBackgroundPoints()) - real Brillouin
+	// spectra from a second, independent ROI, written into this same "background" group
+	// (already created unconditionally for every Brillouin-mode file, see initialize() above)
+	// but under its own "data" subgroup with a plain sequential name - never calculateIndex(),
+	// so there is no possible index collision with the main grid's payloadData no matter how
+	// large xSteps/ySteps/zSteps are, and no existing reader of payloadData/positions-x/y/z ever
+	// sees these at all, since they live in a different group entirely. FLUOIMAGE<T> is reused
+	// purely as a convenient wire format (channel/position/date already there) - this has
+	// nothing to do with fluorescence.
+	template <typename T>
+	void setBackgroundPayloadData(FLUOIMAGE<T>*);
+
 	// calibration data
 	template <typename T>
 	void setCalibrationData(int index, const std::vector<T>& data, const int rank, const hsize_t *dims, const std::string& sample,
@@ -564,6 +576,15 @@ void H5BM::setPayloadData(FLUOIMAGE<T>* image) {
 	auto name = std::to_string(image->ind);
 
 	setData(image->data, name, m_Fluorescence.groups->payloadData, image->rank, image->dims, image->date, "", NULL, image->channel,
+		image->exposure, image->gain, image->roi,
+		true, image->targetPosition, image->hasStagePosition, image->stagePosition, image->compress);
+}
+
+template <typename T>
+void H5BM::setBackgroundPayloadData(FLUOIMAGE<T>* image) {
+	auto name = std::to_string(image->ind);
+
+	setData(image->data, name, m_Brillouin.groups->backgroundData, image->rank, image->dims, image->date, "", NULL, image->channel,
 		image->exposure, image->gain, image->roi,
 		true, image->targetPosition, image->hasStagePosition, image->stagePosition, image->compress);
 }

@@ -452,18 +452,13 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		&QCustomPlot::mouseMove,
 		this,
 		[this](QMouseEvent* event) {
-			if (!m_draggingRoiVertex || m_draggedRoiVertexIndex < 0 || !m_scanControl) {
+			if (!m_scanControl) {
 				return;
 			}
-			event->accept();
-			const auto posX = m_ODTPlot.plotHandle->xAxis->pixelToCoord(event->pos().x());
-			const auto posY = m_ODTPlot.plotHandle->yAxis->pixelToCoord(event->pos().y());
-			auto positionInUm = m_scanControl->pixToMicroMeter(brightfieldDisplayToRaw(POINT2{ posX, posY }));
-			positionInUm = imagePlaneUmToGridOffset(positionInUm);
-			auto& poly = m_Brillouin->settings.roiPolygonUm;
-			if (m_draggedRoiVertexIndex >= 0 && m_draggedRoiVertexIndex < (int)poly.size()) {
-				poly[(size_t)m_draggedRoiVertexIndex] = positionInUm;
-				updateRoiPolygonPreview();
+			if (m_draggingRoiVertex && m_draggedRoiVertexIndex >= 0) {
+				updateDraggedRoiVertex(mainRoiTarget(), event);
+			} else if (m_draggingBackgroundRoiVertex && m_draggedBackgroundRoiVertexIndex >= 0) {
+				updateDraggedRoiVertex(backgroundRoiTarget(), event);
 			}
 		}
 	);
@@ -474,14 +469,20 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		this,
 		[this](QMouseEvent* event) {
 			Q_UNUSED(event);
-			if (!m_draggingRoiVertex) {
+			if (m_draggingRoiVertex) {
+				event->accept();
+				m_draggingRoiVertex = false;
+				m_draggedRoiVertexIndex = -1;
+				QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
+				updateBrillouinSettings();
 				return;
 			}
-			event->accept();
-			m_draggingRoiVertex = false;
-			m_draggedRoiVertexIndex = -1;
-			QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
-			updateBrillouinSettings();
+			if (m_draggingBackgroundRoiVertex) {
+				event->accept();
+				m_draggingBackgroundRoiVertex = false;
+				m_draggedBackgroundRoiVertexIndex = -1;
+				updateBrillouinSettings();
+			}
 		}
 	);
 
@@ -639,6 +640,9 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_useRoiMaskCheckbox = ui->useRoiMaskCheckbox;
 			m_editRoiCheckbox = ui->drawRoiButton;
 			m_clearRoiButton = ui->clearRoiButton;
+			m_useBackgroundRoiMaskCheckbox = ui->useBackgroundRoiMaskCheckbox;
+			m_editBackgroundRoiCheckbox = ui->drawBackgroundRoiButton;
+			m_clearBackgroundRoiButton = ui->clearBackgroundRoiButton;
 			m_useSurfaceFollowCheckbox = ui->useSurfaceFollowCheckbox;
 			m_preScanXYBinSpinBox = ui->preScanXYBinSpinBox;
 			m_additionalBoundaryPointsSpinBox = ui->additionalBoundaryPointsSpinBox;
@@ -656,30 +660,16 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_saveOverviewBrightfieldPerZCheckbox = ui->saveOverviewBrightfieldPerZCheckbox;
 			m_overviewSingleImageRadio = ui->overviewSingleImageRadio;
 			m_overviewFullGridRadio = ui->overviewFullGridRadio;
-			m_overviewFullStackSingleCheckbox = ui->overviewFullStackSingleCheckbox;
-			m_overviewFullStackMosaicCheckbox = ui->overviewFullStackMosaicCheckbox;
+			m_overviewFullStackCheckbox = ui->overviewFullStackCheckbox;
 			m_capturePerPointBrightfieldCheckbox = ui->capturePerPointBrightfieldCheckbox;
 			m_perPointBrightfieldEveryNSpinBox = ui->perPointBrightfieldEveryNSpinBox;
 			m_perPointBrightfieldDuringAcquisitionCheckbox = ui->perPointBrightfieldDuringAcquisitionCheckbox;
 			m_editSpectralProxyRoiCheckbox = ui->editSpectralProxyRoiCheckbox;
 
+			// Main ROI and background ROI share every bit of editing/preview/clear logic (see
+			// RoiTarget's own comment) - only the target passed to each shared helper differs.
 			connect(m_useRoiMaskCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
-				if (enabled && m_Brillouin->settings.roiPolygonUm.size() < 3) {
-					QMessageBox::warning(
-						this,
-						"ROI Mask Needs Polygon",
-						"Enable Draw ROI and add at least 3 points in the brightfield plot."
-					);
-					const QSignalBlocker blocker(m_useRoiMaskCheckbox);
-					m_useRoiMaskCheckbox->setChecked(false);
-					return;
-				}
-				if (enabled && isSelfIntersectingPolygon(m_Brillouin->settings.roiPolygonUm)) {
-					QMessageBox::warning(
-						this,
-						"Invalid ROI Polygon",
-						"ROI polygon edges intersect each other.\nPlease adjust points so the polygon is non-self-intersecting."
-					);
+				if (enabled && !tryEnableRoiMaskFor(mainRoiTarget())) {
 					const QSignalBlocker blocker(m_useRoiMaskCheckbox);
 					m_useRoiMaskCheckbox->setChecked(false);
 					return;
@@ -693,6 +683,11 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				if (enabled) {
 					m_ODTPlot.plotHandle->setInteractions(QCP::iNone);
 					statusBar()->showMessage("Draw ROI mode: click to add points, drag points to adjust.", 5000);
+					// Only one polygon can be edited by clicking at a time - see plotClick().
+					if (m_editBackgroundRoiCheckbox && m_editBackgroundRoiCheckbox->isChecked()) {
+						const QSignalBlocker blocker(m_editBackgroundRoiCheckbox);
+						m_editBackgroundRoiCheckbox->setChecked(false);
+					}
 				} else {
 					m_ODTPlot.plotHandle->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
 					m_draggingRoiVertex = false;
@@ -701,13 +696,38 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			});
 
 			connect(m_clearRoiButton, &QPushButton::clicked, this, [this]() {
-				m_Brillouin->settings.roiPolygonUm.clear();
-				m_Brillouin->settings.useRoiMask = false;
-				if (m_useRoiMaskCheckbox) {
-					const QSignalBlocker blocker(m_useRoiMaskCheckbox);
-					m_useRoiMaskCheckbox->setChecked(false);
-				}
+				clearRoiPolygonFor(mainRoiTarget());
 				QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
+				update_AOI_preview();
+			});
+
+			connect(m_useBackgroundRoiMaskCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				if (enabled && !tryEnableRoiMaskFor(backgroundRoiTarget())) {
+					const QSignalBlocker blocker(m_useBackgroundRoiMaskCheckbox);
+					m_useBackgroundRoiMaskCheckbox->setChecked(false);
+					return;
+				}
+				m_Brillouin->settings.useBackgroundRoiMask = enabled;
+				update_AOI_preview();
+			});
+
+			connect(m_editBackgroundRoiCheckbox, &QAbstractButton::toggled, this, [this](bool enabled) {
+				if (enabled) {
+					m_ODTPlot.plotHandle->setInteractions(QCP::iNone);
+					statusBar()->showMessage("Draw background ROI mode: click to add points, drag points to adjust.", 5000);
+					if (m_editRoiCheckbox && m_editRoiCheckbox->isChecked()) {
+						const QSignalBlocker blocker(m_editRoiCheckbox);
+						m_editRoiCheckbox->setChecked(false);
+					}
+				} else {
+					m_ODTPlot.plotHandle->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+					m_draggingBackgroundRoiVertex = false;
+					m_draggedBackgroundRoiVertexIndex = -1;
+				}
+			});
+
+			connect(m_clearBackgroundRoiButton, &QPushButton::clicked, this, [this]() {
+				clearRoiPolygonFor(backgroundRoiTarget());
 				update_AOI_preview();
 			});
 
@@ -810,9 +830,10 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 					return;
 				}
 				m_Brillouin->settings.overviewBrightfieldFullGrid = false;
-				// Refreshes which of the two full-z-stack checkboxes is enabled (see
-				// updateBrillouinSettings()) - they're mode-scoped, so switching coverage
-				// mode changes which one currently applies.
+				// Refreshes the full-z-stack checkbox's checked state (see
+				// updateBrillouinSettings()) - it's mode-scoped internally (separate
+				// single-image/mosaic settings), so switching coverage mode changes
+				// which underlying setting it now shows/writes.
 				updateBrillouinSettings();
 				updateEstimatedAcquisitionTime();
 				updateOverviewTileOutlines();
@@ -828,13 +849,14 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				updateOverviewTileOutlines();
 			});
 
-			connect(m_overviewFullStackSingleCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
-				m_Brillouin->settings.overviewBrightfieldFullStackSingle = enabled;
-				updateEstimatedAcquisitionTime();
-			});
-
-			connect(m_overviewFullStackMosaicCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
-				m_Brillouin->settings.overviewBrightfieldFullStackMosaic = enabled;
+			connect(m_overviewFullStackCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				// Writes into whichever coverage mode is currently active - see
+				// overviewFullStackCheckbox's tooltip and updateBrillouinSettings().
+				if (m_Brillouin->settings.overviewBrightfieldFullGrid) {
+					m_Brillouin->settings.overviewBrightfieldFullStackMosaic = enabled;
+				} else {
+					m_Brillouin->settings.overviewBrightfieldFullStackSingle = enabled;
+				}
 				updateEstimatedAcquisitionTime();
 			});
 
@@ -999,11 +1021,17 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 	auto positionInRawPix = brightfieldDisplayToRaw(positionInPix);
 
 	const auto roiEditEnabled = (m_editRoiCheckbox != nullptr && m_editRoiCheckbox->isChecked());
+	const auto backgroundRoiEditEnabled = (m_editBackgroundRoiCheckbox != nullptr && m_editBackgroundRoiCheckbox->isChecked());
 	const auto modifiers = QApplication::keyboardModifiers();
-	if (roiEditEnabled || modifiers.testFlag(Qt::ControlModifier)) {
+	if (roiEditEnabled || backgroundRoiEditEnabled || modifiers.testFlag(Qt::ControlModifier)) {
 		event->accept();
+		// Explicit "Draw background ROI" mode edits the background polygon; anything else
+		// (main "Draw ROI" mode, or the Ctrl+click shortcut with neither draw mode active)
+		// edits the main ROI - matching the prior Ctrl+click-always-means-main-ROI behavior.
+		const auto target = backgroundRoiEditEnabled ? backgroundRoiTarget() : mainRoiTarget();
+
 		auto nearestVertexIndex = [&](const POINT2& pix, double maxDistPix) -> int {
-			const auto& poly = m_Brillouin->settings.roiPolygonUm;
+			const auto& poly = *target.polygon;
 			if (poly.empty()) {
 				return -1;
 			}
@@ -1024,11 +1052,10 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 		};
 
 		if (event->button() == Qt::RightButton) {
-			m_Brillouin->settings.roiPolygonUm.clear();
-			m_Brillouin->settings.useRoiMask = false;
-			m_draggingRoiVertex = false;
-			m_draggedRoiVertexIndex = -1;
-			updateRoiPolygonPreview();
+			quickClearRoiPolygonFor(target);
+			*target.draggingVertex = false;
+			*target.draggedVertexIndex = -1;
+			updateRoiPolygonPreviewFor(target);
 			updateBrillouinSettings();
 			return;
 		}
@@ -1036,17 +1063,14 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 		if (event->button() == Qt::LeftButton) {
 			const int dragged = nearestVertexIndex(positionInPix, 8.0);
 			if (dragged >= 0) {
-				m_draggingRoiVertex = true;
-				m_draggedRoiVertexIndex = dragged;
+				*target.draggingVertex = true;
+				*target.draggedVertexIndex = dragged;
 				return;
 			}
 
 			auto positionInUm = imagePlaneUmToGridOffset(m_scanControl->pixToMicroMeter(positionInRawPix));
-			m_Brillouin->settings.roiPolygonUm.push_back(positionInUm);
-			if (m_Brillouin->settings.roiPolygonUm.size() >= 3) {
-				m_Brillouin->settings.useRoiMask = true;
-			}
-			updateRoiPolygonPreview();
+			addRoiPolygonPointFor(target, positionInUm);
+			updateRoiPolygonPreviewFor(target);
 			QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
 			updateBrillouinSettings();
 			return;
@@ -5765,34 +5789,9 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 	ui->repetitionInterval->setValue(m_Brillouin->settings.repetitions.interval);
 	ui->repetitionNewFile->setChecked(m_Brillouin->settings.repetitions.filePerRepetition);
 
-	if (m_useRoiMaskCheckbox) {
-		const bool roiSelfIntersecting = isSelfIntersectingPolygon(m_Brillouin->settings.roiPolygonUm);
-		const bool roiMaskPossible = m_Brillouin->settings.roiPolygonUm.size() >= 3 && !roiSelfIntersecting;
-		m_useRoiMaskCheckbox->setEnabled(roiMaskPossible);
-		if (!roiMaskPossible && m_Brillouin->settings.useRoiMask) {
-			m_Brillouin->settings.useRoiMask = false;
-			m_roiMaskAutoDisabled = true;
-		} else if (roiMaskPossible && m_roiMaskAutoDisabled && !m_Brillouin->settings.useRoiMask) {
-			// The polygon (e.g. after dragging a point) is valid again after having been
-			// auto-disabled above for being invalid - restore it automatically, since it
-			// was never the user's choice to turn it off. Without this, useRoiMask stayed
-			// false until an unrelated action (adding a new point, which unconditionally
-			// re-enables the mask) happened to paper over the problem.
-			m_Brillouin->settings.useRoiMask = true;
-		}
-		if (roiMaskPossible) {
-			m_roiMaskAutoDisabled = false;
-		}
-		const QSignalBlocker blocker(*m_useRoiMaskCheckbox);
-		m_useRoiMaskCheckbox->setChecked(m_Brillouin->settings.useRoiMask);
-		if (roiSelfIntersecting) {
-			m_useRoiMaskCheckbox->setToolTip("ROI invalid: polygon edges intersect. Adjust points in Draw ROI mode.");
-		} else if (m_Brillouin->settings.roiPolygonUm.size() < 3) {
-			m_useRoiMaskCheckbox->setToolTip("ROI needs at least 3 points.");
-		} else {
-			m_useRoiMaskCheckbox->setToolTip("");
-		}
-	}
+	// Shared with the background ROI - see RoiTarget's own comment.
+	updateRoiMaskCheckboxStateFor(mainRoiTarget());
+	updateRoiMaskCheckboxStateFor(backgroundRoiTarget());
 	if (m_useSurfaceFollowCheckbox) {
 		const QSignalBlocker blocker(*m_useSurfaceFollowCheckbox);
 		m_useSurfaceFollowCheckbox->setChecked(m_Brillouin->settings.useSurfaceFollow);
@@ -5881,15 +5880,14 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 			m_overviewFullGridRadio->setChecked(m_Brillouin->settings.overviewBrightfieldFullGrid);
 			m_overviewFullGridRadio->setEnabled(overviewPossible);
 		}
-		if (m_overviewFullStackSingleCheckbox) {
-			const QSignalBlocker blocker(*m_overviewFullStackSingleCheckbox);
-			m_overviewFullStackSingleCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldFullStackSingle);
-			m_overviewFullStackSingleCheckbox->setEnabled(overviewPossible && !m_Brillouin->settings.overviewBrightfieldFullGrid);
-		}
-		if (m_overviewFullStackMosaicCheckbox) {
-			const QSignalBlocker blocker(*m_overviewFullStackMosaicCheckbox);
-			m_overviewFullStackMosaicCheckbox->setChecked(m_Brillouin->settings.overviewBrightfieldFullStackMosaic);
-			m_overviewFullStackMosaicCheckbox->setEnabled(overviewPossible && m_Brillouin->settings.overviewBrightfieldFullGrid);
+		if (m_overviewFullStackCheckbox) {
+			const QSignalBlocker blocker(*m_overviewFullStackCheckbox);
+			m_overviewFullStackCheckbox->setChecked(
+				m_Brillouin->settings.overviewBrightfieldFullGrid
+				? m_Brillouin->settings.overviewBrightfieldFullStackMosaic
+				: m_Brillouin->settings.overviewBrightfieldFullStackSingle
+			);
+			m_overviewFullStackCheckbox->setEnabled(overviewPossible);
 		}
 		updateOverviewTileOutlines();
 	}
@@ -6406,69 +6404,231 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 	ui->customplot_brightfield->replot();
 }
 
-void BrillouinAcquisition::updateRoiPolygonPreview() {
+BrillouinAcquisition::RoiTarget BrillouinAcquisition::mainRoiTarget() {
+	return RoiTarget{
+		&m_Brillouin->settings.roiPolygonUm,
+		&m_Brillouin->settings.useRoiMask,
+		&m_roiMaskAutoDisabled,
+		m_useRoiMaskCheckbox,
+		m_editRoiCheckbox,
+		m_clearRoiButton,
+		&m_lastClearedRoiPolygonUm,
+		&m_lastClearedRoiUseMask,
+		&m_roiPolygonMarker,
+		&m_draggingRoiVertex,
+		&m_draggedRoiVertexIndex,
+		QColor(255, 165, 0),
+		"Clear ROI",
+		"Reset ROI",
+		"ROI"
+	};
+}
+
+BrillouinAcquisition::RoiTarget BrillouinAcquisition::backgroundRoiTarget() {
+	return RoiTarget{
+		&m_Brillouin->settings.backgroundRoiPolygonUm,
+		&m_Brillouin->settings.useBackgroundRoiMask,
+		&m_backgroundRoiMaskAutoDisabled,
+		m_useBackgroundRoiMaskCheckbox,
+		m_editBackgroundRoiCheckbox,
+		m_clearBackgroundRoiButton,
+		&m_lastClearedBackgroundRoiPolygonUm,
+		&m_lastClearedBackgroundRoiUseMask,
+		&m_backgroundRoiPolygonMarker,
+		&m_draggingBackgroundRoiVertex,
+		&m_draggedBackgroundRoiVertexIndex,
+		// Deliberately distinct from the main ROI's orange, so both can be shown at once
+		// without the overlays being mistaken for each other.
+		QColor(30, 144, 255),
+		"Clear bg. ROI",
+		"Reset bg. ROI",
+		"background ROI"
+	};
+}
+
+// Shared by mainRoiTarget()/backgroundRoiTarget() - see RoiTarget's own comment for why this
+// is written once instead of once per polygon.
+void BrillouinAcquisition::updateRoiPolygonPreviewFor(const RoiTarget& target) {
 	if (!m_scanControl) {
 		return;
 	}
 
-	const auto& roiPolygon = m_Brillouin->settings.roiPolygonUm;
-	const bool drawRoiActive = (m_editRoiCheckbox != nullptr && m_editRoiCheckbox->isChecked());
-	const bool showRoi = drawRoiActive || m_Brillouin->settings.useRoiMask;
-	if (!showRoi) {
-		if (m_roiPolygonMarker && ui->customplot_brightfield->removePlottable(m_roiPolygonMarker)) {
-			m_roiPolygonMarker = nullptr;
+	const auto& polygon = *target.polygon;
+	const bool drawActive = (target.editCheckbox != nullptr && target.editCheckbox->isChecked());
+	const bool show = drawActive || *target.useMask;
+	auto removeMarker = [&]() {
+		if (*target.marker && ui->customplot_brightfield->removePlottable(*target.marker)) {
+			*target.marker = nullptr;
 			ui->customplot_brightfield->replot();
 		}
-		return;
-	}
-	const bool roiSelfIntersecting = isSelfIntersectingPolygon(roiPolygon);
-	if (roiPolygon.empty()) {
-		if (m_roiPolygonMarker && ui->customplot_brightfield->removePlottable(m_roiPolygonMarker)) {
-			m_roiPolygonMarker = nullptr;
-			ui->customplot_brightfield->replot();
-		}
+	};
+	if (!show || polygon.empty()) {
+		removeMarker();
 		return;
 	}
 
-	if (!m_roiPolygonMarker) {
-		m_roiPolygonMarker = new QCPCurve(ui->customplot_brightfield->xAxis, ui->customplot_brightfield->yAxis);
-		QPen pen;
-		pen.setColor(QColor(255, 165, 0));
-		pen.setWidth(2);
-		m_roiPolygonMarker->setPen(pen);
-		m_roiPolygonMarker->setLineStyle(QCPCurve::lsLine);
-		m_roiPolygonMarker->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, 6));
+	const bool selfIntersecting = isSelfIntersectingPolygon(polygon);
+	if (!*target.marker) {
+		*target.marker = new QCPCurve(ui->customplot_brightfield->xAxis, ui->customplot_brightfield->yAxis);
+		(*target.marker)->setLineStyle(QCPCurve::lsLine);
+		(*target.marker)->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, 6));
 	}
-	if (roiPolygon.size() >= 3) {
-		m_roiPolygonMarker->setBrush(QBrush(QColor(255, 165, 0, 45)));
+	if (polygon.size() >= 3) {
+		auto fill = target.color;
+		fill.setAlpha(45);
+		(*target.marker)->setBrush(QBrush(fill));
 	} else {
-		m_roiPolygonMarker->setBrush(Qt::NoBrush);
+		(*target.marker)->setBrush(Qt::NoBrush);
 	}
-	if (roiSelfIntersecting) {
-		m_roiPolygonMarker->setPen(QPen(QColor(220, 20, 60), 2));
-		statusBar()->showMessage("ROI invalid: self-intersection detected. Adjust points in Draw ROI mode.", 4000);
+	if (selfIntersecting) {
+		(*target.marker)->setPen(QPen(QColor(220, 20, 60), 2));
+		statusBar()->showMessage(
+			QString("%1 invalid: self-intersection detected. Adjust points in Draw mode.").arg(target.label), 4000);
 	} else {
-		m_roiPolygonMarker->setPen(QPen(QColor(255, 165, 0), 2));
+		(*target.marker)->setPen(QPen(target.color, 2));
 	}
 
-	std::vector<POINT2> roiPolygonPix;
-	roiPolygonPix.reserve(roiPolygon.size() + 1);
-	for (const auto& p : roiPolygon) {
+	std::vector<POINT2> polygonPix;
+	polygonPix.reserve(polygon.size() + 1);
+	for (const auto& p : polygon) {
 		auto pUm = gridOffsetToImagePlaneUm(p);
-		roiPolygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
+		polygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
 	}
-	if (roiPolygon.size() >= 3) {
-		auto pUm = gridOffsetToImagePlaneUm(roiPolygon[0]);
-		roiPolygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
+	if (polygon.size() >= 3) {
+		auto pUm = gridOffsetToImagePlaneUm(polygon[0]);
+		polygonPix.push_back(brightfieldRawToDisplay(m_scanControl->microMeterToPix(pUm)));
 	}
-	QVector<double> xPos(roiPolygonPix.size());
-	QVector<double> yPos(roiPolygonPix.size());
-	for (gsl::index i{ 0 }; i < (gsl::index)roiPolygonPix.size(); i++) {
-		xPos[(int)i] = roiPolygonPix[i].x;
-		yPos[(int)i] = roiPolygonPix[i].y;
+	QVector<double> xPos(static_cast<int>(polygonPix.size()));
+	QVector<double> yPos(static_cast<int>(polygonPix.size()));
+	for (gsl::index i{ 0 }; i < (gsl::index)polygonPix.size(); i++) {
+		xPos[(int)i] = polygonPix[i].x;
+		yPos[(int)i] = polygonPix[i].y;
 	}
-	m_roiPolygonMarker->setData(xPos, yPos);
+	(*target.marker)->setData(xPos, yPos);
 	ui->customplot_brightfield->replot();
+	// Cheap (early-returns unless the background mask is actually on) and correct to call
+	// regardless of which target this was for - editing the background polygon directly needs
+	// this refreshed immediately (not just on the next update_AOI_preview(), which also calls it
+	// for grid-spacing changes that don't touch either polygon at all).
+}
+
+void BrillouinAcquisition::updateRoiPolygonPreview() {
+	updateRoiPolygonPreviewFor(mainRoiTarget());
+	updateRoiPolygonPreviewFor(backgroundRoiTarget());
+}
+
+// "Clear"/"Reset" toggle-button behavior: clears (backing up first) if there's a polygon,
+// otherwise restores the last backup - shared between the main and background clear buttons.
+void BrillouinAcquisition::clearRoiPolygonFor(const RoiTarget& target) {
+	if (!target.polygon->empty()) {
+		*target.lastCleared = *target.polygon;
+		*target.lastClearedUseMask = *target.useMask;
+		target.polygon->clear();
+		*target.useMask = false;
+		if (target.useMaskCheckbox) {
+			const QSignalBlocker blocker(target.useMaskCheckbox);
+			target.useMaskCheckbox->setChecked(false);
+		}
+	} else if (!target.lastCleared->empty()) {
+		*target.polygon = *target.lastCleared;
+		*target.useMask = *target.lastClearedUseMask;
+		if (target.useMaskCheckbox) {
+			const QSignalBlocker blocker(target.useMaskCheckbox);
+			target.useMaskCheckbox->setChecked(*target.lastClearedUseMask);
+		}
+	}
+	if (target.clearButton) {
+		target.clearButton->setText(
+			target.polygon->empty() && !target.lastCleared->empty() ? target.resetLabel : target.clearLabel);
+	}
+}
+
+// Right-click-to-clear in the plot: always just clears (backing up first), never restores -
+// a quicker, simpler shortcut than the "Clear"/"Reset" toggle button above.
+void BrillouinAcquisition::quickClearRoiPolygonFor(const RoiTarget& target) {
+	if (!target.polygon->empty()) {
+		*target.lastCleared = *target.polygon;
+		*target.lastClearedUseMask = *target.useMask;
+	}
+	target.polygon->clear();
+	*target.useMask = false;
+	if (target.clearButton) {
+		target.clearButton->setText(!target.lastCleared->empty() ? target.resetLabel : target.clearLabel);
+	}
+}
+
+void BrillouinAcquisition::addRoiPolygonPointFor(const RoiTarget& target, POINT2 positionInUm) {
+	target.polygon->push_back(positionInUm);
+	if (target.polygon->size() >= 3) {
+		*target.useMask = true;
+	}
+	if (target.clearButton) {
+		target.clearButton->setText(target.clearLabel);
+	}
+}
+
+bool BrillouinAcquisition::tryEnableRoiMaskFor(const RoiTarget& target) {
+	if (target.polygon->size() < 3) {
+		QMessageBox::warning(
+			this,
+			QString("%1 Mask Needs Polygon").arg(target.label),
+			QString("Enable Draw %1 and add at least 3 points in the brightfield plot.").arg(target.label)
+		);
+		return false;
+	}
+	if (isSelfIntersectingPolygon(*target.polygon)) {
+		QMessageBox::warning(
+			this,
+			QString("Invalid %1 Polygon").arg(target.label),
+			QString("%1 polygon edges intersect each other.\nPlease adjust points so the polygon is non-self-intersecting.").arg(target.label)
+		);
+		return false;
+	}
+	return true;
+}
+
+void BrillouinAcquisition::updateRoiMaskCheckboxStateFor(const RoiTarget& target) {
+	if (!target.useMaskCheckbox) {
+		return;
+	}
+	const bool selfIntersecting = isSelfIntersectingPolygon(*target.polygon);
+	const bool maskPossible = target.polygon->size() >= 3 && !selfIntersecting;
+	target.useMaskCheckbox->setEnabled(maskPossible);
+	if (!maskPossible && *target.useMask) {
+		*target.useMask = false;
+		*target.autoDisabled = true;
+	} else if (maskPossible && *target.autoDisabled && !*target.useMask) {
+		// See m_roiMaskAutoDisabled's own comment - undo an auto-disable, not a genuine
+		// user choice, once the polygon is valid again.
+		*target.useMask = true;
+	}
+	if (maskPossible) {
+		*target.autoDisabled = false;
+	}
+	const QSignalBlocker blocker(target.useMaskCheckbox);
+	target.useMaskCheckbox->setChecked(*target.useMask);
+	if (selfIntersecting) {
+		target.useMaskCheckbox->setToolTip(
+			QString("%1 invalid: polygon edges intersect. Adjust points in Draw mode.").arg(target.label));
+	} else if (target.polygon->size() < 3) {
+		target.useMaskCheckbox->setToolTip(QString("%1 needs at least 3 points.").arg(target.label));
+	} else {
+		target.useMaskCheckbox->setToolTip("");
+	}
+}
+
+void BrillouinAcquisition::updateDraggedRoiVertex(const RoiTarget& target, QMouseEvent* event) {
+	event->accept();
+	const auto posX = m_ODTPlot.plotHandle->xAxis->pixelToCoord(event->pos().x());
+	const auto posY = m_ODTPlot.plotHandle->yAxis->pixelToCoord(event->pos().y());
+	auto positionInUm = m_scanControl->pixToMicroMeter(brightfieldDisplayToRaw(POINT2{ posX, posY }));
+	positionInUm = imagePlaneUmToGridOffset(positionInUm);
+	auto& poly = *target.polygon;
+	const int idx = *target.draggedVertexIndex;
+	if (idx >= 0 && idx < (int)poly.size()) {
+		poly[(size_t)idx] = positionInUm;
+		updateRoiPolygonPreviewFor(target);
+	}
 }
 
 void BrillouinAcquisition::on_preCalibration_stateChanged(int state) {
@@ -6923,6 +7083,8 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-calibration-exposure-time", m_Brillouin->settings.calibrationExposureTime);
 	settings.setValue("brillouin-use-roi-mask", m_Brillouin->settings.useRoiMask);
 	settings.setValue("brillouin-roi-polygon-um", serializeRoiPolygon(m_Brillouin->settings.roiPolygonUm));
+	settings.setValue("brillouin-use-background-roi-mask", m_Brillouin->settings.useBackgroundRoiMask);
+	settings.setValue("brillouin-background-roi-polygon-um", serializeRoiPolygon(m_Brillouin->settings.backgroundRoiPolygonUm));
 	// useSurfaceFollow is deliberately not persisted - it should always start off,
 	// regardless of how the previous session ended.
 	settings.setValue("brillouin-surface-z-offset-um", m_Brillouin->settings.surfaceZOffsetUm);
@@ -7092,6 +7254,8 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.calibrationExposureTime = settings.value("brillouin-calibration-exposure-time", m_Brillouin->settings.calibrationExposureTime).toDouble();
 	m_Brillouin->settings.useRoiMask = settings.value("brillouin-use-roi-mask", m_Brillouin->settings.useRoiMask).toBool();
 	m_Brillouin->settings.roiPolygonUm = deserializeRoiPolygon(settings.value("brillouin-roi-polygon-um", "").toString());
+	m_Brillouin->settings.useBackgroundRoiMask = settings.value("brillouin-use-background-roi-mask", m_Brillouin->settings.useBackgroundRoiMask).toBool();
+	m_Brillouin->settings.backgroundRoiPolygonUm = deserializeRoiPolygon(settings.value("brillouin-background-roi-polygon-um", "").toString());
 	// useSurfaceFollow is deliberately not restored - always starts off (see saveSettings()).
 	m_Brillouin->settings.surfaceZOffsetUm = settings.value("brillouin-surface-z-offset-um", m_Brillouin->settings.surfaceZOffsetUm).toDouble();
 	m_Brillouin->settings.surfaceFollowHalfRangeUm = settings.value("brillouin-surface-follow-half-range-um", m_Brillouin->settings.surfaceFollowHalfRangeUm).toDouble();

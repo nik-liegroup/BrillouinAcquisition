@@ -37,6 +37,16 @@ public:
 	QQueue<FLUOIMAGE<unsigned char>*> m_payloadQueueFluorescence_char;
 	QQueue<FLUOIMAGE<unsigned short>*> m_payloadQueueFluorescence_short;
 
+	// Background reference points (Brillouin::captureBackgroundPoints()) - real Andor spectra,
+	// same three dtypes the main Brillouin payload queue above supports, reusing FLUOIMAGE<T>
+	// as the wire format (it already carries channel/position/date) but written into the
+	// separate "background" HDF5 group (setBackgroundPayloadData()), never the main "payload"
+	// group - see Brillouin::captureBackgroundPoints()'s own comment for why that separation is
+	// the whole point.
+	QQueue<FLUOIMAGE<unsigned char>*> m_backgroundQueueBrillouin_char;
+	QQueue<FLUOIMAGE<unsigned short>*> m_backgroundQueueBrillouin_short;
+	QQueue<FLUOIMAGE<unsigned int>*> m_backgroundQueueBrillouin_int;
+
 	QQueue<CALIBRATION<unsigned char>*> m_calibrationQueue_char;
 	QQueue<CALIBRATION<unsigned short>*> m_calibrationQueue_short;
 	QQueue<CALIBRATION<unsigned int>*> m_calibrationQueue_int;
@@ -63,6 +73,10 @@ public slots:
 
 	void s_enqueuePayload(FLUOIMAGE<unsigned char>*);
 	void s_enqueuePayload(FLUOIMAGE<unsigned short>*);
+
+	void s_enqueueBackground(FLUOIMAGE<unsigned char>*);
+	void s_enqueueBackground(FLUOIMAGE<unsigned short>*);
+	void s_enqueueBackground(FLUOIMAGE<unsigned int>*);
 
 	void s_enqueueCalibration(CALIBRATION<unsigned char>* cal);
 	void s_enqueueCalibration(CALIBRATION<unsigned short>* cal);

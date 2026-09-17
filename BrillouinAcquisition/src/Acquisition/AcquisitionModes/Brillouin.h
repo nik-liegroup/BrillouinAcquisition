@@ -66,6 +66,8 @@ struct BRILLOUIN_SETTINGS {
 			repetitions = settings.repetitions;
 			useRoiMask = settings.useRoiMask;
 			roiPolygonUm = settings.roiPolygonUm;
+			useBackgroundRoiMask = settings.useBackgroundRoiMask;
+			backgroundRoiPolygonUm = settings.backgroundRoiPolygonUm;
 			useSurfaceFollow = settings.useSurfaceFollow;
 			surfaceZOffsetUm = settings.surfaceZOffsetUm;
 			surfaceFollowHalfRangeUm = settings.surfaceFollowHalfRangeUm;
@@ -139,6 +141,15 @@ struct BRILLOUIN_SETTINGS {
 		// Advanced scan planning (future extensions, disabled by default)
 		bool useRoiMask{ false };
 		std::vector<POINT2> roiPolygonUm;
+		// A second, independent ROI polygon - drawn/edited/plotted the same way roiPolygonUm is,
+		// but with its own points, own on-screen overlay and no bearing on the main ROI mask.
+		// Marks an extra region (e.g. water beside the sample) sampled for reference points
+		// alongside the main grid - deliberately NOT clipped to xMin/xMax/yMin/yMax like the main
+		// ROI is, since the whole point is a region outside the main grid's own extent. Surface
+		// pre-scan (runSurfacePreScan(), additionalBoundaryXYPoints()) never looks at this -
+		// only the main roiPolygonUm/useRoiMask.
+		bool useBackgroundRoiMask{ false };
+		std::vector<POINT2> backgroundRoiPolygonUm;
 		bool useSurfaceFollow{ false };
 		double surfaceZOffsetUm{ 0.0 };
 		double surfaceFollowHalfRangeUm{ 10.0 };
@@ -531,6 +542,28 @@ private:
 	// surfacePreScanGridXY() (the GUI's live preview), so the two can never drift apart -
 	// see planPositionToGridFrame()'s comment for why that matters here specifically.
 	std::vector<POINT2> additionalBoundaryXYPoints(int count) const;
+	// Background reference points are calibration/sanity-check spectra (e.g. a water
+	// Brillouin-shift check), not sample measurements - they get their own HDF5 group and
+	// "Background" channel label precisely so they're never mistaken for, or counted alongside,
+	// the actual sample grid. An xy grid at the SAME spacing as the main scan's x/y steps
+	// (xMax-xMin)/(xSteps-1), but confined to settings.backgroundRoiPolygonUm's own bounding
+	// box (which can sit anywhere, including entirely outside the main grid's xMin/xMax/
+	// yMin/yMax) and masked to that polygon - deliberately NOT the same rectangle the main grid
+	// uses. Plan-frame, same convention as roiPolygonUm/coarseXYSamples(). Empty whenever
+	// useBackgroundRoiMask is off or the polygon has fewer than 3 points.
+	std::vector<POINT2> backgroundGridPoints() const;
+	// Captures one real Brillouin spectrum (same frameCount/exposure/gain as the main grid) at
+	// every (backgroundGridPoints() x, z-step) combination, AFTER the main grid's own
+	// measurement loop finishes - a separate, self-contained pass, not interleaved with it and
+	// not counted by any of the main loop's own per-point bookkeeping (lastIndexForZ, per-point
+	// brightfield, etc). Deliberately does none of: overview/per-point brightfield capture,
+	// surface-follow z search, or ROI-mask exclusion bookkeeping - none of that applies to a
+	// second, independent reference region. Written through StorageWrapper::s_enqueueBackground()
+	// into the file's separate "background" HDF5 group (H5BM::setBackgroundPayloadData()) -
+	// never the main "payload" group's calculateIndex() index space - see that group's own
+	// comment in h5bm.h for why this can never collide with or be picked up by anything that
+	// reads the main grid.
+	void captureBackgroundPoints(std::unique_ptr<StorageWrapper>& storage);
 	// Same seed-then-rewind-then-forward-search-with-verification algorithm searchColumn()
 	// (local to runSurfacePreScan()) uses, generalized to an arbitrary (x, y) plan-frame
 	// position instead of a coarse-grid (xi, yi) index - used for the additional boundary
