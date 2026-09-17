@@ -3434,6 +3434,15 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 
 		const auto zIndex = std::clamp(m_orderedIndices[ll].z, 0, std::max(0, m_settings.zSteps - 1));
 
+		// Actual stage position for this point's own spectrum dataset, read back once right
+		// before its exposures start (same rawPositionToGridFrame() convention as every other
+		// stored position, see its own comment) - the stage has already been moved into place,
+		// either before this loop (ll == 0) or at the end of the previous iteration.
+		const auto targetPositionForPoint = rawPositionToGridFrame(m_orderedPositions[ll]);
+		const auto stagePositionForPoint = m_scanControl
+			? rawPositionToGridFrame(m_scanControl->getPosition())
+			: targetPositionForPoint;
+
 		std::vector<std::byte> images(m_settings.camera.roi.bytesPerFrame * m_settings.camera.frameCount);
 
 		// "During" per-point brightfield: started here, before this point's Brillouin
@@ -3500,7 +3509,10 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				*images_,
 				m_settings.camera.exposureTime,
 				m_settings.camera.gain,
-				m_settings.camera.roi
+				m_settings.camera.roi,
+				targetPositionForPoint,
+				(bool)m_scanControl,
+				stagePositionForPoint
 			);
 
 			QMetaObject::invokeMethod(
@@ -3521,7 +3533,10 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				*images_,
 				m_settings.camera.exposureTime,
 				m_settings.camera.gain,
-				m_settings.camera.roi
+				m_settings.camera.roi,
+				targetPositionForPoint,
+				(bool)m_scanControl,
+				stagePositionForPoint
 			);
 
 			QMetaObject::invokeMethod(
@@ -3542,7 +3557,10 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				*images_,
 				m_settings.camera.exposureTime,
 				m_settings.camera.gain,
-				m_settings.camera.roi
+				m_settings.camera.roi,
+				targetPositionForPoint,
+				(bool)m_scanControl,
+				stagePositionForPoint
 			);
 
 			QMetaObject::invokeMethod(
