@@ -646,39 +646,47 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	// stage. What looks like "the marker moving through the grid" is actually the grid
 	// sliding past a fixed marker.
 	//
-	// getActiveObjectiveFovOffsetUm() is added in every branch below. Proven algebraically (not
-	// just empirically): whatever point is CURRENTLY being targeted satisfies
-	// "target = m_positionStage + m_positionScanner" once the stage arrives (every backend's
-	// setPosition() enforces this - see locatePositionScanner()). For that point's own DISPLAYED
-	// pixel to always equal the marker's ("target + offset" == "m_positionScanner + fovOffset",
-	// i.e. announcePositionScanner()'s own formula), the term "-m_positionStage" alone is not
-	// enough - it only cancels back to "m_positionScanner", missing the "+ fovOffset" the marker
-	// itself always adds. Dropping it here (tried earlier) decouples the grid from a real,
-	// necessary correction instead of a phantom one - it broke the "grid moves through the
-	// marker" behavior during an actual measurement, which matters far more than the small,
-	// unavoidable pan this same correction causes on a pure idle objective switch (the grid
-	// panning slightly then is the visible cost of keeping the CURRENT point pixel-accurate on
-	// the marker, not a separate bug - the two can't both be zero at once).
+	// getActiveObjectiveFovOffsetUm() means two different things depending on WHAT is being
+	// converted, which is why it's handled differently below instead of being a single global
+	// on/off:
 	//
-	// The measurement-mode branch below was previously missing this term entirely (not
-	// something removed today - it was never there). That is very likely the original,
-	// long-reported "relative-mode measurement doesn't track the marker" bug: on any
-	// non-reference objective (fovOffset != 0), the actively-measured point's displayed pixel
-	// was off from the marker by exactly fovOffset, with no objective switch even required.
+	// - m_positionScanner (used by both relative branches) is stored with its CAPTURING
+	// objective's own fovOffsetUm already subtracted out (see locatePositionScanner()) - it's
+	// only meaningful again once the CURRENTLY active objective's fovOffsetUm is added back, in
+	// EVERY relative branch, idle or not. This is not a measurement-time-only correction; it's
+	// how m_positionScanner's storage convention is defined, full stop.
+	//
+	// - Absolute-mode targets (absoluteGridOriginUm + gridOffset) are pure stage-frame physical
+	// locations with no such convention - each objective's OWN scale calibration (independently
+	// measured, see setObjectiveCalibration()) is what correctly re-projects them to this
+	// objective's raw pixel frame, needing no extra term. Only ONE thing needs fovOffsetUm here:
+	// making the point CURRENTLY under measurement land exactly on the marker
+	// ("target - m_positionStage + fovOffsetUm" reduces to "m_positionScanner + fovOffsetUm",
+	// algebraically identical to announcePositionScanner()'s own marker formula, since
+	// setPosition() always enforces "target = m_positionStage + m_positionScanner"). That
+	// coincidence is a MEASUREMENT-time requirement (m_measurementMode) - while idle, forcing it
+	// makes the WHOLE absolute grid visibly pan on a pure objective switch even with the stage
+	// stationary, which is wrong: idle grid points are a plan of fixed physical targets and must
+	// stay exactly where they were (confirmed against logs, operator-specified) - only the
+	// marker is allowed to visibly separate from them then, not the other way around.
 	auto offset = m_positionScanner + getActiveObjectiveFovOffsetUm();
-	if (positionIsAbsolute) {
-		// Absolute positions are stored as the raw target stage+scanner position directly
-		// (absoluteGridOriginUm + gridOffset, see gridOffsetToAbsoluteTarget()), so the
-		// scanner contribution is already baked into the stored value itself - subtracting
-		// it again here would double-count it and shift the whole grid by that amount.
-		// Only the stage position (which is what actually changes as the grid is scanned)
-		// needs to be undone, exactly like the measurement-mode branch below - PLUS the active
-		// objective's own FOV-center offset, for the same reason every branch here needs it now
-		// (see this function's own top comment).
+	if (positionIsAbsolute && m_measurementMode) {
+		// See this function's own top comment for the algebra - identical reasoning to the
+		// relative measurementMode branch below, just for the absolute origin instead of
+		// m_startPosition.
 		offset = POINT2{} - m_positionStage + getActiveObjectiveFovOffsetUm();
-		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(absolute): m_positionStage=("
+		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(measurementMode, absolute): m_positionStage=("
 			<< m_positionStage.x << "," << m_positionStage.y << ") m_positionScanner=("
 			<< m_positionScanner.x << "," << m_positionScanner.y << ") fovOffset=("
+			<< getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
+			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
+	}
+	else if (positionIsAbsolute) {
+		// Idle (not measuring): no fovOffsetUm term - see this function's own top comment for
+		// why an absolute target needs none while idle, unlike m_positionScanner.
+		offset = POINT2{} - m_positionStage;
+		qInfo(logInfo()) << "[GRIDDIAG] getPositionOffset(idle, absolute): m_positionStage=("
+			<< m_positionStage.x << "," << m_positionStage.y << ") fovOffset(not applied)=("
 			<< getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
 			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
 	}
