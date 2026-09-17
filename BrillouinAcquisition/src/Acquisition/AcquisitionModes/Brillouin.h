@@ -730,6 +730,23 @@ private slots:
 
 	void updatePositions();
 
+	// Relative-mode counterpart to absolute mode's resolvedGridOriginUm() (which just adds the
+	// active objective's own fovOffsetUm to a fixed nominal origin, recomputed fresh on every
+	// read - no state, no motion). Relative mode has no such fixed nominal origin - its origin
+	// IS m_startPosition, a physical stage position captured once (see the "get current stage
+	// position" comment where it's set). Called by BrillouinAcquisition whenever the active
+	// objective's known FOV-center offset changes - both on an actual objective switch
+	// (objectiveSwitched()) and when the operator saves a revised offset for the objective
+	// without switching away from it (onFovOffsetSaved()) - so that measurement targets computed
+	// later (m_startPosition + gridOffset) already land at the (new/revised) FOV center without
+	// ever physically moving the stage - the blue dot/live view stays exactly where it is; only
+	// the (still book-keeping-only, not-yet-visited) grid shifts under it. Deliberately a pure
+	// in-memory update: before the first "Start" of a run, this has no visible effect
+	// (m_startPosition gets overwritten with a fresh live capture at that point anyway - nothing
+	// needs correcting yet); mid-run (paused between grid points), this is what keeps the
+	// remaining not-yet-visited points correctly targeted.
+	void adjustStartPositionForFovOffsetChange(POINT2 deltaUm);
+
 	// "Set plane": zeroes the z grid at the current focus position without touching x/y -
 	// the z counterpart to ScanControl::setHome(), offered specifically as its replacement in
 	// absolute grid-coordinate mode, where Set home is disabled (see BrillouinAcquisition's

@@ -5503,22 +5503,16 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 			<< ") um, sigma" << offsetSigmaUm << "um.";
 	}
 
-	// Removed: this used to unconditionally recompute m_orderedPositions on every switch, so
-	// the preview would "snap" to the new calibration immediately. That recompute is exactly
-	// what broke idle-mode absolute-grid stability: Brillouin::resolvedGridOriginUm() bakes the
-	// CURRENTLY active objective's fovOffsetUm into the stored absolute target array, so
-	// refreshing it on every switch silently re-baked a new fovOffsetUm into m_orderedPositions
-	// even with the display's own offset formula already fixed to ignore fovOffsetUm while
-	// idle (see ScanControl::getPositionOffset()'s own comment) - the stored VALUES were still
-	// shifting even though the DISPLAY FORMULA converting them wasn't, which undid that fix.
-	// This recompute isn't needed for accuracy either: Brillouin::acquire() already calls
-	// updatePositions() itself, fresh, right before the real measurement loop starts (using
-	// whatever objective is active AT THAT MOMENT) - so a stale m_orderedPositions between here
-	// and the next real Start was never a real-targeting risk, only a preview-staleness
-	// question, and the preview still updates via ScanControl::setScaleCalibration()'s own
-	// convertPositionsToPix() re-projection (which fires on every switch regardless - see its
-	// own comment) - it just doesn't re-bake the underlying stored µm values, which is exactly
-	// the point.
+	// Pure recomputation, no hardware motion - safe unconditionally whenever the new
+	// objective's scale calibration was actually applied (hasCalibration), regardless of
+	// hasFovOffset. This is what makes the on-screen grid/ROI/overview-tile preview snap to
+	// the corrected position immediately on switch, rather than only once something else
+	// happens to call updatePositions() next (e.g. Start). updatePositions() is a private
+	// slot, hence the string-based invoke rather than a capturing lambda - same pattern
+	// already used elsewhere in this file (see the ROI-mask checkbox handler).
+	if (m_Brillouin) {
+		QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
+	}
 
 	// Previously, relative-mode grids anchored to Brillouin::m_startPosition were nudged here by
 	// the calibrated FOV-offset delta on every objective switch, so not-yet-visited grid points
@@ -5547,12 +5541,40 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 }
 
 void BrillouinAcquisition::onFovOffsetSaved(int slot, POINT2 oldOffsetUm, bool oldHasFovOffset, POINT2 newOffsetUm, bool newHasFovOffset) {
-	// Now a no-op by design: fovOffsetUm is no longer folded into any real measurement target
-	// or into resolvedGridOriginUm()/m_startPosition (see those functions' own comments,
-	// operator-confirmed) - it only affects how the marker itself is drawn
-	// (announcePositionScanner()), which already re-reads the active objective's calibration
-	// live on every redraw and needs no bookkeeping shift here. Saving a new FOV-offset value
-	// therefore has nothing left to recompute or re-anchor.
+	// Unconditional and first, mirrors objectiveSwitched() - a plain Save otherwise leaves the
+	// on-screen grid/ROI/overview-tile preview showing the OLD offset (see
+	// ScaleCalibration::s_fovOffsetSaved's doc comment for why nothing else already does this).
+	// Safe regardless of hasFovOffset/mode: absolute mode's resolvedGridOriginUm() just re-reads
+	// whatever is now registered, and if nothing meaningful changed this is a harmless no-op
+	// redraw.
+	if (m_Brillouin) {
+		QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
+	}
+
+	// Relative mode: the same "shift the not-yet-visited grid by the delta, don't move the
+	// stage" treatment objectiveSwitched() applies on an actual switch - see that function's own
+	// doc comment for why this is a pure bookkeeping shift. `slot` is always the active one (see
+	// s_fovOffsetSaved's doc comment), so the extra equality check here is just defensive - only
+	// meaningful if both the old and new state have a real offset to take a delta between.
+	if (m_Brillouin && !m_Brillouin->settings.gridCoordinatesAbsolute && m_scanControl
+			&& slot == m_scanControl->getActiveObjectiveSlot() && oldHasFovOffset && newHasFovOffset) {
+		auto deltaUm = POINT2{ newOffsetUm.x - oldOffsetUm.x, newOffsetUm.y - oldOffsetUm.y };
+		qInfo(logInfo()) << "FOV-offset calibration saved for slot" << slot
+			<< ": relative grid mode, shifting grid origin by (" << deltaUm.x << "," << deltaUm.y
+			<< ") um (no stage motion).";
+		QMetaObject::invokeMethod(
+			m_Brillouin,
+			"adjustStartPositionForFovOffsetChange",
+			Qt::AutoConnection,
+			Q_ARG(POINT2, deltaUm)
+		);
+		QMetaObject::invokeMethod(
+			m_scanControl,
+			"adjustStartPositionForFovOffsetChange",
+			Qt::AutoConnection,
+			Q_ARG(POINT2, deltaUm)
+		);
+	}
 }
 
 void BrillouinAcquisition::checkElementButtons() {
