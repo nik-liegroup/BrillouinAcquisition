@@ -733,22 +733,14 @@ private slots:
 
 	void updatePositions();
 
-	// Relative-mode counterpart to absolute mode's resolvedGridOriginUm() (which just adds the
-	// active objective's own fovOffsetUm to a fixed nominal origin, recomputed fresh on every
-	// read - no state, no motion). Relative mode has no such fixed nominal origin - its origin
-	// IS m_startPosition, a physical stage position captured once (see the "get current stage
-	// position" comment where it's set). Called by BrillouinAcquisition whenever the active
-	// objective's known FOV-center offset changes - both on an actual objective switch
-	// (objectiveSwitched()) and when the operator saves a revised offset for the objective
-	// without switching away from it (onFovOffsetSaved()) - so that measurement targets computed
-	// later (m_startPosition + gridOffset) already land at the (new/revised) FOV center without
-	// ever physically moving the stage - the blue dot/live view stays exactly where it is; only
-	// the (still book-keeping-only, not-yet-visited) grid shifts under it. Deliberately a pure
-	// in-memory update: before the first "Start" of a run, this has no visible effect
-	// (m_startPosition gets overwritten with a fresh live capture at that point anyway - nothing
-	// needs correcting yet); mid-run (paused between grid points), this is what keeps the
-	// remaining not-yet-visited points correctly targeted.
-	void adjustStartPositionForFovOffsetChange(POINT2 deltaUm);
+	// "Set plane": zeroes the z grid at the current focus position without touching x/y -
+	// the z counterpart to ScanControl::setHome(), offered specifically as its replacement in
+	// absolute grid-coordinate mode, where Set home is disabled (see BrillouinAcquisition's
+	// on_setHome_clicked()/homeControlsDisabled). Unlike x/y, the z grid origin is now always
+	// m_startPosition.z regardless of gridCoordinatesAbsolute (see resolvedGridOriginUm()'s own
+	// comment for why) - so this is the only way to re-anchor it before the next "Start"
+	// overwrites it anyway with a fresh live capture.
+	void setCurrentFocusAsZOrigin();
 
 signals:
 	// current position in x, y and z, as well as the current image number
@@ -756,7 +748,15 @@ signals:
 	void s_timeToCalibration(int);	// time to next calibration
 	void s_calibrationRunning(bool);	// is calibration running
 	void s_scanOrderChanged(SCAN_ORDER);
-	void s_orderedPositionsChanged(std::vector<POINT3>);
+	// The mode flag travels with the positions rather than being re-read by the receiver -
+	// this signal crosses threads via a queued connection, so by the time a receiver's slot
+	// actually runs, gridCoordinatesAbsolute may already have changed again (e.g. the operator
+	// toggled the checkbox right after this emit). Re-deriving "was this absolute" from the
+	// live setting at receive time would then reinterpret positions computed under the OLD mode
+	// using the NEW mode's pixel-conversion formula - a purely visual grid/marker misalignment
+	// with no effect on the actual measurement (which reads the flag synchronously, on this
+	// same thread, right when it plans/moves) - see BrillouinAcquisition::AOI_changed().
+	void s_orderedPositionsChanged(std::vector<POINT3>, bool isAbsolute);
 	void s_excludedPositionsChanged(std::vector<POINT3>);
 	void s_surfaceScanProgress(double progress, QString message);
 };

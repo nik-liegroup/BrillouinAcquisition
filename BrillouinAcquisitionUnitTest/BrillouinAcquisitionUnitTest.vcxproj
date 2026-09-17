@@ -136,6 +136,7 @@
     <ClCompile Include="phase.cpp" />
     <ClCompile Include="POINT2Test.cpp" />
     <ClCompile Include="POINT3Test.cpp" />
+    <ClCompile Include="ScanControlProjectionTest.cpp" />
     <ClCompile Include="ScaleCalibrationHelperTest.cpp" />
     <ClCompile Include="simplemath.cpp" />
     <ClCompile Include="unwrap.cpp" />

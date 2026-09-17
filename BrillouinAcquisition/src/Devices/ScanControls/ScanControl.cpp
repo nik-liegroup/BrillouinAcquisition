@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "ScanControl.h"
+#include "src/helper/logger.h"
 
 #include <chrono>
 #include <thread>
@@ -144,14 +145,38 @@ void ScanControl::locatePositionScanner(POINT2 positionLaserPix) {
 	// m_positionScanner itself stays an objective-invariant quantity (the real beam alignment
 	// relative to the stage, not tied to whichever objective happened to be active when this
 	// was last located) - see announcePositionScanner()/getPositionOffset() for the matching
-	// "+ fovOffsetUm(active)" used everywhere this gets converted back to a pixel/raw-frame
-	// value. On the reference objective (fovOffsetUm == {0,0}) this is a no-op, which is why
-	// the previous, uncorrected version of this line looked fine there and only broke down on
-	// every other objective.
+	// "+ fovOffsetUm(active)" used everywhere this gets converted back to a pixel/raw-frame value.
 	m_positionScanner = pixToMicroMeter(positionLaserPix) - getActiveObjectiveFovOffsetUm();
 
 	announcePositionScanner();
 	announcePositions();
+}
+
+void ScanControl::setPendingRestoredMarker(POINT2 positionPix, int objectiveSlot) {
+	m_pendingRestoredMarkerPix = positionPix;
+	m_pendingRestoredMarkerObjectiveSlot = objectiveSlot;
+	m_hasPendingRestoredMarker = true;
+	tryApplyPendingRestoredMarker();
+}
+
+void ScanControl::tryApplyPendingRestoredMarker() {
+	if (!m_hasPendingRestoredMarker) {
+		return;
+	}
+	if (m_activeObjectiveSlot != m_pendingRestoredMarkerObjectiveSlot) {
+		// Not this objective (yet, or ever, this session) - stay pending rather than guessing.
+		// If the operator switches back to the objective this was saved under, it will apply
+		// then; if not, it's correctly left unset instead of reinterpreted under the wrong
+		// calibration.
+		return;
+	}
+	if (!hasObjectiveCalibration(m_activeObjectiveSlot)) {
+		// Slot matches, but its calibration hasn't finished loading yet (loadCalibrationForSlot()
+		// is asynchronous) - setObjectiveCalibration() retries this once it has.
+		return;
+	}
+	m_hasPendingRestoredMarker = false;
+	locatePositionScanner(m_pendingRestoredMarkerPix);
 }
 
 bool ScanControl::supportsCapability(Capabilities capability) {
@@ -187,22 +212,18 @@ void ScanControl::setPositionInPix(POINT2 positionPix) {
 	movePositionCompensated(positionMicrometer);
 }
 
-void ScanControl::enableMeasurementMode(bool enabled) {
-	// When enabling the measurement mode, we have to safe the start position,
-	// so the AOI positions display has the correct origin.
+void ScanControl::enableMeasurementMode(bool enabled, POINT3 startPosition) {
+	// The caller already reads the stage+scanner position once for its own start anchor
+	// (Brillouin::m_startPosition) - reuse that exact reading here instead of querying
+	// hardware a second time, so the two anchors can never diverge (stage jitter, or a
+	// transient readback error on only one of the two calls).
+	//
+	// getActiveObjectiveFovOffsetUm() is deliberately not folded in here - a measurement must
+	// target exactly the real coordinates verified while idle, on any objective. This
+	// m_startPosition is ScanControl's own display-only copy (feeds getPositionOffset()'s
+	// measurementMode branch), kept numerically in step with Brillouin::m_startPosition.
 	if (enabled) {
-		auto pos = getPosition();
-		// Fold in the active objective's own FOV-center offset at capture time - relative-mode
-		// targets are "current stage position, translated by the active objective's FOV offset,
-		// plus the grid offset" (one formula, always), not "current stage position" alone with
-		// the FOV term only ever applied as a later correction on a subsequent switch. Without
-		// this, a grid defined and started while already sitting on a non-reference objective
-		// (no switch involved at all) would silently target the wrong physical location by
-		// exactly that objective's own offset. adjustStartPositionForFovOffsetChange() keeps this
-		// invariant (m_startPosition == stage position + active objective's FOV offset) intact
-		// across any later switch/FOV-offset save.
-		auto fovOffsetUm = getActiveObjectiveFovOffsetUm();
-		m_startPosition = POINT2{ pos.x + fovOffsetUm.x, pos.y + fovOffsetUm.y };
+		m_startPosition = POINT2{ startPosition.x, startPosition.y };
 	}
 	m_measurementMode = enabled;
 }
@@ -212,12 +233,12 @@ void ScanControl::setPreset(ScanPreset presetType) {
 	getElements();
 
 	for (gsl::index ii{ 0 }; ii < m_deviceElements.size(); ii++) {
-		// "RL Shutter" is deliberately excluded from this automatic per-preset forcing -
+		// "RL Shutter" is deliberately excluded from this automatic per-preset forcing, so that
 		// switching optical presets (e.g. for a brightfield preview, calibration, or scale
-		// calibration) used to silently clobber whatever the user had it manually set to,
-		// even outside of an actual acquisition. It's either left exactly as the user set
-		// it (manual beampath button), or explicitly driven by acquisition code that
-		// actually needs a specific state - see setRLShutterOpen().
+		// calibration) never clobbers whatever the user had it manually set to outside of an
+		// actual acquisition. It's either left exactly as the user set it (manual beampath
+		// button), or explicitly driven by acquisition code that needs a specific state - see
+		// setRLShutterOpen().
 		if (m_deviceElements[ii].name == "RL Shutter") {
 			continue;
 		}
@@ -245,6 +266,15 @@ void ScanControl::setRLShutterOpen(bool open) {
 			return;
 		}
 	}
+}
+
+bool ScanControl::hasBeamBlockElement() const {
+	for (const auto& element : m_deviceElements) {
+		if (element.name == "Beam Block") {
+			return true;
+		}
+	}
+	return false;
 }
 
 bool ScanControl::setBeamBlockOpen(bool open) {
@@ -391,35 +421,39 @@ void ScanControl::announceSavedPositionsNormalized() {
 
 void ScanControl::setScaleCalibration(const ScaleCalibrationData& scaleCalibration) {
 	// m_positionScanner is deliberately left as-is (same [um] value) across a scale-calibration
-	// change - it marks a real, physical, sample-relative location (e.g. where the beam
-	// actually lands on this particular dish, which can be off-axis for sample-dependent
-	// optical reasons - refraction/meniscus/mounting, not a fixed camera pixel), not a pixel on
-	// the sensor. An earlier version of this function reprojected it through the old/new pixel
-	// round-trip instead ("posScanner = microMeterToPix(m_positionScanner); ... m_positionScanner
-	// = pixToMicroMeter(posScanner);"), which kept the marker's ON-SCREEN PIXEL position fixed
-	// across an objective switch - but for an off-axis, physically-real marker position, that
+	// change - it marks a real, physical, sample-relative location (e.g. where the beam actually
+	// lands on this particular dish, which can be off-axis for sample-dependent optical reasons -
+	// refraction/meniscus/mounting, not a fixed camera pixel), not a pixel on the sensor.
+	// Reprojecting it through a pixel round-trip on every calibration change would keep its
+	// ON-SCREEN pixel position fixed across an objective switch, but for an off-axis marker that
 	// silently rescales its true [um] distance from the optical axis by the two objectives'
-	// magnification ratio (e.g. a real 100um offset at 10x became only 50um at 20x), corrupting
-	// every relative-mode grid point anchored to it (see getPositionOffset()) by that same wrong
-	// factor. Leaving the [um] value untouched here means the marker (and everything anchored to
-	// it) now transforms exactly like any other physical location - through microMeterToPix()
-	// under whichever calibration is active - so it correctly reappears further from/closer to
-	// center on screen after a magnification change, instead of silently drifting in physical
-	// terms while looking visually unchanged.
+	// magnification ratio, corrupting every relative-mode grid point anchored to it (see
+	// getPositionOffset()). Leaving the [um] value untouched means the marker (and everything
+	// anchored to it) transforms exactly like any other physical location - through
+	// microMeterToPix() under whichever calibration is active.
 	m_scaleCalibration = scaleCalibration;
 
 	calculateBounds();
 	calculateHomePositionBounds();
+	// m_absoluteBounds can be objective/magnification-dependent (see e.g. NIDAQ::calculateBounds(),
+	// derived from the active pixel-to-um calibration) - refresh the AOI spinboxes' min/max
+	// (ui->startX/endX/... via currentPositionBoundsChanged) here too, or they stay at the
+	// previous objective's (wider) bounds until an unrelated later move happens to recompute
+	// them, which can leave a stale minimum >= 0 and make Qt's spinbox validator reject typed
+	// negative numbers (arrow-key stepping bypasses that validation, so it looks like "only
+	// arrows work" until the next move silently fixes it).
+	calculateCurrentPositionBounds();
+	// A pure objective/calibration switch changes neither m_positionStage nor m_positionScanner,
+	// so announcePositions() (the usual path to this pair of emissions) never runs on its own -
+	// emit the same pair here too, in the same order (offset before pixel positions, so a queued
+	// receiver processes the offset snapshot the pixel positions were computed from before the
+	// positions themselves - see BrillouinAcquisition::on_gridOffsetChanged()).
+	emit(s_gridOffsetChanged(getPositionOffset(m_AOI_positionsAbsolute), m_AOI_positionsAbsolute));
 	emit(s_scaleCalibrationChanged(convertPositionsToPix()));
 	// The marker's own drawn pixel (announcePositionScanner()'s microMeterToPix(m_positionScanner))
 	// is calibration-dependent too, exactly like the AOI/grid positions convertPositionsToPix()
-	// just re-emitted above - but unlike those, nothing was re-announcing it here. Without this,
-	// the blue marker stayed frozen at its PRE-switch screen position (still reflecting the old
-	// calibration) until something unrelated happened to call announcePositionScanner() again
-	// (e.g. manually re-locating it), even though m_positionScanner's own [um] value and every
-	// click-to-move/grid computation using it were already correct immediately after the switch.
-	// That stale on-screen marker is what made a correctly-targeted click-to-move look wrong -
-	// the operator was aiming at a pixel the software no longer agreed was the marker's location.
+	// just re-emitted above - re-announce it here so it doesn't stay at its pre-switch screen
+	// position until something else happens to call announcePositionScanner() again.
 	announcePositionScanner();
 }
 
@@ -434,6 +468,7 @@ void ScanControl::setObjectiveCalibration(int slot, const ObjectiveCalibrationDa
 	if (slot == m_activeObjectiveSlot) {
 		setScaleCalibration(calibration);
 	}
+	tryApplyPendingRestoredMarker();
 }
 
 bool ScanControl::hasObjectiveCalibration(int slot) const {
@@ -521,6 +556,22 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 	if (newSlot == m_activeObjectiveSlot) {
 		return;
 	}
+	// The turret can report a transient, invalid slot (observed: 0) while still mechanically
+	// settling after a real switch - confirmed from a two-day log capture: 110+ occurrences,
+	// every single one a "0" sandwiched between the real previous slot and the real new slot,
+	// corrected again within under a second, never once persisting. Treating that dip as a
+	// real switch used to set m_activeObjectiveSlot to 0, trigger "no calibration for slot 0"
+	// (silently, via the early-return branch below, which is why this never showed up in a
+	// plain qInfo search - it's a QMessageBox, not a log line), and then leave the very next,
+	// genuine re-detection of the real slot logged with a bogus previousSlot of 0 instead of
+	// the actual one. Ignoring invalid readings here - the same way the initial startup read
+	// (previousSlot == -1) is already ignored below - stops the dip from ever being treated as
+	// a real switch in the first place. If a real objective is ever actually mounted at slot 0,
+	// this needs revisiting - but no observation of "0" in that capture ever lasted longer than
+	// one poll tick, which a deliberately-selected slot would.
+	if (!isValidObjectiveSlot(newSlot)) {
+		return;
+	}
 	auto previousSlot = m_activeObjectiveSlot;
 	m_activeObjectiveSlot = newSlot;
 	// A fresh switch always needs a fresh decision - a warning accepted for the previous
@@ -529,9 +580,8 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 
 	auto hasCalibration = hasObjectiveCalibration(newSlot);
 	if (hasCalibration) {
-		// setScaleCalibration() itself now leaves m_positionScanner's [um] value untouched - see
-		// its own comment for why a pixel-preserving reprojection was wrong for a physically-real,
-		// possibly off-axis marker position.
+		// setScaleCalibration() leaves m_positionScanner's [um] value untouched - see its own
+		// comment for why.
 		setScaleCalibration(getObjectiveCalibration(newSlot));
 	}
 	auto calibration = getObjectiveCalibration(newSlot);
@@ -539,17 +589,8 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 	auto offsetUm = hasFovOffset ? calibration.fovOffsetUm : POINT2{ 0, 0 };
 	auto offsetSigmaUm = hasFovOffset ? calibration.fovOffsetSigmaUm : 0.0;
 
-	// See adjustStartPositionForFovOffsetChange()'s own doc comment for what m_startPosition
-	// means here and why this needs correcting on a switch.
-	if (previousSlot >= 0) {
-		auto previousCalibration = getObjectiveCalibration(previousSlot);
-		if (hasFovOffset && previousCalibration.hasFovOffset) {
-			adjustStartPositionForFovOffsetChange(POINT2{
-				offsetUm.x - previousCalibration.fovOffsetUm.x,
-				offsetUm.y - previousCalibration.fovOffsetUm.y
-			});
-		}
-	}
+	// m_startPosition has no FOV-offset baked into it at all (see enableMeasurementMode()'s own
+	// comment), so there is nothing to correct here when the active objective's FOV-offset changes.
 
 	// previousSlot == -1 is the initial hardware read at startup/connect, not an
 	// operator-driven switch - do not warn about it (there is nothing to have translated
@@ -557,25 +598,8 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 	if (previousSlot >= 0) {
 		emit(s_objectiveSwitched(previousSlot, newSlot, hasCalibration, hasFovOffset, offsetUm, offsetSigmaUm));
 	}
-}
 
-void ScanControl::adjustStartPositionForFovOffsetChange(POINT2 deltaUm) {
-	// m_startPosition here is the AOI/grid-marker DISPLAY offset reference for relative-mode
-	// positions during an active/paused measurement (see getPositionOffset()'s measurement-mode
-	// branch: offset = m_startPosition - m_positionStage) - a different variable from
-	// Brillouin::m_startPosition (the actual measurement-target anchor, corrected separately via
-	// Brillouin::adjustStartPositionForFovOffsetChange()), but capturing the exact same physical
-	// stage position at the exact same moment (enableMeasurementMode(true) vs. Brillouin's own
-	// capture, both at "Start"). Without shifting this one too, the on-screen grid/AOI markers
-	// would keep showing the OLD (no-longer-correct) positions after the active objective's known
-	// FOV offset changes mid-run, even though the actual upcoming moves are already correctly
-	// re-targeted - i.e. the overlay would silently stop matching where the scan is actually
-	// about to measure. No-op outside measurement mode - nothing reads m_startPosition then, and
-	// it gets a fresh live capture the next time a measurement actually starts anyway.
-	if (m_measurementMode) {
-		m_startPosition.x += deltaUm.x;
-		m_startPosition.y += deltaUm.y;
-	}
+	tryApplyPendingRestoredMarker();
 }
 
 std::vector<POINT2> ScanControl::getPositionsPix(const std::vector<POINT3>& positionsMicrometer) {
@@ -597,53 +621,22 @@ POINT2 ScanControl::getPositionPix(POINT3 positionMicrometer, bool positionIsAbs
 }
 
 POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
-	// This is the mechanism from commit 0c70d11: the grid itself pans with the current
-	// stage position, so that whichever point is currently being measured always lands at
-	// the same fixed screen pixel - coinciding with the laser marker, which is a static
-	// calibration reference (see announcePositionScanner()) and does NOT itself track the
-	// stage. What looks like "the marker moving through the grid" is actually the grid
-	// sliding past a fixed marker.
-	//
-	// In normal (live-preview) mode, the positions are shown relative to the scanner
-	// position, so they track wherever the laser currently points within the FOV - plus the
-	// active objective's own FOV-center offset, so a relative-mode grid visibly shifts (relative
-	// to the fixed marker) on an objective switch, exactly like it needs to physically shift once
-	// a measurement is actually started (see enableMeasurementMode()'s identical formula for the
-	// measurement-mode case below, and Brillouin::acquire()'s analogous capture of its own
-	// m_startPosition) - without this, switching objectives only ever rescaled the preview, never
-	// translated it, even with a real, saved FOV offset.
-	auto offset = m_positionScanner + getActiveObjectiveFovOffsetUm();
+	// FOV-offset is a camera-frame translation, not part of a physical stage target.
+	// Apply it once in EVERY display mode, just as announcePositionScanner() does.
+	// Dropping it on Start moves only the overlay, although the stage still measures
+	// the correct sample points.
+	const auto fovOffset = getActiveObjectiveFovOffsetUm();
 	if (positionIsAbsolute) {
-		// Absolute positions are stored as the raw target stage+scanner position directly
-		// (absoluteGridOriginUm + gridOffset, see gridOffsetToAbsoluteTarget()), so the
-		// scanner contribution is already baked into the stored value itself - subtracting
-		// it again here would double-count it and shift the whole grid by that amount.
-		// Only the stage position (which is what actually changes as the grid is scanned)
-		// needs to be undone, exactly like the measurement-mode branch below - PLUS the
-		// active objective's own FOV-center offset, for the same reason the live-preview
-		// branch above and the measurement-mode branch below both need it (m_startPosition
-		// there already has it baked in, see enableMeasurementMode()). resolvedGridOriginUm()
-		// bakes fovOffsetUm into every absolute target (see Brillouin::resolvedGridOriginUm()),
-		// but m_positionStage never does - every backend's setPosition() only ever subtracts
-		// m_positionScanner, which is stored objective-invariant (see locatePositionScanner()).
-		// Without this term, the point currently at the absolute target drew at
-		// m_positionScanner instead of m_positionScanner + fovOffsetUm - i.e. exactly
-		// fovOffsetUm away from where announcePositionScanner() draws the blue marker itself,
-		// so on any non-reference objective the grid/overview-tile preview never quite lines
-		// up with the marker, even though the stage is already at the correct physical target.
-		offset = POINT2{} - m_positionStage + getActiveObjectiveFovOffsetUm();
+		return POINT2{} - m_positionStage + fovOffset;
 	}
-	// In measurement mode, the positions are shown relative to the start position.
-	else if (m_measurementMode) {
-		// m_startPosition is captured as getPosition(BOTH) (stage + scanner) in
-		// enableMeasurementMode(), but the scanner term cancels exactly the same way as
-		// above - only stage needs to be subtracted here. This is the literal formula from
-		// commit 0c70d11; adding a "- m_positionScanner" term here (as a previous revision
-		// of this function did) shifts the whole grid by the scanner offset instead of
-		// leaving it centered on the marker.
-		offset = m_startPosition - m_positionStage;
+	if (m_measurementMode) {
+		// The captured start is stage + scanner, with no FOV-offset baked in.
+		// For a measured target T, the stage backend sets stage = T - scanner;
+		// hence T - stage + FOV projects exactly onto the laser marker.
+		return m_startPosition - m_positionStage + fovOffset;
 	}
-	return offset;
+	// At Start, start - stage == scanner, so the relative grid stays continuous.
+	return m_positionScanner + fovOffset;
 }
 
 /*

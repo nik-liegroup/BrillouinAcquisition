@@ -238,7 +238,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		m_Brillouin,
 		&Brillouin::s_orderedPositionsChanged,
 		this,
-		[this](std::vector<POINT3> orderedPositions) { AOI_changed(orderedPositions); }
+		[this](std::vector<POINT3> orderedPositions, bool isAbsolute) { AOI_changed(orderedPositions, isAbsolute); }
 	);
 	connection = QWidget::connect(
 		m_Brillouin,
@@ -810,6 +810,10 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
 				updateBrillouinSettings();
 				updateAbsoluteGridStatus();
+				// This redraw still runs against the PRE-toggle m_positionsMicrometer/
+				// m_positionsPixel/m_positionsMicrometerIsAbsolute - updatePositions() above is
+				// invoked onto m_Brillouin's own thread (queued), so the recomputed positions
+				// only arrive later via AOI_changed(), which redraws again once they do.
 				update_AOI_preview();
 			});
 
@@ -1231,11 +1235,11 @@ void BrillouinAcquisition::showAcqPosition(POINT3 position, int imageNr) {
 }
 
 void BrillouinAcquisition::updateEstimatedAcquisitionTime() {
-	const auto pointCount = m_positionsMicrometer.empty()
-		? (size_t)std::max(1, m_Brillouin->settings.xSteps)
+	const auto pointCount = m_positionsComputed
+		? m_positionsMicrometer.size()
+		: (size_t)std::max(1, m_Brillouin->settings.xSteps)
 			* (size_t)std::max(1, m_Brillouin->settings.ySteps)
-			* (size_t)std::max(1, m_Brillouin->settings.zSteps)
-		: m_positionsMicrometer.size();
+			* (size_t)std::max(1, m_Brillouin->settings.zSteps);
 	const auto frameCount = std::max<int64_t>(1, m_Brillouin->settings.camera.frameCount);
 	const auto exposureSeconds = std::max(0.0, m_Brillouin->settings.camera.exposureTime);
 	const auto exposureOnlySeconds = exposureSeconds * frameCount * (double)pointCount;
@@ -1434,8 +1438,7 @@ POINT3 BrillouinAcquisition::gridOffsetToAbsoluteTarget(const POINT3& gridOffset
 	// Goes through Brillouin::resolvedGridOriginUm(), not settings.absoluteGridOriginUm
 	// directly, so the on-screen grid/ROI overlay stays glued to where a measurement will
 	// actually execute even when the active objective has a calibrated FOV-center offset -
-	// otherwise this would be exactly the kind of independent re-derivation that previously
-	// caused the ROI polygon overlay to drift from the AOI markers.
+	// an independent re-derivation here could drift from the AOI markers.
 	const auto origin = m_Brillouin->settings.gridCoordinatesAbsolute
 		? m_Brillouin->resolvedGridOriginUm()
 		: relativeOrigin;
@@ -1462,9 +1465,10 @@ POINT2 BrillouinAcquisition::currentGridOffset(bool gridAbsolute) const {
 		return m_currentGridOffsetUm;
 	}
 	// Cached snapshot is for the other mode (or none has arrived yet) - fall back to a live
-	// fetch. Only reachable from preservePhysicalGridForAbsoluteMode()'s round-trip through
-	// the mode that's being switched away from, not from the ordinary per-frame overlay
-	// redraw path, so the small race window here doesn't reproduce the bug this was fixed for.
+	// fetch. The ordinary overlay redraw path (AOI_changed()) refreshes this cache itself for
+	// whichever mode it just computed positions under, so this fallback is only reachable from
+	// preservePhysicalGridForAbsoluteMode()'s round-trip through the mode being switched away
+	// from.
 	if (!m_scanControl) {
 		return POINT2{};
 	}
@@ -1479,7 +1483,7 @@ POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm
 // preservePhysicalGridForAbsoluteMode() can convert through the OLD mode's convention and
 // back through the NEW one when the grid-coordinates-absolute setting itself is what's
 // changing - it must not silently use "current settings" for both directions of that
-// conversion, or it re-derives the exact kind of offset mismatch this was fixed for.
+// conversion, or the two conversions would disagree with each other.
 POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm, bool gridAbsolute) const {
 	if (!m_scanControl) {
 		return imagePlaneUm;
@@ -1490,8 +1494,7 @@ POINT2 BrillouinAcquisition::imagePlaneUmToGridOffset(const POINT2& imagePlaneUm
 	// ScanControl::getPositionOffset() (absolute mode also adds absoluteGridOriginUm first,
 	// since ScanPlanner's absolute positions have the origin baked in) - reusing that exact
 	// conversion, instead of re-deriving it here, is what keeps the ROI overlay glued to the
-	// markers in every grid mode (this used to be a no-op for non-absolute grids, which is
-	// why the polygon stayed put while the markers tracked the live scanner offset).
+	// markers in every grid mode.
 	const auto origin = gridAbsolute ? m_Brillouin->resolvedGridOriginUm() : POINT3{};
 	const auto offset = currentGridOffset(gridAbsolute);
 	return POINT2{
@@ -1523,16 +1526,19 @@ void BrillouinAcquisition::preservePhysicalGridForAbsoluteMode(bool enabled) {
 	}
 
 	const auto oldAbsoluteMode = m_Brillouin->settings.gridCoordinatesAbsolute;
-	const auto oldAbsoluteOrigin = m_Brillouin->settings.absoluteGridOriginUm;
-	// Z has no scanner/stage split - getPosition().z is always just the focus position -
-	// so the plain origin-difference used below is not subject to the X/Y mismatch this
-	// function used to have and is kept as its own, simpler path.
-	const auto currentFocus = m_scanControl->getPosition().z;
 	if (enabled) {
 		m_Brillouin->settings.absoluteGridOriginUm = m_scanControl->getHomePosition();
 	}
 
-	// X/Y: round-trip each stored point through gridOffsetToImagePlaneUm()/
+	// X/Y only - "absolute grid coordinates" only ever meant x/y anchored to a fixed physical
+	// point, independent of wherever Start happens to be pressed. Z is deliberately NOT part of
+	// that split (see Brillouin::resolvedGridOriginUm()'s own comment): it always follows
+	// m_startPosition.z, refreshed at every Start or on demand via "Set plane"
+	// (setCurrentFocusAsZOrigin()), regardless of gridCoordinatesAbsolute. zMin/zMax are
+	// therefore left untouched by a mode toggle - the operator's configured z sweep survives
+	// switching to/from absolute mode instead of being silently reinterpreted.
+	//
+	// Round-trip each stored x/y point through gridOffsetToImagePlaneUm()/
 	// imagePlaneUmToGridOffset() - the exact functions the grid and the ROI polygon are
 	// actually drawn with - instead of re-deriving the offset a third time. That guarantees
 	// whatever currently renders on screen is preserved exactly, in both directions, because
@@ -1541,23 +1547,14 @@ void BrillouinAcquisition::preservePhysicalGridForAbsoluteMode(bool enabled) {
 		const auto imagePlaneUm = gridOffsetToImagePlaneUm(gridOffset, oldAbsoluteMode);
 		return imagePlaneUmToGridOffset(imagePlaneUm, enabled);
 	};
-	auto convertZ = [&](double gridOffsetZ) {
-		const auto oldOriginZ = oldAbsoluteMode ? oldAbsoluteOrigin.z : currentFocus;
-		const auto newOriginZ = enabled ? m_Brillouin->settings.absoluteGridOriginUm.z : currentFocus;
-		return (oldOriginZ + gridOffsetZ) - newOriginZ;
-	};
 
 	const auto newMinXY = convertXY(POINT2{ m_Brillouin->settings.xMin, m_Brillouin->settings.yMin });
 	const auto newMaxXY = convertXY(POINT2{ m_Brillouin->settings.xMax, m_Brillouin->settings.yMax });
-	const auto newMinZ = convertZ(m_Brillouin->settings.zMin);
-	const auto newMaxZ = convertZ(m_Brillouin->settings.zMax);
 
 	m_Brillouin->settings.setXMin(newMinXY.x);
 	m_Brillouin->settings.setXMax(newMaxXY.x);
 	m_Brillouin->settings.setYMin(newMinXY.y);
 	m_Brillouin->settings.setYMax(newMaxXY.y);
-	m_Brillouin->settings.setZMin(newMinZ);
-	m_Brillouin->settings.setZMax(newMaxZ);
 
 	for (auto& point : m_Brillouin->settings.roiPolygonUm) {
 		point = convertXY(point);
@@ -1927,7 +1924,7 @@ void BrillouinAcquisition::applyBrightfieldViewTransformChanged() {
 	m_ODTPlot.plotHandle->xAxis->setRange(QCPRange(1, brightfieldDisplayWidth()));
 	m_ODTPlot.plotHandle->yAxis->setRange(QCPRange(1, brightfieldDisplayHeight()));
 	if (m_scanControl) {
-		AOI_changed(m_positionsMicrometer);
+		AOI_changed(m_positionsMicrometer, m_positionsMicrometerIsAbsolute);
 		excludedAOI_changed(m_excludedPositionsMicrometer);
 		drawPositionScannerMarker(m_positionScanner);
 	}
@@ -2256,23 +2253,53 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 	// can't be read off them without also knowing the (separately displayed) origin. Locked to
 	// read-only in absolute mode for that reason, on top of (not instead of) the pre-existing
 	// running-state lock.
-	const bool gridLocked = running || m_Brillouin->settings.gridCoordinatesAbsolute;
-	ui->startX->setDisabled(gridLocked);
-	ui->startY->setDisabled(gridLocked);
-	ui->startZ->setDisabled(gridLocked);
-	ui->endX->setDisabled(gridLocked);
-	ui->endY->setDisabled(gridLocked);
-	ui->endZ->setDisabled(gridLocked);
-	ui->stepsX->setDisabled(gridLocked);
-	ui->stepsY->setDisabled(gridLocked);
-	ui->stepsZ->setDisabled(gridLocked);
+	// Z is deliberately excluded from the absolute-mode lock - see
+	// Brillouin::resolvedGridOriginUm()'s comment for why z is not part of "absolute" at all
+	// anymore. Its own read-only meaning issue (editing offsets from a fixed origin you can't
+	// see here) doesn't apply: z's origin is always m_startPosition.z, refreshed at every Start
+	// or via "Set plane", so zMin/zMax stay exactly as intuitive here as they already are in
+	// relative mode.
+	const bool gridLockedXY = running || m_Brillouin->settings.gridCoordinatesAbsolute;
+	const bool gridLockedZ = running;
+	ui->startX->setDisabled(gridLockedXY);
+	ui->startY->setDisabled(gridLockedXY);
+	ui->startZ->setDisabled(gridLockedZ);
+	ui->endX->setDisabled(gridLockedXY);
+	ui->endY->setDisabled(gridLockedXY);
+	ui->endZ->setDisabled(gridLockedZ);
+	ui->stepsX->setDisabled(gridLockedXY);
+	ui->stepsY->setDisabled(gridLockedXY);
+	ui->stepsZ->setDisabled(gridLockedZ);
 	ui->camera_playPause->setDisabled(running);
 	ui->camera_singleShot->setDisabled(running);
-	ui->setHome->setDisabled(running || m_Brillouin->settings.gridCoordinatesAbsolute);
+	// Enabled in both modes now - see on_setHome_clicked()'s comment for why it does something
+	// useful (Set plane) in absolute mode too, instead of being disabled there.
+	ui->setHome->setDisabled(running);
+	ui->setHome->setText(m_Brillouin->settings.gridCoordinatesAbsolute ? "Set plane" : "Set home");
 	ui->moveHome->setDisabled(running || m_Brillouin->settings.gridCoordinatesAbsolute);
 	ui->setPositionX->setDisabled(running);
 	ui->setPositionY->setDisabled(running);
 	ui->setPositionZ->setDisabled(running);
+
+	// Relocating the beam marker mid-acquisition would move the reference every remaining grid
+	// point measures against - never meaningful while running. Also drop out of an in-progress
+	// relocation (armed by a click, not yet confirmed by a second click) rather than leaving the
+	// button stuck in its "Ok" state with no way to finish it once disabled.
+	if (running && m_locatePositionScanner) {
+		setLaserPositionLocationArmed(false);
+	}
+	ui->addFocusMarker_brightfield->setDisabled(running);
+
+	// The relocation button's whole point is compensating the relative-mode grid so it stays
+	// fixed - in absolute mode that compensation is a no-op (the absolute grid formula has no B
+	// term at all, see relocateBeamKeepingGridFixed()'s own comment), so there's nothing this
+	// button does differently from the plain marker button there - grey it out rather than offer
+	// a control with no distinguishing effect.
+	const auto relocateMarkerUnusable = running || m_Brillouin->settings.gridCoordinatesAbsolute;
+	if (relocateMarkerUnusable && m_relocatePositionScanner) {
+		setRelocateFocusMarkerArmed(false);
+	}
+	ui->relocateFocusMarker_brightfield->setDisabled(relocateMarkerUnusable);
 
 	ui->postCalibration->setDisabled(running);
 	ui->preCalibration->setDisabled(running);
@@ -3648,14 +3675,11 @@ void BrillouinAcquisition::on_action_Voltage_calibration_load_triggered() {
 void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 	// setupUi()/connect() must run exactly once per Ui object - calling setupUi() again on an
 	// already-set-up QDialog builds an entirely new, unparented set of child widgets each time
-	// (the old layout refuses to be replaced), leaving the *visible* dialog showing stale
+	// (the existing layout refuses to be replaced), leaving the *visible* dialog showing stale
 	// widgets that the (now repointed) Ui struct - and everything wired to it - no longer
-	// touches. That was the actual cause of values silently not updating (and one dialog's
-	// worth of orphaned old widgets rendering wherever Qt happened to place them) after
-	// reopening a dialog more than once in a session; every "connect()" reconnecting here on
-	// every open would additionally have piled up duplicate signal/slot connections. So: only
-	// the widget construction/wiring happens inside this guard, everything below it re-runs on
-	// every open to refresh values.
+	// touches; reconnecting every "connect()" here on every open would additionally pile up
+	// duplicate signal/slot connections. So: only the widget construction/wiring happens inside
+	// this guard, everything below it re-runs on every open to refresh values.
 	if (!m_scaleCalibrationDialog) {
 		m_scaleCalibrationDialog = new QDialog(this, Qt::WindowTitleHint | Qt::WindowCloseButtonHint);
 		m_scaleCalibrationDialogUi.setupUi(m_scaleCalibrationDialog);
@@ -4862,7 +4886,7 @@ void BrillouinAcquisition::initScanControl() {
 	initializeLaserPositionLocation();
 
 	// Update positions preview
-	AOI_changed(m_positionsMicrometer);
+	AOI_changed(m_positionsMicrometer, m_positionsMicrometerIsAbsolute);
 	excludedAOI_changed(m_excludedPositionsMicrometer);
 
 	// reestablish m_scanControl connections
@@ -4963,7 +4987,11 @@ void BrillouinAcquisition::initScanControl() {
 
 	loadLinkedObjectiveCalibrations();
 
-	m_scanControl->locatePositionScanner(m_positionScanner);
+	// Deferred: the restored marker is only valid for the objective it was saved under, and
+	// that objective's slot/calibration aren't necessarily known yet at this point (both
+	// connectDevice() and loadLinkedObjectiveCalibrations() above are asynchronous) - see
+	// ScanControl::setPendingRestoredMarker()'s own comment.
+	m_scanControl->setPendingRestoredMarker(m_positionScanner, m_positionScannerObjectiveSlot);
 }
 
 void BrillouinAcquisition::initODT() {
@@ -5458,25 +5486,26 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 				Qt::AutoConnection
 			);
 		} else {
-			auto reply = QMessageBox::warning(
+			// Plain acknowledgment, not a "Continue anyway?" choice - the objective switch has
+			// already physically happened by the time this fires, so declining doesn't undo or
+			// prevent anything (unlike, say, a confirmation before a destructive action).
+			// Leaving the offset unaccepted would only make this same dialog reappear next time,
+			// not add a meaningful safeguard - so always accept it.
+			QMessageBox::warning(
 				this,
 				"No FOV-Center Offset For This Objective Switch",
 				QString("No calibrated FOV-center offset is stored for this objective switch (slot %1 -> %2).\n\n"
 					"In absolute grid-coordinate mode, grids, ROIs and overview tiles will NOT be translated "
 					"to compensate for this objective's field-of-view center shift, and measurements may no "
 					"longer target the same physical sample location as before the switch. Relative-mode grids "
-					"are not affected, since they anchor to wherever the stage is when a measurement starts.\n\n"
-					"Continue anyway?").arg(previousSlot).arg(newSlot),
-				QMessageBox::Yes | QMessageBox::No,
-				QMessageBox::No
+					"are not affected, since they anchor to wherever the stage is when a measurement starts.")
+					.arg(previousSlot).arg(newSlot)
 			);
-			if (reply == QMessageBox::Yes) {
-				QMetaObject::invokeMethod(
-					m_scanControl,
-					[scanControl = m_scanControl]() { scanControl->acceptMissingObjectiveOffset(); },
-					Qt::AutoConnection
-				);
-			}
+			QMetaObject::invokeMethod(
+				m_scanControl,
+				[scanControl = m_scanControl]() { scanControl->acceptMissingObjectiveOffset(); },
+				Qt::AutoConnection
+			);
 		}
 	} else {
 		// hasCalibration && hasFovOffset: nothing needs the operator's attention beyond a log
@@ -5487,88 +5516,26 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 			<< ") um, sigma" << offsetSigmaUm << "um.";
 	}
 
-	// Pure recomputation, no hardware motion - safe unconditionally whenever the new
-	// objective's scale calibration was actually applied (hasCalibration), regardless of
-	// hasFovOffset. This is what makes the on-screen grid/ROI/overview-tile preview snap to
-	// the corrected position immediately on switch, rather than only once something else
-	// happens to call updatePositions() next (e.g. Start). updatePositions() is a private
-	// slot, hence the string-based invoke rather than a capturing lambda - same pattern
-	// already used elsewhere in this file (see the ROI-mask checkbox handler).
-	if (m_Brillouin) {
-		QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
-	}
-
-	// Relative-mode grids anchor to Brillouin::m_startPosition (a stage position captured once,
-	// at "Start" - see its doc comment), not recomputed fresh on every read the way absolute
-	// mode's resolvedGridOriginUm() is. Without correcting that anchor here, an objective switch
-	// would leave any not-yet-visited grid point targeted at the OLD objective's FOV center.
-	//
-	// This is a pure in-memory shift of that anchor (Brillouin::adjustStartPositionForFovOffsetChange()),
-	// NOT a physical stage move - a previous version of this code moved the actual stage by delta
-	// here, which was wrong: it yanked the sample out from under the live view/blue dot on every
-	// switch (unrequested motion the operator never asked for), and - since m_startPosition is
-	// only ever captured fresh at "Start" - had no lasting effect anyway once a real target
-	// (m_startPosition + gridOffset, from the value captured BEFORE this switch) was next
-	// commanded, silently undoing the nudge. Shifting the bookkeeping anchor instead means the
-	// blue dot stays exactly where the operator left it, and it's the (not-yet-visited) grid that
-	// moves under it - matching how absolute mode already behaves, and how the stage only ever
-	// actually moves once a real measurement point is visited.
-	// Only fires when both the objective being left and the one just switched to have a
-	// calibrated offset - otherwise there is no valid delta to apply.
-	if (m_Brillouin && !m_Brillouin->settings.gridCoordinatesAbsolute && hasFovOffset && m_scanControl) {
-		auto previousCalibration = m_scanControl->getObjectiveCalibration(previousSlot);
-		if (previousCalibration.hasFovOffset) {
-			auto deltaX = offsetUm.x - previousCalibration.fovOffsetUm.x;
-			auto deltaY = offsetUm.y - previousCalibration.fovOffsetUm.y;
-			qInfo(logInfo()) << "Objective switch" << previousSlot << "->" << newSlot
-				<< ": relative grid mode, shifting grid origin by (" << deltaX << "," << deltaY
-				<< ") um to preserve FOV-offset alignment (no stage motion).";
-			auto deltaUm = POINT2{ deltaX, deltaY };
-			QMetaObject::invokeMethod(
-				m_Brillouin,
-				"adjustStartPositionForFovOffsetChange",
-				Qt::AutoConnection,
-				Q_ARG(POINT2, deltaUm)
-			);
-		}
-	}
+	// A pure objective switch deliberately does not recompute m_orderedPositions or nudge any
+	// relative-mode grid target by the FOV-offset delta: grid points are a plan of fixed
+	// PHYSICAL sample targets, and since a pure objective switch never moves the stage, those
+	// targets must not move either - not on screen (see getPositionOffset()'s own comment) and
+	// not in the real stage-move target computed from m_startPosition. Brillouin::acquire()
+	// already calls updatePositions() fresh, right before the real measurement loop starts,
+	// using whatever objective is active at that moment, so nothing here needs to pre-empt that.
+	// The preview still updates via ScanControl::setScaleCalibration()'s own
+	// convertPositionsToPix() re-projection (fires on every switch regardless), just without
+	// re-baking the underlying stored µm values. The blue marker is still allowed to show a
+	// genuine small shift - it tracks where the beam actually, physically lands, which a
+	// non-reference objective's real parcentricity error does change.
 }
 
 void BrillouinAcquisition::onFovOffsetSaved(int slot, POINT2 oldOffsetUm, bool oldHasFovOffset, POINT2 newOffsetUm, bool newHasFovOffset) {
-	// Unconditional and first, mirrors objectiveSwitched() - a plain Save otherwise leaves the
-	// on-screen grid/ROI/overview-tile preview showing the OLD offset (see
-	// ScaleCalibration::s_fovOffsetSaved's doc comment for why nothing else already does this).
-	// Safe regardless of hasFovOffset/mode: absolute mode's resolvedGridOriginUm() just re-reads
-	// whatever is now registered, and if nothing meaningful changed this is a harmless no-op
-	// redraw.
-	if (m_Brillouin) {
-		QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
-	}
-
-	// Relative mode: the same "shift the not-yet-visited grid by the delta, don't move the
-	// stage" treatment objectiveSwitched() applies on an actual switch - see that function's own
-	// doc comment for why this is a pure bookkeeping shift. `slot` is always the active one (see
-	// s_fovOffsetSaved's doc comment), so the extra equality check here is just defensive - only
-	// meaningful if both the old and new state have a real offset to take a delta between.
-	if (m_Brillouin && !m_Brillouin->settings.gridCoordinatesAbsolute && m_scanControl
-			&& slot == m_scanControl->getActiveObjectiveSlot() && oldHasFovOffset && newHasFovOffset) {
-		auto deltaUm = POINT2{ newOffsetUm.x - oldOffsetUm.x, newOffsetUm.y - oldOffsetUm.y };
-		qInfo(logInfo()) << "FOV-offset calibration saved for slot" << slot
-			<< ": relative grid mode, shifting grid origin by (" << deltaUm.x << "," << deltaUm.y
-			<< ") um (no stage motion).";
-		QMetaObject::invokeMethod(
-			m_Brillouin,
-			"adjustStartPositionForFovOffsetChange",
-			Qt::AutoConnection,
-			Q_ARG(POINT2, deltaUm)
-		);
-		QMetaObject::invokeMethod(
-			m_scanControl,
-			"adjustStartPositionForFovOffsetChange",
-			Qt::AutoConnection,
-			Q_ARG(POINT2, deltaUm)
-		);
-	}
+	// A no-op by design: fovOffsetUm is not folded into any real measurement target or into
+	// resolvedGridOriginUm()/m_startPosition - it only affects how the marker itself is drawn
+	// (announcePositionScanner()), which already re-reads the active objective's calibration
+	// live on every redraw. Saving a new FOV-offset value has nothing left to recompute or
+	// re-anchor.
 }
 
 void BrillouinAcquisition::checkElementButtons() {
@@ -5943,22 +5910,26 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 			m_perPointBrightfieldDuringAcquisitionCheckbox->setEnabled(perPointPossible && m_Brillouin->settings.capturePerPointBrightfield);
 		}
 	}
-	const auto homeControlsDisabled = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
-	ui->setHome->setDisabled(homeControlsDisabled);
-	ui->moveHome->setDisabled(homeControlsDisabled);
+	// See the ACQUISITION_STATUS handler's identical setHome lines for why it's enabled/
+	// relabeled rather than disabled in absolute mode.
+	ui->setHome->setDisabled(m_enabledModes != ACQUISITION_MODE::NONE);
+	ui->setHome->setText(m_Brillouin->settings.gridCoordinatesAbsolute ? "Set plane" : "Set home");
+	ui->moveHome->setDisabled(m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE);
 	// See the comment on this same lock in the ACQUISITION_STATUS handler - repeated here so
 	// it stays correct across every path that refreshes the grid UI (e.g. an objective switch
-	// re-running updatePositions()), not just the toggle handler and the status handler.
-	const auto gridLocked = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
-	ui->startX->setDisabled(gridLocked);
-	ui->startY->setDisabled(gridLocked);
-	ui->startZ->setDisabled(gridLocked);
-	ui->endX->setDisabled(gridLocked);
-	ui->endY->setDisabled(gridLocked);
-	ui->endZ->setDisabled(gridLocked);
-	ui->stepsX->setDisabled(gridLocked);
-	ui->stepsY->setDisabled(gridLocked);
-	ui->stepsZ->setDisabled(gridLocked);
+	// re-running updatePositions()), not just the toggle handler and the status handler. Z is
+	// excluded from the absolute-mode part of the lock - see that comment for why.
+	const auto gridLockedXY = m_Brillouin->settings.gridCoordinatesAbsolute || m_enabledModes != ACQUISITION_MODE::NONE;
+	const auto gridLockedZ = m_enabledModes != ACQUISITION_MODE::NONE;
+	ui->startX->setDisabled(gridLockedXY);
+	ui->startY->setDisabled(gridLockedXY);
+	ui->startZ->setDisabled(gridLockedZ);
+	ui->endX->setDisabled(gridLockedXY);
+	ui->endY->setDisabled(gridLockedXY);
+	ui->endZ->setDisabled(gridLockedZ);
+	ui->stepsX->setDisabled(gridLockedXY);
+	ui->stepsY->setDisabled(gridLockedXY);
+	ui->stepsZ->setDisabled(gridLockedZ);
 	if (m_editSpectralProxyRoiCheckbox) {
 		m_editSpectralProxyRoiCheckbox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
 	}
@@ -6023,13 +5994,29 @@ void BrillouinAcquisition::on_showOverlay_stateChanged(int show) {
 /*
  * React when the ordered positions have changed
  */
-void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositions) {
+void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositions, bool isAbsolute) {
+	m_positionsMicrometerIsAbsolute = isAbsolute;
+	m_positionsComputed = true;
 	if (m_scanControl) {
 		m_positionsMicrometer = orderedPositions;
-		m_positionsPixel = m_scanControl->getPositionsPix(m_positionsMicrometer, m_Brillouin->settings.gridCoordinatesAbsolute);
+		// isAbsolute is the mode these positions were actually computed under (travels with
+		// the signal - see Brillouin::s_orderedPositionsChanged()'s own comment), NOT
+		// m_Brillouin->settings.gridCoordinatesAbsolute's current, possibly-already-changed-
+		// again live value - using the live value here reintroduced exactly the race this
+		// parameter exists to avoid.
+		m_positionsPixel = m_scanControl->getPositionsPix(m_positionsMicrometer, isAbsolute);
 		std::transform(m_positionsPixel.begin(), m_positionsPixel.end(), m_positionsPixel.begin(),
 			[this](POINT2 point) { return brightfieldRawToDisplay(point); }
 		);
+		// Refresh the cached grid offset from the exact same call chain (getPositionsPix() ->
+		// convertPositionsToPix()) that just computed m_positionsPixel, for the same isAbsolute -
+		// not from on_gridOffsetChanged()'s separately-queued s_gridOffsetChanged signal, which
+		// only updates on ScanControl's own announcePositions()/setScaleCalibration() triggers
+		// and was therefore left stale exactly when THIS function (a grid recompute) was the one
+		// that actually moved the pixel positions - see currentGridOffset()'s own comment on why
+		// update_AOI_preview()'s ROI-coloring branch depends on this cache being fresh.
+		m_currentGridOffsetUm = m_scanControl->getPositionOffset(isAbsolute);
+		m_currentGridOffsetIsAbsolute = isAbsolute;
 		update_AOI_preview();
 	}
 	updateEstimatedAcquisitionTime();
@@ -6054,6 +6041,11 @@ void BrillouinAcquisition::on_scaleCalibrationChanged(const std::vector<POINT2>&
 	std::transform(m_positionsPixel.begin(), m_positionsPixel.end(), m_positionsPixel.begin(),
 		[this](POINT2 point) { return brightfieldRawToDisplay(point); }
 	);
+	// This is the path a PURE objective switch actually takes to move the on-screen grid dots
+	// (ScanControl::setScaleCalibration() -> convertPositionsToPix() -> this slot), completely
+	// separate from AOI_changed()/m_positionsMicrometerIsAbsolute - this function overwrites
+	// m_positionsPixel directly from whatever ScanControl computed, using ScanControl's OWN
+	// cached m_AOI_positionsAbsolute, not this class's mode flag at all.
 	update_AOI_preview();
 }
 
@@ -6085,11 +6077,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 		// m_positionsPixel is already the correct, mode-aware projection of the current
 		// grid (ScanControl::convertPositionsToPix() branches on absolute vs. relative
 		// mode internally and both are mathematically consistent with the polygon
-		// projection below). Absolute mode used to instead rebuild the grid from scratch
-		// here, reading scan order back from three independent UI radio-button groups
-		// (which are not mutually exclusive with each other, so could yield an invalid
-		// permutation) - that duplicate, absolute-mode-only path was the actual bug, not
-		// something that needed a more elaborate replacement.
+		// projection below).
 		auto positionsPixelForRoi = m_positionsPixel;
 		std::vector<POINT2> excludedPixelForRoi;
 		if (colorByRoi && m_scanControl) {
@@ -6099,9 +6087,16 @@ void BrillouinAcquisition::update_AOI_preview() {
 			// with their own live ScanControl::getPositionOffset() call. ScanControl lives on
 			// another thread, so those live calls could each observe a different offset if
 			// something there (e.g. enableMeasurementMode(false) at acquisition end) changes
-			// mid-way through this function - which is exactly what let this coloring pass
-			// disagree with the ROI polygon in relative grid mode.
-			const auto gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
+			// mid-way through this function.
+			//
+			// m_positionsMicrometerIsAbsolute - the mode m_positionsMicrometer/
+			// m_excludedPositionsMicrometer were actually computed under (see AOI_changed(),
+			// which also refreshes m_currentGridOffsetUm for this same mode) - not the live
+			// m_Brillouin->settings.gridCoordinatesAbsolute: this function runs synchronously
+			// on the GUI thread, but those arrays were populated asynchronously by an earlier
+			// queued signal, so the live mode can already have changed again by the time this
+			// runs.
+			const auto gridAbsolute = m_positionsMicrometerIsAbsolute;
 			const auto offset = currentGridOffset(gridAbsolute);
 			positionsPixelForRoi.clear();
 			positionsPixelForRoi.reserve(m_positionsMicrometer.size());
@@ -6736,7 +6731,17 @@ void BrillouinAcquisition::on_savePosition_clicked() {
 }
 
 void BrillouinAcquisition::on_setHome_clicked() {
+	// Same button, two roles - "Set home" (x/y/z) in relative mode, "Set plane" (z only) in
+	// absolute mode, where Set home doesn't have a sensible x/y meaning any more (the absolute
+	// origin is a fixed point, not something a button click should silently redefine) but z
+	// still needs a way to re-anchor - see Brillouin::resolvedGridOriginUm()'s comment for how z
+	// is anchored in each mode. Swapping roles on the one button (rather than a separate, always-
+	// visible "Set plane" button) keeps the control count the same in both modes.
+	if (!m_Brillouin) {
+		return;
+	}
 	if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+		QMetaObject::invokeMethod(m_Brillouin, "setCurrentFocusAsZOrigin", Qt::AutoConnection);
 		return;
 	}
 	QMetaObject::invokeMethod(
@@ -7094,6 +7099,7 @@ void BrillouinAcquisition::writeSettings() {
 	settings.beginGroup("devices-settings");
 	settings.setValue("stage-laser-position-x", m_positionScanner.x);
 	settings.setValue("stage-laser-position-y", m_positionScanner.y);
+	settings.setValue("stage-laser-position-objective-slot", m_positionScannerObjectiveSlot);
 	settings.setValue("brightfield-view-rotation-degrees", (int)m_brightfieldViewRotation * 90);
 	settings.setValue("brightfield-view-mirror-horizontal", m_brightfieldMirrorHorizontal);
 	settings.setValue("brightfield-view-mirror-vertical", m_brightfieldMirrorVertical);
@@ -7263,6 +7269,10 @@ void BrillouinAcquisition::readSettings() {
 	auto posX = settings.value("stage-laser-position-x");
 	auto posY = settings.value("stage-laser-position-y");
 	m_positionScanner = POINT2{ posX.toDouble(), posY.toDouble() };
+	// -1 (not found) for settings written before this field existed - setPendingRestoredMarker()
+	// then never matches any real objective slot, so an old marker position is simply left
+	// unapplied rather than guessed at.
+	m_positionScannerObjectiveSlot = settings.value("stage-laser-position-objective-slot", -1).toInt();
 	const auto brightfieldRotationDegrees = settings.value("brightfield-view-rotation-degrees", (int)m_brightfieldViewRotation * 90).toInt();
 	m_brightfieldViewRotation = (BrightfieldViewRotation)std::clamp(brightfieldRotationDegrees / 90, 0, 3);
 	m_brightfieldMirrorHorizontal = settings.value("brightfield-view-mirror-horizontal", m_brightfieldMirrorHorizontal).toBool();

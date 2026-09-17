@@ -169,24 +169,20 @@ public slots:
 	// (or searched automatically by the software later on).
 	void locatePositionScanner(POINT2 positionLaserPix);
 
+	// A marker position (raw pixels) restored from settings at startup is only meaningful for
+	// the specific objective it was saved under (a different objective's real beam offset can't
+	// be inferred from it - see the large comment on ScanPlanner::buildLegacyCartesianPlan() for
+	// why). Call this instead of locatePositionScanner() directly when restoring: it defers
+	// applying the position until objectiveSlot is actually active and its calibration has
+	// finished loading (both are asynchronous at startup), and simply never applies it if a
+	// different objective ends up active instead.
+	void setPendingRestoredMarker(POINT2 positionPix, int objectiveSlot);
+
 	bool supportsCapability(Capabilities);
 
 	void setPositionInPix(POINT2);
 
-	void enableMeasurementMode(bool enabled);
-
-	// Shifts m_startPosition (the relative-mode AOI/grid-marker DISPLAY offset reference during
-	// an active/paused measurement - see getPositionOffset()'s measurement-mode branch) by
-	// deltaUm - a pure book-keeping update, no hardware motion. No-op while not in measurement
-	// mode (m_startPosition is irrelevant then - it gets a fresh live capture the next time
-	// enableMeasurementMode(true) runs, so there's nothing to correct yet). Called both by
-	// handleObjectiveSlotObserved() on an actual objective switch, and by BrillouinAcquisition
-	// (via onFovOffsetSaved()) when the operator saves a revised FOV offset for the active
-	// objective without switching away from it - same delta, same reasoning, two different
-	// triggers. Kept in sync with Brillouin::adjustStartPositionForFovOffsetChange(), which does
-	// the analogous shift for the actual measurement-target anchor (a different variable in a
-	// different class - see that function's own doc comment for why there are two).
-	void adjustStartPositionForFovOffsetChange(POINT2 deltaUm);
+	void enableMeasurementMode(bool enabled, POINT3 startPosition = {});
 
 	void setPreset(ScanPreset presetType);
 	Preset getPreset(ScanPreset);
@@ -205,9 +201,14 @@ public slots:
 	// manual beampath button uses, using the same "Close"=1/"Open"=2 convention every
 	// backend that has this element shares. No-op if this backend has no element named
 	// "Beam Block" (e.g. ZeissMTB_Erlangen2, which has no such element wired up) - returns
-	// false in that case so a caller (e.g. a dose-protection settle delay) can skip work
-	// that would only make sense if this actually did something.
+	// false in that case so a caller (e.g. Brillouin::acquireAndorFrame()'s dose protection)
+	// can fall back to setRLShutterOpen() instead.
 	bool setBeamBlockOpen(bool open);
+	// Side-effect-free check for the same element setBeamBlockOpen() looks for - lets a caller
+	// (e.g. Brillouin::acquire(), deciding whether to hold RL Shutter open for the whole run)
+	// know in advance whether setBeamBlockOpen() will actually do anything, without needing to
+	// call it just to probe.
+	bool hasBeamBlockElement() const;
 	void announcePosition();
 	void startAnnouncing();
 	void stopAnnouncing();
@@ -347,6 +348,14 @@ private:
 	// startup, not an operator-driven switch, and must not fire s_objectiveSwitched()/a warning.
 	int m_activeObjectiveSlot{ -1 };
 	bool m_objectiveOffsetWarningAccepted{ false };
+
+	// A marker position (raw pixels) restored from settings at startup, not yet applied because
+	// it's only valid for the specific objective it was saved under - see
+	// setPendingRestoredMarker()/tryApplyPendingRestoredMarker().
+	bool m_hasPendingRestoredMarker{ false };
+	POINT2 m_pendingRestoredMarkerPix{};
+	int m_pendingRestoredMarkerObjectiveSlot{ -1 };
+	void tryApplyPendingRestoredMarker();
 
 private slots:
 	// elementPositionChanged(DeviceElement, double) only fires for a software-commanded

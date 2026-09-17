@@ -91,10 +91,9 @@ void ZeissECU::setPosition(POINT2 position) {
 	}
 	calculateCurrentPositionBounds(POINT3{ position.x, position.y, m_positionFocus });
 	// announcePosition() (not just announcePositions()) so the numeric position readout
-	// (positionX/Y/Z) updates on every move too, not just the AOI/laser markers - it used to
-	// go through here in an older version and stopped, since when the readout has been stale
-	// during acquisitions (the periodic announcer that would otherwise cover it is stopped
-	// for the whole acquisition, see ScanControl::stopAnnouncing()).
+	// (positionX/Y/Z) updates on every move too, not just the AOI/laser markers - needed here
+	// during acquisitions, since the periodic announcer that would otherwise cover it is stopped
+	// for the whole acquisition (see ScanControl::stopAnnouncing()).
 	announcePosition();
 }
 

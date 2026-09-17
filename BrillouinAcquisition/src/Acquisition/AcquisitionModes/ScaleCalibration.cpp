@@ -819,11 +819,10 @@ void ScaleCalibration::acquire() {
 
 void ScaleCalibration::initialize() {
 	// Get the current scale calibration from the scanControl. Only the base
-	// ScaleCalibrationData portion - m_scaleCalibration is now the derived
-	// ObjectiveCalibrationData, and getScaleCalibration() only returns the base type, so a
-	// plain assignment no longer compiles. The objective-identity/FOV-offset fields are
-	// populated separately just below, from whatever is already registered for the active
-	// slot (if any), so the dialog opens showing the right existing values for whichever
+	// ScaleCalibrationData portion - m_scaleCalibration is the derived ObjectiveCalibrationData,
+	// and getScaleCalibration() only returns the base type. The objective-identity/FOV-offset
+	// fields are populated separately just below, from whatever is already registered for the
+	// active slot (if any), so the dialog opens showing the right existing values for whichever
 	// objective is actually in the beam path right now.
 	static_cast<ScaleCalibrationData&>(m_scaleCalibration) = m_scanControl->getScaleCalibration();
 	auto activeCalibration = m_scanControl->getActiveObjectiveCalibration();
@@ -974,41 +973,23 @@ void ScaleCalibration::setFovOffsetSigma(double value) {
  */
 
 void ScaleCalibration::configureCalibrationCameraRoi() {
-	// This used to end with m_camera->setSettings(m_cameraSettings) right here, applying the
-	// (no-longer-ROI-changing, but still trigger-mode-changing) settings immediately. That is
-	// itself unsafe while a live preview is running: Camera::applySettings() is not
-	// mutex-guarded, and switching triggerMode away from whatever the running preview loop
-	// (Camera::getImageForPreview(), see Camera.cpp) was capturing with breaks that loop too -
-	// getImageForPreview()/acquireImage() never fires a software trigger the way
-	// getImageForAcquisition() does, so once triggerMode flips to "Software" out from under it,
-	// the *preview's own* next frame-grab blocks forever on RetrieveBuffer() as well, while
-	// holding Camera::m_mutex - which is why the live image froze, the Stop button stopped
-	// responding (it can't interrupt a call the preview loop never returns from to notice the
-	// stop flag), and beam-path/preset switching stopped working too (ScanControl shares
-	// m_acquisitionThread with this class - see the startWorker() calls in
-	// BrillouinAcquisition.cpp - and that thread's own next call into the camera,
-	// startAcquisition() below, then blocks right behind the preview waiting on the same mutex).
-	//
-	// Fix: this function only prepares the desired settings now and does not apply them.
-	// Camera::startAcquisition() (called by both callers of this function, right after) already
-	// does the right thing atomically under Camera::m_mutex: stop the preview first (safely,
-	// letting its current call return), *then* apply the new settings, then start capture. So
-	// the actual apply is left to that one call, instead of happening twice - once here,
-	// unsafely, and again (redundantly) inside startAcquisition().
+	// This function only prepares the desired settings and does not apply them -
+	// Camera::applySettings() is not mutex-guarded, so applying a trigger-mode change here while
+	// a live preview is running can race the preview loop's own capture call and deadlock both on
+	// Camera::m_mutex. Camera::startAcquisition() (called by both callers of this function, right
+	// after) already does this atomically: stop the preview first, then apply the new settings,
+	// then start capture.
 	m_cameraSettings = m_camera->getSettings();
 
 	// Deliberately no ROI override - always capture at whatever size the camera is already
 	// configured for (full sensor, or whatever preview is currently using), same as
-	// Fluorescence::configureCamera(). Previously cropped to a fixed left=1000/top=800/
-	// 1000x1000 region regardless of the camera's actual sensor size, which is a separate bug
-	// this class no longer has.
+	// Fluorescence::configureCamera().
 	//
-	// Trigger mode: mirrors Fluorescence::configureCamera() too. This class never touched
-	// triggerMode before, so a capture just inherited whatever the camera was last left in;
+	// Trigger mode: mirrors Fluorescence::configureCamera() too.
 	// PointGrey::getImageForAcquisition() only fires a software trigger when
 	// triggerMode == "Software", so anything else (e.g. "External", waiting on a hardware
-	// trigger line nothing here supplies) blocked this capture's own RetrieveBuffer() forever.
-	// Forcing "Software" here guarantees a trigger is actually sent for *this* capture; See the
+	// trigger line nothing here supplies) blocks this capture's own RetrieveBuffer() forever.
+	// Forcing "Software" here guarantees a trigger is actually sent for *this* capture; see the
 	// comment above for why applying it must wait for startAcquisition().
 	auto cameraType = (std::string)typeid(*m_camera).name();
 	if (cameraType == "class uEyeCam" || cameraType == "class PointGrey") {
@@ -1151,10 +1132,7 @@ bool ScaleCalibration::computeFovOffsetShiftUm(
 	// pixel axes and the stage axes - averaging only the diagonal (X.x, Y.y) terms silently
 	// assumes zero rotation, and is wrong (by a large, rotation-dependent factor - up to totally
 	// collapsing to ~0 at 90 degrees) whenever the two objectives' optical paths actually
-	// introduce different image rotations, which is exactly what previously produced a grossly
-	// inflated "estimated magnification change" (and the resulting nonsense multi-hundred-um
-	// shift, since the two images were then rescaled to the wrong relative size before matching)
-	// even with two independently-verified-correct per-objective pixel-scale calibrations.
+	// introduce different image rotations.
 	auto referencePixelSizeUm = ScaleCalibrationHelper::isotropicPixelPitchUm(referenceScale);
 	auto targetPixelSizeUm = ScaleCalibrationHelper::isotropicPixelPitchUm(targetScale);
 	if (referencePixelSizeUm <= 0.0 || targetPixelSizeUm <= 0.0) {
@@ -1368,10 +1346,9 @@ void ScaleCalibration::captureFovOffsetReferenceImage(bool resetAccumulatedSampl
 		"fovReference_slot" + std::to_string(m_scanControl->getActiveObjectiveSlot()));
 	// Read directly from this slot's own stored calibration (ScanControl::m_objectiveCalibrations),
 	// not the "currently active" mirror (getScaleCalibration()) - the mirror is only guaranteed
-	// in sync immediately after a slot *change* observed via handleObjectiveSlotObserved(); reading
-	// it here made this measurement depend on that timing/backend-specific signal path instead of
-	// on the actually-registered per-slot calibration, which is what previously caused a spurious
-	// "no pixel-scale calibration" failure even when one had genuinely been loaded for this slot.
+	// in sync immediately after a slot *change* observed via handleObjectiveSlotObserved(), so
+	// reading it here would make this measurement depend on that timing/backend-specific signal
+	// path instead of on the actually-registered per-slot calibration.
 	auto activeCalibration = m_scanControl->getObjectiveCalibration(m_scanControl->getActiveObjectiveSlot());
 	m_fovReferenceScaleCalibration = activeCalibration;
 	m_fovReferenceObjectiveName = activeCalibration.objectiveName;

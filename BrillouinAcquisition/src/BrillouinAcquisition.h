@@ -233,7 +233,16 @@ private:
 
 	QCPGraph* m_positionScannerMarker{ nullptr };
 	POINT2 m_positionScanner{ -1, -1 };
+	// The objective slot m_positionScanner (raw pixels) was last placed under - persisted
+	// alongside it and used to gate restoring it at the next startup (see
+	// ScanControl::setPendingRestoredMarker()): a marker is only meaningful for the specific
+	// objective it was located under, never inferred for a different one. Kept in step with
+	// the active objective by drawPositionScannerMarker(), which runs on every marker move.
+	int m_positionScannerObjectiveSlot{ -1 };
+	// Armed state of the two laser-marker buttons - see setLaserPositionLocationArmed()/
+	// setRelocateFocusMarkerArmed(). Mutually exclusive: arming one always disarms the other.
 	bool m_locatePositionScanner{ false };
+	bool m_relocatePositionScanner{ false };
 	BrightfieldViewRotation m_brightfieldViewRotation{ BrightfieldViewRotation::Rot0 };
 	bool m_brightfieldMirrorHorizontal{ false };
 	bool m_brightfieldMirrorVertical{ false };
@@ -849,7 +858,7 @@ private slots:
 	void on_stepsY_valueChanged(int);
 	void on_stepsZ_valueChanged(int);
 	void on_showOverlay_stateChanged(int);
-	void AOI_changed(const std::vector<POINT3>& orderedPositions);
+	void AOI_changed(const std::vector<POINT3>& orderedPositions, bool isAbsolute);
 	void excludedAOI_changed(const std::vector<POINT3>& excludedPositions);
 	void on_scaleCalibrationChanged(const std::vector<POINT2>& positions);
 	void on_gridOffsetChanged(POINT2 offsetUm, bool positionIsAbsolute);
