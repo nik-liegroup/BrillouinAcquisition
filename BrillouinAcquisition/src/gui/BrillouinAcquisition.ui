@@ -4681,8 +4681,33 @@ border: none;</string>
               <height>20</height>
              </size>
             </property>
+            <property name="toolTip">
+             <string>Locate the laser spot (initial setup)</string>
+            </property>
             <property name="text">
              <string>O</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="relocateFocusMarker_brightfield">
+            <property name="minimumSize">
+             <size>
+              <width>30</width>
+              <height>20</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>30</width>
+              <height>20</height>
+             </size>
+            </property>
+            <property name="toolTip">
+             <string>Relocate the laser spot for the current objective, keeping the grid fixed</string>
+            </property>
+            <property name="text">
+             <string/>
             </property>
            </widget>
           </item>
@@ -5177,6 +5202,7 @@ border: none;</string>
   <tabstop>fluoBrightfieldPreview</tabstop>
   <tabstop>fluoBrightfieldStart</tabstop>
   <tabstop>addFocusMarker_brightfield</tabstop>
+  <tabstop>relocateFocusMarker_brightfield</tabstop>
  </tabstops>
  <resources>
   <include location="../../BrillouinAcquisition.qrc"/>

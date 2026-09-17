@@ -622,6 +622,8 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 	// set up laser focus marker
 	ui->addFocusMarker_brightfield->setIcon(m_icons.fluoBlue);
 	ui->addFocusMarker_brightfield->setText("");
+	ui->relocateFocusMarker_brightfield->setIcon(m_icons.fluoGreen);
+	ui->relocateFocusMarker_brightfield->setText("");
 	initializeLaserPositionLocation();
 
 	updateBrillouinSettings();
@@ -1086,10 +1088,13 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 
 	// If we currently select the new focus, don't move there
 	if (m_locatePositionScanner) {
-		relocateBeamKeepingGridFixed(positionInRawPix);
-		// Confirmed - disarm immediately so the button reverts to idle/blue and the next click
+		m_scanControl->locatePositionScanner(positionInRawPix);
+		// Confirmed - disarm immediately so the button reverts to idle and the next click
 		// resumes normal click-to-move, instead of relocating the marker again.
 		setLaserPositionLocationArmed(false);
+	} else if (m_relocatePositionScanner) {
+		relocateBeamKeepingGridFixed(positionInRawPix);
+		setRelocateFocusMarkerArmed(false);
 	} else {
 		auto xRange = m_ODTPlot.plotHandle->xAxis->range();
 		auto yRange = m_ODTPlot.plotHandle->yAxis->range();
@@ -2293,6 +2298,17 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 	}
 	ui->addFocusMarker_brightfield->setDisabled(running);
 
+	// The relocation button's whole point is compensating the relative-mode grid so it stays
+	// fixed - in absolute mode that compensation is a no-op (the absolute grid formula has no B
+	// term at all, see relocateBeamKeepingGridFixed()'s own comment), so there's nothing this
+	// button does differently from the plain marker button there - grey it out rather than offer
+	// a control with no distinguishing effect.
+	const auto relocateMarkerUnusable = running || m_Brillouin->settings.gridCoordinatesAbsolute;
+	if (relocateMarkerUnusable && m_relocatePositionScanner) {
+		setRelocateFocusMarkerArmed(false);
+	}
+	ui->relocateFocusMarker_brightfield->setDisabled(relocateMarkerUnusable);
+
 	ui->postCalibration->setDisabled(running);
 	ui->preCalibration->setDisabled(running);
 	ui->conCalibration->setDisabled(running);
@@ -2709,11 +2725,14 @@ void BrillouinAcquisition::applyGradient(const PLOT_SETTINGS& plotSettings) {
 }
 
 void BrillouinAcquisition::initializeLaserPositionLocation() {
-	// If the scanControl supports capability LaserScanner, there is no need to set the laser position manually.
+	// If the scanControl supports capability LaserScanner, there is no need to set the laser
+	// position manually - neither button applies (a galvo system steers the beam itself).
 	if (m_scanControl != nullptr && m_scanControl->supportsCapability(Capabilities::LaserScanner)) {
 		ui->addFocusMarker_brightfield->hide();
+		ui->relocateFocusMarker_brightfield->hide();
 	} else {
 		ui->addFocusMarker_brightfield->show();
+		ui->relocateFocusMarker_brightfield->show();
 	}
 }
 
@@ -2722,14 +2741,36 @@ void BrillouinAcquisition::on_addFocusMarker_brightfield_clicked() {
 	if (m_scanControl != nullptr && m_scanControl->supportsCapability(Capabilities::LaserScanner)) {
 		return;
 	}
+	// Plain, uncompensated relocation - initial one-time setup (or startup restore, via
+	// ScanControl::setPendingRestoredMarker()). The relative-mode grid follows B here, same as
+	// it always has (relative idle mode is not permanently sample-anchored - see the grid-math
+	// comment on ScanPlanner::buildLegacyCartesianPlan()). See on_relocateFocusMarker_brightfield_
+	// clicked() for the other, compensating button.
+	setLaserPositionLocationArmed(!m_locatePositionScanner);
+}
 
-	if (!m_locatePositionScanner) {
-		// Entering locate-mode redefines the beam-to-sample offset (B) for the objective that's
-		// active right now - it is a physical property of that objective's own optical path, not
-		// something a FOV-registration calibration can infer for a different one (see the grid-
-		// math comment on ScanPlanner::buildLegacyCartesianPlan()). Require an explicit
-		// acknowledgement before arming, the same way starting an absolute-mode grid with no
-		// FOV-offset calibration does (see Brillouin::startRepetitions()).
+void BrillouinAcquisition::setLaserPositionLocationArmed(bool armed) {
+	m_locatePositionScanner = armed;
+	if (armed) {
+		// The two relocation buttons are mutually exclusive - arming one cancels the other,
+		// so a subsequent image click always has exactly one unambiguous meaning.
+		setRelocateFocusMarkerArmed(false);
+	}
+	ui->addFocusMarker_brightfield->setIcon(m_icons.fluoBlue);
+	ui->addFocusMarker_brightfield->setText(armed ? "Ok" : "");
+}
+
+void BrillouinAcquisition::on_relocateFocusMarker_brightfield_clicked() {
+	if (m_scanControl != nullptr && m_scanControl->supportsCapability(Capabilities::LaserScanner)) {
+		return;
+	}
+	if (!m_relocatePositionScanner) {
+		// Redefines the beam-to-sample offset (B) for the objective that's active right now - it
+		// is a physical property of that objective's own optical path, not something a
+		// FOV-registration calibration can infer for a different one (see the grid-math comment
+		// on ScanPlanner::buildLegacyCartesianPlan()). Require an explicit acknowledgement before
+		// arming, the same way starting an absolute-mode grid with no FOV-offset calibration does
+		// (see Brillouin::startRepetitions()).
 		const auto reply = QMessageBox::warning(this, "Set laser spot",
 			"This will redefine the laser spot position for the currently active objective only.\n\n"
 			"It is NOT applied retroactively to any grid or points already measured with the "
@@ -2740,21 +2781,16 @@ void BrillouinAcquisition::on_addFocusMarker_brightfield_clicked() {
 			return;
 		}
 	}
-
-	setLaserPositionLocationArmed(!m_locatePositionScanner);
+	setRelocateFocusMarkerArmed(!m_relocatePositionScanner);
 }
 
-void BrillouinAcquisition::setLaserPositionLocationArmed(bool armed) {
-	m_locatePositionScanner = armed;
-	if (!armed) {
-		ui->addFocusMarker_brightfield->setIcon(m_icons.fluoBlue);
-		ui->addFocusMarker_brightfield->setText("");
-	} else {
-		// Green while armed, distinct from the blue marker icon shown the rest of the time, so
-		// it's visually obvious a relocation is in progress and the next click will move it.
-		ui->addFocusMarker_brightfield->setIcon(m_icons.fluoGreen);
-		ui->addFocusMarker_brightfield->setText("Ok");
+void BrillouinAcquisition::setRelocateFocusMarkerArmed(bool armed) {
+	m_relocatePositionScanner = armed;
+	if (armed) {
+		setLaserPositionLocationArmed(false);
 	}
+	ui->relocateFocusMarker_brightfield->setIcon(m_icons.fluoGreen);
+	ui->relocateFocusMarker_brightfield->setText(armed ? "Ok" : "");
 }
 
 // Relocates the beam marker (B) the way an explicit, mid-session correction should behave: in
@@ -6989,9 +7025,10 @@ void BrillouinAcquisition::on_actionNew_Acquisition_triggered() {
 		+ QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss").toStdString()
 		+ ".h5";
 
-	// Folder: whatever was last used this session, or the configured default save folder
-	// (File > Set Default Save Folder...) if nothing has been saved yet, or "." (the
-	// StoragePath default) if neither is set.
+	// Folder: whatever was last used (this session, or a previous one - m_storagePath.folder
+	// is restored from settings at startup, see readSettings()), or the explicitly configured
+	// default save folder (File > Set Default Save Folder...) if nothing has ever been saved,
+	// or "." (the StoragePath default) if neither is set.
 	if (tmpStorage.folder == "." && !m_defaultAcquisitionFolder.empty()) {
 		tmpStorage.folder = m_defaultAcquisitionFolder;
 	}
@@ -7008,6 +7045,7 @@ void BrillouinAcquisition::on_actionNew_Acquisition_triggered() {
 	}
 
 	m_storagePath = splitFilePath(fullPath);
+	rememberAcquisitionFolder(m_storagePath.folder);
 
 	QMetaObject::invokeMethod(
 		m_acquisition,
@@ -7016,6 +7054,17 @@ void BrillouinAcquisition::on_actionNew_Acquisition_triggered() {
 		},
 		Qt::AutoConnection
 	);
+}
+
+// Persists the folder a Brillouin file was just saved to or opened from, so the next
+// New/Open Acquisition dialog (this session or after a restart, via m_storagePath.folder
+// restored in readSettings()) proposes it automatically, with no separate "set default"
+// step required. Written immediately, the same way on_actionSetDefaultAcquisitionFolder_
+// triggered() persists its own folder - both are standalone File-menu actions, not
+// settings-dialog fields, so there is no "Apply" click for either to wait for.
+void BrillouinAcquisition::rememberAcquisitionFolder(const std::string& folder) {
+	QSettings settings(QSettings::IniFormat, QSettings::UserScope, kSettingsOrg, kSettingsApp);
+	settings.setValue("last-acquisition-folder", QString::fromStdString(folder));
 }
 
 void BrillouinAcquisition::on_actionSetDefaultAcquisitionFolder_triggered() {
@@ -7044,6 +7093,7 @@ void BrillouinAcquisition::on_actionOpen_Acquisition_triggered() {
 	}
 
 	m_storagePath = splitFilePath(fullPath);
+	rememberAcquisitionFolder(m_storagePath.folder);
 
 	QMetaObject::invokeMethod(
 		m_acquisition,
@@ -7097,6 +7147,7 @@ void BrillouinAcquisition::writeSettings() {
 		kSettingsOrg, kSettingsApp);
 
 	settings.setValue("default-acquisition-folder", QString::fromStdString(m_defaultAcquisitionFolder));
+	settings.setValue("last-acquisition-folder", QString::fromStdString(m_storagePath.folder));
 
 	auto brillouinCamera = QString{};
 	switch (m_cameraBrillouinType) {
@@ -7270,6 +7321,7 @@ void BrillouinAcquisition::readSettings() {
 		kSettingsOrg, kSettingsApp);
 
 	m_defaultAcquisitionFolder = settings.value("default-acquisition-folder", "").toString().toStdString();
+	m_storagePath.folder = settings.value("last-acquisition-folder", m_storagePath.folder).toString().toStdString();
 
 	settings.beginGroup("devices");
 	QVariant BrillouinCam = settings.value("brillouin-camera");
