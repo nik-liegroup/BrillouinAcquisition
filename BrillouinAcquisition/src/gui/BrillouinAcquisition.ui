@@ -2230,7 +2230,7 @@ QTabBar::tab:!selected {
                         <property name="maximumSize">
                          <size>
                           <width>16777215</width>
-                          <height>155</height>
+                          <height>205</height>
                          </size>
                         </property>
                         <property name="title">
@@ -2292,6 +2292,42 @@ QTabBar::tab:!selected {
                           </widget>
                          </item>
                          <item row="2" column="0" colspan="2">
+                          <widget class="QCheckBox" name="useBackgroundRoiMaskCheckbox">
+                           <property name="text">
+                            <string>Use background ROI</string>
+                           </property>
+                          </widget>
+                         </item>
+                         <item row="3" column="0">
+                          <widget class="QPushButton" name="drawBackgroundRoiButton">
+                           <property name="minimumSize">
+                            <size>
+                             <width>76</width>
+                             <height>24</height>
+                            </size>
+                           </property>
+                           <property name="text">
+                            <string>Draw bg. ROI</string>
+                           </property>
+                           <property name="checkable">
+                            <bool>true</bool>
+                           </property>
+                          </widget>
+                         </item>
+                         <item row="3" column="1">
+                          <widget class="QPushButton" name="clearBackgroundRoiButton">
+                           <property name="minimumSize">
+                            <size>
+                             <width>76</width>
+                             <height>24</height>
+                            </size>
+                           </property>
+                           <property name="text">
+                            <string>Clear bg. ROI</string>
+                           </property>
+                          </widget>
+                         </item>
+                         <item row="4" column="0" colspan="2">
                           <widget class="QCheckBox" name="absoluteGridCheckbox">
                            <property name="toolTip">
                             <string>Use the current software home as the shifted absolute x/y/z origin when enabled.</string>
@@ -2301,7 +2337,7 @@ QTabBar::tab:!selected {
                            </property>
                           </widget>
                          </item>
-                         <item row="3" column="0" colspan="2">
+                         <item row="5" column="0" colspan="2">
                           <widget class="QCheckBox" name="gridHysteresisCompensationCheckbox">
                            <property name="toolTip">
                             <string>Approach each grid point from a consistent direction to cancel stage backlash (extra move + settle per point). Uncheck for faster stepping if your stage doesn't need it.</string>
@@ -2314,7 +2350,7 @@ QTabBar::tab:!selected {
                            </property>
                           </widget>
                          </item>
-                         <item row="4" column="0" colspan="2">
+                         <item row="6" column="0" colspan="2">
                           <widget class="QCheckBox" name="doseProtectionCheckbox">
                            <property name="toolTip">
                             <string>Keep the beam block closed by default and only open it for a short margin around each actual camera exposure - not just during stage travel, but between frames at the same point, during a per-point brightfield capture, and everywhere else nothing is integrating. No-op if this scan controller has no Beam Block element.</string>

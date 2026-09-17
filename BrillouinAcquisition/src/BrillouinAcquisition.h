@@ -149,6 +149,15 @@ private:
 	// settings/file - a per-session convenience only.
 	std::vector<POINT2> m_lastClearedRoiPolygonUm;
 	bool m_lastClearedRoiUseMask{ false };
+	// Background ROI: a second, independent polygon (Brillouin::backgroundGridPoints()) edited
+	// with its own controls, mirroring the main ROI's above exactly - see RoiTarget/
+	// mainRoiTarget()/backgroundRoiTarget() for how the shared editing/preview/clear logic is
+	// written once and reused for both instead of being duplicated here.
+	QCheckBox* m_useBackgroundRoiMaskCheckbox{ nullptr };
+	QAbstractButton* m_editBackgroundRoiCheckbox{ nullptr };
+	QPushButton* m_clearBackgroundRoiButton{ nullptr };
+	std::vector<POINT2> m_lastClearedBackgroundRoiPolygonUm;
+	bool m_lastClearedBackgroundRoiUseMask{ false };
 	QCheckBox* m_useSurfaceFollowCheckbox{ nullptr };
 	QSpinBox* m_preScanXYBinSpinBox{ nullptr };
 	QSpinBox* m_additionalBoundaryPointsSpinBox{ nullptr };
@@ -217,6 +226,12 @@ private:
 
 	QCPGraph* m_positionScannerMarker{ nullptr };
 	POINT2 m_positionScanner{ -1, -1 };
+	// The objective slot m_positionScanner (raw pixels) was last placed under - persisted
+	// alongside it and used to gate restoring it at the next startup (see
+	// ScanControl::setPendingRestoredMarker()): a marker is only meaningful for the specific
+	// objective it was located under, never inferred for a different one. Kept in step with
+	// the active objective by drawPositionScannerMarker(), which runs on every marker move.
+	int m_positionScannerObjectiveSlot{ -1 };
 	bool m_locatePositionScanner{ false };
 	BrightfieldViewRotation m_brightfieldViewRotation{ BrightfieldViewRotation::Rot0 };
 	bool m_brightfieldMirrorHorizontal{ false };
@@ -238,6 +253,46 @@ private:
 	// having deliberately unchecked it. Lets that same auto-disable be auto-undone once the
 	// polygon becomes valid again, without fighting a genuine user choice.
 	bool m_roiMaskAutoDisabled{ false };
+	// Background ROI's own counterparts of the four members directly above - see RoiTarget.
+	QCPCurve* m_backgroundRoiPolygonMarker{ nullptr };
+	int m_draggedBackgroundRoiVertexIndex{ -1 };
+	bool m_draggingBackgroundRoiVertex{ false };
+	bool m_backgroundRoiMaskAutoDisabled{ false };
+
+	// Bundles everything one ROI polygon editor (checkbox + draw button + clear button + click/
+	// drag handling + preview overlay) needs, so that logic is written once in the .cpp
+	// (updateRoiPolygonPreviewFor(), clearRoiPolygonFor(), quickClearRoiPolygonFor(),
+	// addRoiPolygonPointFor(), tryEnableRoiMaskFor(), updateRoiMaskCheckboxStateFor()) and
+	// shared between the main ROI and the background ROI, which are otherwise identical except
+	// for which polygon/flag/widgets/color they operate on. mainRoiTarget()/backgroundRoiTarget()
+	// build one of these fresh from the relevant members on demand - it's just a parameter
+	// bundle, never stored.
+	struct RoiTarget {
+		std::vector<POINT2>* polygon;
+		bool* useMask;
+		bool* autoDisabled;
+		QCheckBox* useMaskCheckbox;
+		QAbstractButton* editCheckbox;
+		QPushButton* clearButton;
+		std::vector<POINT2>* lastCleared;
+		bool* lastClearedUseMask;
+		QCPCurve** marker;
+		bool* draggingVertex;
+		int* draggedVertexIndex;
+		QColor color;
+		QString clearLabel;
+		QString resetLabel;
+		QString label;	// "ROI" / "background ROI" - used in warnings/tooltips/status messages
+	};
+	RoiTarget mainRoiTarget();
+	RoiTarget backgroundRoiTarget();
+	void updateRoiPolygonPreviewFor(const RoiTarget& target);
+	void clearRoiPolygonFor(const RoiTarget& target);
+	void quickClearRoiPolygonFor(const RoiTarget& target);
+	void addRoiPolygonPointFor(const RoiTarget& target, POINT2 positionInUm);
+	bool tryEnableRoiMaskFor(const RoiTarget& target);
+	void updateRoiMaskCheckboxStateFor(const RoiTarget& target);
+	void updateDraggedRoiVertex(const RoiTarget& target, QMouseEvent* event);
 	std::vector<POINT3> m_positionsMicrometer;	// [µm]		Positions to raster, relative to current start point
 	// The mode m_positionsMicrometer was actually computed under - set by AOI_changed() from
 	// the flag that travels with Brillouin::s_orderedPositionsChanged() (see its own comment).
@@ -245,6 +300,11 @@ private:
 	// a new view transform (rotation/mirror) rather than react to freshly computed ones - those
 	// have no fresh mode of their own to pass.
 	bool m_positionsMicrometerIsAbsolute{ false };
+	// Set true the first time AOI_changed() actually populates m_positionsMicrometer, so an
+	// empty vector can be told apart from "no grid computed yet" (falls back to a raw
+	// xSteps*ySteps*zSteps estimate) vs. "computed, and an ROI mask legitimately excludes every
+	// point" (should estimate ~0, not the raw grid size) - see updateEstimatedAcquisitionTime().
+	bool m_positionsComputed{ false };
 	std::vector<POINT2> m_positionsPixel;		// [pix]	Positions to raster
 	// Grid points the ROI mask excludes from the actual scan - preview-only (see
 	// ScanPlannerOutput::excludedPositionsAbsolute/Relative), shown as the red "outside ROI"

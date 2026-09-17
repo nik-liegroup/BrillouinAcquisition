@@ -542,7 +542,10 @@ private:
 	// surfacePreScanGridXY() (the GUI's live preview), so the two can never drift apart -
 	// see planPositionToGridFrame()'s comment for why that matters here specifically.
 	std::vector<POINT2> additionalBoundaryXYPoints(int count) const;
-	// Background reference points: an xy grid at the SAME spacing as the main scan's x/y steps
+	// Background reference points are calibration/sanity-check spectra (e.g. a water
+	// Brillouin-shift check), not sample measurements - they get their own HDF5 group and
+	// "Background" channel label precisely so they're never mistaken for, or counted alongside,
+	// the actual sample grid. An xy grid at the SAME spacing as the main scan's x/y steps
 	// (xMax-xMin)/(xSteps-1), but confined to settings.backgroundRoiPolygonUm's own bounding
 	// box (which can sit anywhere, including entirely outside the main grid's xMin/xMax/
 	// yMin/yMax) and masked to that polygon - deliberately NOT the same rectangle the main grid

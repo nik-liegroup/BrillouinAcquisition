@@ -254,6 +254,22 @@ void Brillouin::startRepetitions() {
 		}
 	}
 
+	// An ROI mask that excludes every grid point is a legitimate "measure nothing" result (see
+	// ScanPlanner::buildLegacyCartesianPlan()) - refuse to start rather than silently running an
+	// acquisition that arms the camera/storage and then measures zero points. Recompute here
+	// (cheap, pure settings math) rather than trusting whatever m_orderedPositions last held, so
+	// this reflects the ROI/grid exactly as currently configured.
+	if (m_settings.useRoiMask) {
+		updatePositions();
+		if (m_orderedPositions.empty()) {
+			qWarning(logWarning()) << "Brillouin::startRepetitions: refusing to start - the ROI mask "
+				"excludes every grid point, so there is nothing to measure.";
+			m_acquisition->disableMode(ACQUISITION_MODE::BRILLOUIN);
+			setAcquisitionStatus(ACQUISITION_STATUS::ABORTED);
+			return;
+		}
+	}
+
 	// If the repetition timer is running already, we stop the next repetition
 	if (m_repetitionTimer != nullptr && m_repetitionTimer->isActive()) {
 		m_repetitionTimer->stop();
@@ -511,11 +527,8 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 		m_scanControl->setRLShutterOpen(false);
 		// Always back to m_startPosition ("wherever the stage physically was right before
 		// Start" - see acquire()), in both modes - the operator wants to end up back where they
-		// started measuring from, not at the grid's mathematical origin. A previous version of
-		// this went to resolvedGridOriginUm() in absolute mode instead, on the theory that
-		// m_startPosition wasn't a meaningful place to return to there - that was wrong: by
-		// request, "come back to where I started, like relative mode" is the desired behavior
-		// unconditionally.
+		// started measuring from, not at the grid's mathematical origin, unconditionally
+		// (including absolute mode, by request).
 		m_scanControl->setPositionCompensated(m_startPosition);
 		m_scanControl->enableMeasurementMode(false);
 		QMetaObject::invokeMethod(
@@ -729,15 +742,6 @@ void Brillouin::updatePositions() {
 	m_excludedPositions = std::move(plan.excludedPositionsAbsolute);
 	m_excludedPositionsRelative = std::move(plan.excludedPositionsRelative);
 
-	// [GRIDDIAG] Temporary - tracing the absolute/relative switch bug end-to-end. This runs
-	// synchronously on Brillouin's own thread (invoked via QMetaObject::invokeMethod from the
-	// checkbox toggle handler), so m_settings.gridCoordinatesAbsolute here is whatever the GUI
-	// thread had set at the moment the queued call was actually dequeued - compare this
-	// timestamp/mode against the "[GRIDDIAG] absoluteGridCheckbox toggled" line to see the real
-	// queuing delay for a given repro.
-	qInfo(logInfo()) << "[GRIDDIAG] updatePositions(): gridCoordinatesAbsolute=" << m_settings.gridCoordinatesAbsolute
-		<< " orderedPositions.size()=" << m_orderedPositions.size()
-		<< " orderedPositionsRelative.size()=" << m_orderedPositionsRelative.size();
 	if (m_settings.gridCoordinatesAbsolute) {
 		emit(s_orderedPositionsChanged(m_orderedPositions, true));
 		emit(s_excludedPositionsChanged(m_excludedPositions));
@@ -775,8 +779,8 @@ bool Brillouin::remapProxyRoi(
 	}
 	if (from.widthPhysical <= 0 || from.heightPhysical <= 0 || to.widthPhysical <= 0 || to.heightPhysical <= 0) {
 		// Missing physical geometry (e.g. a settings file saved before this existed) -
-		// fall back to the old, origin-blind proportional rescale. Still wrong whenever
-		// the two frames don't share a sensor origin, same as before this function existed.
+		// fall back to an origin-blind proportional rescale. Still wrong whenever the two
+		// frames don't share a sensor origin.
 		const auto scaleX = (double)to.width / from.width;
 		const auto scaleY = (double)to.height / from.height;
 		outLeft = (int)std::lround(roiLeft * scaleX);
@@ -923,9 +927,8 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 
 std::pair<std::vector<double>, std::vector<double>> Brillouin::coarseXYSamples(int bin) const {
 	const auto xyBin = std::max(1, bin);
-	// Every `bin`-th index of the real, dense grid - not an independent re-interpolation
-	// (see the header comment on this function for why that used to be able to place a
-	// coarse point where no real measurement point would be).
+	// Every `bin`-th index of the real, dense grid - not an independent re-interpolation, which
+	// could place a coarse point where no real measurement point exists.
 	auto pickEveryNth = [xyBin](double lo, double hi, int steps) {
 		auto dense = simplemath::linspace(lo, hi, std::max(1, steps));
 		std::vector<double> coarse;
@@ -1190,20 +1193,11 @@ POINT3 Brillouin::resolvedGridOriginUm() const {
 	// offset, not x/y, never needs its own separate z-specific handling the way x/y's FOV offset
 	// does. m_settings.absoluteGridOriginUm.z itself is still written (it round-trips through
 	// preservePhysicalGridForAbsoluteMode()'s POINT3 assignment) but is otherwise unused.
-	const auto offsetUm = m_scanControl ? m_scanControl->getActiveObjectiveFovOffsetUm() : POINT2{ 0, 0 };
 	const POINT3 result{
 		m_settings.absoluteGridOriginUm.x,
 		m_settings.absoluteGridOriginUm.y,
 		m_startPosition.z
 	};
-	// [FOVDIAG] Temporary - re-investigating the absolute-mode objective-switch FOV translation
-	// bug, plus a new report that a subsequent Start in RELATIVE mode no longer tracks the
-	// marker. Remove once resolved.
-	qInfo(logInfo()) << "[FOVDIAG] resolvedGridOriginUm(): absoluteGridOriginUm=("
-		<< m_settings.absoluteGridOriginUm.x << "," << m_settings.absoluteGridOriginUm.y << ","
-		<< m_settings.absoluteGridOriginUm.z << ") fovOffset=(" << offsetUm.x << "," << offsetUm.y
-		<< ") m_startPosition=(" << m_startPosition.x << "," << m_startPosition.y << "," << m_startPosition.z
-		<< ") -> result=(" << result.x << "," << result.y << "," << result.z << ")";
 	return result;
 }
 
@@ -1768,11 +1762,9 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	std::map<std::pair<int, int>, double> zCenterByXYIndex;
 	std::set<std::pair<int, int>> interpolatedXYIndices;
 
-	// This is an O(dense grid x coarse grid) pass - for a fine dense grid it can take a
-	// while, and previously ran with no progress feedback and no abort check at all, which
-	// made the UI look hung right after the coarse scan finished (status bar just stopped
-	// updating) with no way to cancel out of it. Reported on the same channel as the coarse
-	// scan above, so it shows up in the same place instead of looking like a stall.
+	// This is an O(dense grid x coarse grid) pass - for a fine dense grid it can take a while,
+	// so progress and the abort flag are both checked/reported here too, on the same channel as
+	// the coarse scan above, so it shows up in the same place instead of looking like a stall.
 	for (gsl::index yi{ 0 }; yi < (gsl::index)yDense.size(); yi++) {
 		if (m_abort) {
 			return {};
@@ -1894,12 +1886,11 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	// before this loop touches it (zOrigin + the grid's own zMin..zMax offset for this
 	// z-index), so subtracting it back out recovers that same, still user-configured,
 	// zMin..zMax-relative offset. Re-adding it onto the found surface below is what makes
-	// "surface found at 100, zMin/zMax -10/20" actually scan 90..120: the surface takes
-	// over the role zOrigin used to play, with the offset itself left untouched. Note this
-	// intentionally no longer derives the range from the separate, UI-inaccessible
-	// surfaceFollowHalfRangeUm field (always-symmetric around the surface and defaulted to
-	// +/-10 um regardless of the grid's own zMin/zMax) - that silently ignored zMin/zMax
-	// whenever surface follow was on.
+	// "surface found at 100, zMin/zMax -10/20" actually scan 90..120: the found surface
+	// replaces zOrigin as the reference point, with the zMin..zMax offset itself left untouched.
+	// Deliberately not derived from the separate, UI-inaccessible surfaceFollowHalfRangeUm field
+	// (always-symmetric around the surface and defaulted to +/-10 um regardless of the grid's
+	// own zMin/zMax), which would silently ignore zMin/zMax whenever surface follow is on.
 	const auto zOrigin = m_settings.gridCoordinatesAbsolute
 		? resolvedGridOriginUm().z
 		: m_startPosition.z;
@@ -1951,12 +1942,9 @@ void Brillouin::applySurfaceFollowPlan() {
 
 /*
  * Flat plan z for this z-index - origin.z + directionsZ[zIndex], always, regardless of
- * surface-follow state or grid coordinate mode. This used to be overridden by whichever
- * already-measured neighbor was closest in xy when surface-follow was on, using that
- * neighbor's surface-corrected z - which is exactly why the overview z looked "random":
- * it tracked one arbitrary neighbor instead of the plane. Surface-tracking for the
- * overview image is now expressed exclusively through overviewStackZAbs()'s full-stack
- * mode; "sampled grid points" always uses this flat value directly, never a stack.
+ * surface-follow state or grid coordinate mode. Surface-tracking for the overview image is
+ * expressed exclusively through overviewStackZAbs()'s full-stack mode; "sampled grid points"
+ * always uses this flat value directly, never a stack.
  */
 double Brillouin::overviewFlatZAbs(int zIndex, const std::vector<double>& directionsZ) const {
 	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
@@ -2099,7 +2087,7 @@ std::vector<POINT2> Brillouin::overviewTileCentersXY() const {
 	// positions are pure grid offsets with NO origin added (m_orderedPositionsRelative
 	// cancels the start position out entirely - see ScanPlanner::buildLegacyCartesianPlan).
 	// Using m_startPosition here instead of {0,0,0} - or m_orderedPositions instead of
-	// m_orderedPositionsRelative - used to bake in whatever m_startPosition was last left at
+	// m_orderedPositionsRelative - would bake in whatever m_startPosition was last left at
 	// (stale, or {0,0,0} before any acquisition ever ran), which doesn't match how the
 	// crosses are actually positioned in relative/live-preview mode at all.
 	const auto& positions = m_settings.gridCoordinatesAbsolute ? m_orderedPositions : m_orderedPositionsRelative;
@@ -2588,7 +2576,7 @@ void Brillouin::captureOverviewBrightfield(
 	// filter-wheel/mirror move) on every single one of those calls was pure wasted time; the
 	// caller enters brightfield preset once before the whole batch and leaves it once after -
 	// see its own comment. The RL-shutter-closed invariant below still has to hold for the
-	// whole batch either way, just no longer needs restating per image.
+	// whole batch either way, it just doesn't need restating per image.
 	m_scanControl->setPositionCompensated(position);
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
@@ -2837,8 +2825,9 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		// The same display-only FOV translation is applied before and after Start.
 		auto stagePosition = m_scanControl->getPosition();
 		m_startPosition = POINT3{ stagePosition.x, stagePosition.y, stagePosition.z };
-		// Enable measurement mode (so the AOI display is correct).
-		m_scanControl->enableMeasurementMode(true);
+		// Enable measurement mode (so the AOI display is correct) - reuse the position just
+		// read above instead of letting this re-query hardware.
+		m_scanControl->enableMeasurementMode(true, m_startPosition);
 		// Dose protection's resting state is "closed" - acquireAndorFrame() is solely
 		// responsible for opening it, right around each actual exposure, for the rest of
 		// this acquisition. This one-time close only matters for whatever state the beam
@@ -2873,10 +2862,10 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	applySurfaceFollowPlan();
 
 	// applySurfaceFollowPlan() can come back early (aborted mid-interpolation, see
-	// runSurfacePreScan()) without that having been checked here before - which used to mean
-	// an abort during that pass was silently ignored: this would still move the stage back,
-	// switch to brightfield and enter WAITFORSURFACEREVIEW with an incomplete surface map,
-	// exactly as if the scan had finished normally.
+	// runSurfacePreScan()) - check for that here, or an abort during that pass would go
+	// unnoticed: this would still move the stage back, switch to brightfield and enter
+	// WAITFORSURFACEREVIEW with an incomplete surface map, exactly as if the scan had finished
+	// normally.
 	if (m_abort) {
 		abortMode(m_acquisition->m_storage);
 		return;
@@ -3012,11 +3001,10 @@ void Brillouin::approachGridPosition(const POINT3& position) {
 	if (!m_scanControl) {
 		return;
 	}
-	// Dose protection does NOT hook in here any more - it used to close the beam block
-	// around a move and reopen it afterward, but that only protected against travel time,
-	// not every other non-integrating moment (between two frames at the same point,
-	// per-point brightfield capture, a live calibration switch, ...). See
-	// acquireAndorFrame() for the current approach: the beam is closed by default and only
+	// Dose protection does NOT hook in here - closing the beam block only around a move would
+	// protect against travel time but not every other non-integrating moment (between two
+	// frames at the same point, per-point brightfield capture, a live calibration switch, ...).
+	// See acquireAndorFrame() for the current approach: the beam is closed by default and only
 	// opened for the narrow window immediately around an actual camera exposure, so a move
 	// (like any other non-integrating moment) is simply left in whatever state the last
 	// acquireAndorFrame() call left it - already closed, with nothing extra to do here.
@@ -3074,11 +3062,10 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	storage->setPositions("grid-coordinates-absolute", std::vector<double>{ m_settings.gridCoordinatesAbsolute ? 1.0 : 0.0 }, 1, originDims);
 	// The objective/FOV-offset context this specific run actually resolved its absolute-mode
 	// origin against (see resolvedGridOriginUm()) - "absolute-origin-x/y/z" above is always the
-	// raw, unmodified reference-frame value the operator set. This used to also be duplicated
-	// here as "objective-*" datasets; it now lives only in writeScaleCalibration()'s
-	// scaleCalibration group (objectiveSlot, hasFovOffset, fovOffset, missingOffsetAccepted, ...),
-	// which every acquisition mode writes through, not just this one - see
-	// AcquisitionMode::writeScaleCalibration() and H5BM::setScaleCalibration().
+	// raw, unmodified reference-frame value the operator set. That context lives in
+	// writeScaleCalibration()'s scaleCalibration group (objectiveSlot, hasFovOffset, fovOffset,
+	// missingOffsetAccepted, ...), which every acquisition mode writes through, not just this
+	// one - see AcquisitionMode::writeScaleCalibration() and H5BM::setScaleCalibration().
 
 	// Explicitly store which grid points were sampled to keep metadata consistent for sparse ROI scans.
 	// Must match the [zSteps, xSteps, ySteps] row-major layout the "x"/"y"/"z" datasets above use
@@ -3488,6 +3475,15 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 
 		const auto zIndex = std::clamp(m_orderedIndices[ll].z, 0, std::max(0, m_settings.zSteps - 1));
 
+		// Actual stage position for this point's own spectrum dataset, read back once right
+		// before its exposures start (same rawPositionToGridFrame() convention as every other
+		// stored position, see its own comment) - the stage has already been moved into place,
+		// either before this loop (ll == 0) or at the end of the previous iteration.
+		const auto targetPositionForPoint = rawPositionToGridFrame(m_orderedPositions[ll]);
+		const auto stagePositionForPoint = m_scanControl
+			? rawPositionToGridFrame(m_scanControl->getPosition())
+			: targetPositionForPoint;
+
 		std::vector<std::byte> images(m_settings.camera.roi.bytesPerFrame * m_settings.camera.frameCount);
 
 		// "During" per-point brightfield: started here, before this point's Brillouin
@@ -3554,7 +3550,10 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				*images_,
 				m_settings.camera.exposureTime,
 				m_settings.camera.gain,
-				m_settings.camera.roi
+				m_settings.camera.roi,
+				targetPositionForPoint,
+				(bool)m_scanControl,
+				stagePositionForPoint
 			);
 
 			QMetaObject::invokeMethod(
@@ -3575,7 +3574,10 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				*images_,
 				m_settings.camera.exposureTime,
 				m_settings.camera.gain,
-				m_settings.camera.roi
+				m_settings.camera.roi,
+				targetPositionForPoint,
+				(bool)m_scanControl,
+				stagePositionForPoint
 			);
 
 			QMetaObject::invokeMethod(
@@ -3596,7 +3598,10 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				*images_,
 				m_settings.camera.exposureTime,
 				m_settings.camera.gain,
-				m_settings.camera.roi
+				m_settings.camera.roi,
+				targetPositionForPoint,
+				(bool)m_scanControl,
+				stagePositionForPoint
 			);
 
 			QMetaObject::invokeMethod(

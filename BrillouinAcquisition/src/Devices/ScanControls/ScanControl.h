@@ -169,11 +169,20 @@ public slots:
 	// (or searched automatically by the software later on).
 	void locatePositionScanner(POINT2 positionLaserPix);
 
+	// A marker position (raw pixels) restored from settings at startup is only meaningful for
+	// the specific objective it was saved under (a different objective's real beam offset can't
+	// be inferred from it - see the large comment on ScanPlanner::buildLegacyCartesianPlan() for
+	// why). Call this instead of locatePositionScanner() directly when restoring: it defers
+	// applying the position until objectiveSlot is actually active and its calibration has
+	// finished loading (both are asynchronous at startup), and simply never applies it if a
+	// different objective ends up active instead.
+	void setPendingRestoredMarker(POINT2 positionPix, int objectiveSlot);
+
 	bool supportsCapability(Capabilities);
 
 	void setPositionInPix(POINT2);
 
-	void enableMeasurementMode(bool enabled);
+	void enableMeasurementMode(bool enabled, POINT3 startPosition = {});
 
 	void setPreset(ScanPreset presetType);
 	Preset getPreset(ScanPreset);
@@ -334,6 +343,14 @@ private:
 	// startup, not an operator-driven switch, and must not fire s_objectiveSwitched()/a warning.
 	int m_activeObjectiveSlot{ -1 };
 	bool m_objectiveOffsetWarningAccepted{ false };
+
+	// A marker position (raw pixels) restored from settings at startup, not yet applied because
+	// it's only valid for the specific objective it was saved under - see
+	// setPendingRestoredMarker()/tryApplyPendingRestoredMarker().
+	bool m_hasPendingRestoredMarker{ false };
+	POINT2 m_pendingRestoredMarkerPix{};
+	int m_pendingRestoredMarkerObjectiveSlot{ -1 };
+	void tryApplyPendingRestoredMarker();
 
 private slots:
 	// elementPositionChanged(DeviceElement, double) only fires for a software-commanded

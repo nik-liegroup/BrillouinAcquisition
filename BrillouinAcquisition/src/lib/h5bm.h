@@ -16,8 +16,10 @@ struct IMAGE {
 public:
 	template <typename T>
 	IMAGE(int indX, int indY, int indZ, int rank, hsize_t* dims, const std::string& date, const std::vector<T>& data,
-		double exposure = 0, double gain = 1, const CAMERA_ROI& roi = CAMERA_ROI{}) :
-		indX(indX), indY(indY), indZ(indZ), rank(rank), dims(dims), date(date), data(data), exposure(exposure), gain(gain), roi(roi) {};
+		double exposure = 0, double gain = 1, const CAMERA_ROI& roi = CAMERA_ROI{},
+		POINT3 targetPosition = POINT3{ 0, 0, 0 }, bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 }) :
+		indX(indX), indY(indY), indZ(indZ), rank(rank), dims(dims), date(date), data(data), exposure(exposure), gain(gain), roi(roi),
+		targetPosition(targetPosition), hasStagePosition(hasStagePosition), stagePosition(stagePosition) {};
 
 	const int indX;
 	const int indY;
@@ -29,6 +31,14 @@ public:
 	const double exposure;
 	const double gain;
 	const CAMERA_ROI roi;
+	// The grid point this spectrum targeted, and - only when hasStagePosition is set - the
+	// actual stage position read back right before capture (which can differ slightly due to
+	// hysteresis compensation/backlash) - same convention as FLUOIMAGE's own targetPosition/
+	// stagePosition, so a spectrum and its sibling per-point brightfield image (if any) can be
+	// cross-checked directly.
+	const POINT3 targetPosition;
+	const bool hasStagePosition;
+	const POINT3 stagePosition;
 };
 
 template <typename T>
@@ -560,7 +570,8 @@ void H5BM::setPayloadData(IMAGE<T>* image) {
 	auto name = calculateIndex(image->indX, image->indY, image->indZ);
 
 	setData(image->data, name, m_Brillouin.groups->payloadData, image->rank, image->dims, image->date,
-		"", NULL, "", image->exposure, image->gain, image->roi);
+		"", NULL, "", image->exposure, image->gain, image->roi,
+		true, image->targetPosition, image->hasStagePosition, image->stagePosition);
 }
 
 template <typename T>

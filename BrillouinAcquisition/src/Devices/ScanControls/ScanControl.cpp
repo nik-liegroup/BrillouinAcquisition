@@ -145,14 +145,38 @@ void ScanControl::locatePositionScanner(POINT2 positionLaserPix) {
 	// m_positionScanner itself stays an objective-invariant quantity (the real beam alignment
 	// relative to the stage, not tied to whichever objective happened to be active when this
 	// was last located) - see announcePositionScanner()/getPositionOffset() for the matching
-	// "+ fovOffsetUm(active)" used everywhere this gets converted back to a pixel/raw-frame
-	// value. On the reference objective (fovOffsetUm == {0,0}) this is a no-op, which is why
-	// the previous, uncorrected version of this line looked fine there and only broke down on
-	// every other objective.
+	// "+ fovOffsetUm(active)" used everywhere this gets converted back to a pixel/raw-frame value.
 	m_positionScanner = pixToMicroMeter(positionLaserPix) - getActiveObjectiveFovOffsetUm();
 
 	announcePositionScanner();
 	announcePositions();
+}
+
+void ScanControl::setPendingRestoredMarker(POINT2 positionPix, int objectiveSlot) {
+	m_pendingRestoredMarkerPix = positionPix;
+	m_pendingRestoredMarkerObjectiveSlot = objectiveSlot;
+	m_hasPendingRestoredMarker = true;
+	tryApplyPendingRestoredMarker();
+}
+
+void ScanControl::tryApplyPendingRestoredMarker() {
+	if (!m_hasPendingRestoredMarker) {
+		return;
+	}
+	if (m_activeObjectiveSlot != m_pendingRestoredMarkerObjectiveSlot) {
+		// Not this objective (yet, or ever, this session) - stay pending rather than guessing.
+		// If the operator switches back to the objective this was saved under, it will apply
+		// then; if not, it's correctly left unset instead of reinterpreted under the wrong
+		// calibration.
+		return;
+	}
+	if (!hasObjectiveCalibration(m_activeObjectiveSlot)) {
+		// Slot matches, but its calibration hasn't finished loading yet (loadCalibrationForSlot()
+		// is asynchronous) - setObjectiveCalibration() retries this once it has.
+		return;
+	}
+	m_hasPendingRestoredMarker = false;
+	locatePositionScanner(m_pendingRestoredMarkerPix);
 }
 
 bool ScanControl::supportsCapability(Capabilities capability) {
@@ -188,18 +212,18 @@ void ScanControl::setPositionInPix(POINT2 positionPix) {
 	movePositionCompensated(positionMicrometer);
 }
 
-void ScanControl::enableMeasurementMode(bool enabled) {
-	// When enabling the measurement mode, we have to safe the start position,
-	// so the AOI positions display has the correct origin.
+void ScanControl::enableMeasurementMode(bool enabled, POINT3 startPosition) {
+	// The caller already reads the stage+scanner position once for its own start anchor
+	// (Brillouin::m_startPosition) - reuse that exact reading here instead of querying
+	// hardware a second time, so the two anchors can never diverge (stage jitter, or a
+	// transient readback error on only one of the two calls).
+	//
+	// getActiveObjectiveFovOffsetUm() is deliberately not folded in here - a measurement must
+	// target exactly the real coordinates verified while idle, on any objective. This
+	// m_startPosition is ScanControl's own display-only copy (feeds getPositionOffset()'s
+	// measurementMode branch), kept numerically in step with Brillouin::m_startPosition.
 	if (enabled) {
-		auto pos = getPosition();
-		// getActiveObjectiveFovOffsetUm() is deliberately NOT folded in here (it used to be) -
-		// see Brillouin::resolvedGridOriginUm()'s own comment for the full reasoning
-		// (operator-confirmed): a measurement must target exactly the real coordinates verified
-		// while idle, on any objective. This m_startPosition is ScanControl's own display-only
-		// copy (feeds getPositionOffset()'s measurementMode branch), kept numerically in step
-		// with Brillouin::m_startPosition, which now also excludes this term.
-		m_startPosition = POINT2{ pos.x, pos.y };
+		m_startPosition = POINT2{ startPosition.x, startPosition.y };
 	}
 	m_measurementMode = enabled;
 }
@@ -209,12 +233,12 @@ void ScanControl::setPreset(ScanPreset presetType) {
 	getElements();
 
 	for (gsl::index ii{ 0 }; ii < m_deviceElements.size(); ii++) {
-		// "RL Shutter" is deliberately excluded from this automatic per-preset forcing -
+		// "RL Shutter" is deliberately excluded from this automatic per-preset forcing, so that
 		// switching optical presets (e.g. for a brightfield preview, calibration, or scale
-		// calibration) used to silently clobber whatever the user had it manually set to,
-		// even outside of an actual acquisition. It's either left exactly as the user set
-		// it (manual beampath button), or explicitly driven by acquisition code that
-		// actually needs a specific state - see setRLShutterOpen().
+		// calibration) never clobbers whatever the user had it manually set to outside of an
+		// actual acquisition. It's either left exactly as the user set it (manual beampath
+		// button), or explicitly driven by acquisition code that needs a specific state - see
+		// setRLShutterOpen().
 		if (m_deviceElements[ii].name == "RL Shutter") {
 			continue;
 		}
@@ -388,47 +412,31 @@ void ScanControl::announceSavedPositionsNormalized() {
 
 void ScanControl::setScaleCalibration(const ScaleCalibrationData& scaleCalibration) {
 	// m_positionScanner is deliberately left as-is (same [um] value) across a scale-calibration
-	// change - it marks a real, physical, sample-relative location (e.g. where the beam
-	// actually lands on this particular dish, which can be off-axis for sample-dependent
-	// optical reasons - refraction/meniscus/mounting, not a fixed camera pixel), not a pixel on
-	// the sensor. An earlier version of this function reprojected it through the old/new pixel
-	// round-trip instead ("posScanner = microMeterToPix(m_positionScanner); ... m_positionScanner
-	// = pixToMicroMeter(posScanner);"), which kept the marker's ON-SCREEN PIXEL position fixed
-	// across an objective switch - but for an off-axis, physically-real marker position, that
+	// change - it marks a real, physical, sample-relative location (e.g. where the beam actually
+	// lands on this particular dish, which can be off-axis for sample-dependent optical reasons -
+	// refraction/meniscus/mounting, not a fixed camera pixel), not a pixel on the sensor.
+	// Reprojecting it through a pixel round-trip on every calibration change would keep its
+	// ON-SCREEN pixel position fixed across an objective switch, but for an off-axis marker that
 	// silently rescales its true [um] distance from the optical axis by the two objectives'
-	// magnification ratio (e.g. a real 100um offset at 10x became only 50um at 20x), corrupting
-	// every relative-mode grid point anchored to it (see getPositionOffset()) by that same wrong
-	// factor. Leaving the [um] value untouched here means the marker (and everything anchored to
-	// it) now transforms exactly like any other physical location - through microMeterToPix()
-	// under whichever calibration is active - so it correctly reappears further from/closer to
-	// center on screen after a magnification change, instead of silently drifting in physical
-	// terms while looking visually unchanged.
+	// magnification ratio, corrupting every relative-mode grid point anchored to it (see
+	// getPositionOffset()). Leaving the [um] value untouched means the marker (and everything
+	// anchored to it) transforms exactly like any other physical location - through
+	// microMeterToPix() under whichever calibration is active.
 	m_scaleCalibration = scaleCalibration;
 
 	calculateBounds();
 	calculateHomePositionBounds();
-	// A pure objective/calibration switch changes neither m_positionStage nor
-	// m_positionScanner, so announcePositions() (the usual path to this) never runs and its own
-	// s_gridOffsetChanged emission is skipped - leaving the UI-side cached offset snapshot
-	// (BrillouinAcquisition::m_currentGridOffsetUm) stale at the pre-switch value even though
-	// convertPositionsToPix() below is about to (re)send pixel positions computed from the new,
-	// post-switch offset. update_AOI_preview()'s ROI-colored overlay path in particular relies
-	// entirely on that cached snapshot rather than positions it can trust to be fresh (see its
-	// own comment on why), so a switch with an ROI active would keep redrawing it as if the
-	// pre-switch FOV offset were still active. Emitted first, same as announcePositions(), so a
-	// queued receiver processes the offset snapshot before the pixel positions that were
-	// computed from the exact same offset.
+	// A pure objective/calibration switch changes neither m_positionStage nor m_positionScanner,
+	// so announcePositions() (the usual path to this pair of emissions) never runs on its own -
+	// emit the same pair here too, in the same order (offset before pixel positions, so a queued
+	// receiver processes the offset snapshot the pixel positions were computed from before the
+	// positions themselves - see BrillouinAcquisition::on_gridOffsetChanged()).
 	emit(s_gridOffsetChanged(getPositionOffset(m_AOI_positionsAbsolute), m_AOI_positionsAbsolute));
 	emit(s_scaleCalibrationChanged(convertPositionsToPix()));
 	// The marker's own drawn pixel (announcePositionScanner()'s microMeterToPix(m_positionScanner))
 	// is calibration-dependent too, exactly like the AOI/grid positions convertPositionsToPix()
-	// just re-emitted above - but unlike those, nothing was re-announcing it here. Without this,
-	// the blue marker stayed frozen at its PRE-switch screen position (still reflecting the old
-	// calibration) until something unrelated happened to call announcePositionScanner() again
-	// (e.g. manually re-locating it), even though m_positionScanner's own [um] value and every
-	// click-to-move/grid computation using it were already correct immediately after the switch.
-	// That stale on-screen marker is what made a correctly-targeted click-to-move look wrong -
-	// the operator was aiming at a pixel the software no longer agreed was the marker's location.
+	// just re-emitted above - re-announce it here so it doesn't stay at its pre-switch screen
+	// position until something else happens to call announcePositionScanner() again.
 	announcePositionScanner();
 }
 
@@ -443,6 +451,7 @@ void ScanControl::setObjectiveCalibration(int slot, const ObjectiveCalibrationDa
 	if (slot == m_activeObjectiveSlot) {
 		setScaleCalibration(calibration);
 	}
+	tryApplyPendingRestoredMarker();
 }
 
 bool ScanControl::hasObjectiveCalibration(int slot) const {
@@ -554,9 +563,8 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 
 	auto hasCalibration = hasObjectiveCalibration(newSlot);
 	if (hasCalibration) {
-		// setScaleCalibration() itself now leaves m_positionScanner's [um] value untouched - see
-		// its own comment for why a pixel-preserving reprojection was wrong for a physically-real,
-		// possibly off-axis marker position.
+		// setScaleCalibration() leaves m_positionScanner's [um] value untouched - see its own
+		// comment for why.
 		setScaleCalibration(getObjectiveCalibration(newSlot));
 	}
 	auto calibration = getObjectiveCalibration(newSlot);
@@ -564,10 +572,8 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 	auto offsetUm = hasFovOffset ? calibration.fovOffsetUm : POINT2{ 0, 0 };
 	auto offsetSigmaUm = hasFovOffset ? calibration.fovOffsetSigmaUm : 0.0;
 
-	// No longer shifts m_startPosition here on a switch (adjustStartPositionForFovOffsetChange()
-	// used to be called for exactly that) - m_startPosition no longer has any FOV-offset baked
-	// into it at all (see enableMeasurementMode()'s own comment), so there is nothing left to
-	// correct when the active objective's FOV-offset changes.
+	// m_startPosition has no FOV-offset baked into it at all (see enableMeasurementMode()'s own
+	// comment), so there is nothing to correct here when the active objective's FOV-offset changes.
 
 	// previousSlot == -1 is the initial hardware read at startup/connect, not an
 	// operator-driven switch - do not warn about it (there is nothing to have translated
@@ -575,6 +581,8 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 	if (previousSlot >= 0) {
 		emit(s_objectiveSwitched(previousSlot, newSlot, hasCalibration, hasFovOffset, offsetUm, offsetSigmaUm));
 	}
+
+	tryApplyPendingRestoredMarker();
 }
 
 std::vector<POINT2> ScanControl::getPositionsPix(const std::vector<POINT3>& positionsMicrometer) {
@@ -586,15 +594,6 @@ std::vector<POINT2> ScanControl::getPositionsPix(const std::vector<POINT3>& posi
 	// in case the scale calibration changes
 	m_AOI_positions = positionsMicrometer;
 	m_AOI_positionsAbsolute = positionsAreAbsolute;
-	// [GRIDDIAG] Temporary - this is the only place m_AOI_positionsAbsolute is ever written.
-	// Every later announcePositions() (fired by ANY stage/scanner move, not just an explicit
-	// grid recompute) reuses this cached flag together with m_AOI_positions - so if this call
-	// doesn't happen again after a mode toggle (e.g. the queued updatePositions() call never
-	// arrives, or arrives but AOI_changed() isn't reached for some reason), every subsequent
-	// stage move keeps redrawing the grid under the OLD mode indefinitely, not just for one
-	// transient frame.
-	qInfo(logInfo()) << "[GRIDDIAG] getPositionsPix(): positionsAreAbsolute=" << positionsAreAbsolute
-		<< " count=" << positionsMicrometer.size();
 
 	return convertPositionsToPix();
 };
@@ -703,14 +702,6 @@ void ScanControl::announcePositions() {
 
 	m_positionStageOld = m_positionStage;
 	m_positionScannerOld = m_positionScanner;
-	// [GRIDDIAG] Temporary - every repaint of the grid overlay in response to a stage/scanner
-	// move goes through here, using whatever m_AOI_positionsAbsolute currently holds (see
-	// getPositionsPix()'s own comment on why that can go stale). Logging it here catches the
-	// "moved after switching mode and the grid panned using the WRONG offset formula" case,
-	// which the mode-toggle-time logs alone wouldn't show.
-	qInfo(logInfo()) << "[GRIDDIAG] announcePositions(): m_AOI_positionsAbsolute=" << m_AOI_positionsAbsolute
-		<< " m_positionStage=(" << m_positionStage.x << "," << m_positionStage.y << ")"
-		<< " m_positionScanner=(" << m_positionScanner.x << "," << m_positionScanner.y << ")";
 
 	// Emitted first so a queued receiver processes the offset snapshot before the pixel
 	// positions that were computed from the exact same offset (see s_gridOffsetChanged()).
@@ -730,12 +721,6 @@ void ScanControl::announcePositionScanner() {
 	// reference objective (fovOffsetUm == {0,0}) and landed off by fovOffsetUm on every other
 	// one - exactly the "close but not exact" / clicking-misses-only-on-20x symptom.
 	const auto positionScannerPix = microMeterToPix(m_positionScanner + getActiveObjectiveFovOffsetUm());
-	// [GRIDDIAG] Temporary - the marker's own drawn pixel, logged every time it's (re)announced,
-	// so it can be directly compared in the log against the grid dots' pixels from
-	// convertPositionsToPix()/AOI_changed() at the same point in time, instead of only trusting
-	// that the two formulas agree on paper.
-	qInfo(logInfo()) << "[GRIDDIAG] announcePositionScanner(): positionScannerPix=("
-		<< positionScannerPix.x << "," << positionScannerPix.y << ")";
 	emit(s_positionScannerChanged(positionScannerPix));
 }
 
@@ -759,21 +744,5 @@ std::vector<POINT2> ScanControl::convertPositionsToPix() {
 			return this->microMeterToPix(POINT2{ point.x, point.y } + offset);
 		}
 	);
-	// [GRIDDIAG] Temporary - this is the ONLY place the actual on-screen grid-dot pixels are
-	// computed, and it runs on every objective/calibration switch via setScaleCalibration()
-	// DIRECTLY (s_scaleCalibrationChanged(convertPositionsToPix())), completely bypassing
-	// getPositionsPix()/AOI_changed() - a pure objective switch never touches those, since the
-	// underlying µm-space grid (m_AOI_positions) hasn't changed, only the pixel mapping has.
-	// getPositionsPix()'s own log only ever fires from the OTHER call path (a real grid
-	// recompute), so it was blind to exactly the case being reported: grid dots moving wrong
-	// specifically WHILE switching objectives. Logging every point (not just the first) here so
-	// a systematic error (e.g. only some points shift, or all shift by the wrong amount/sign)
-	// is visible instead of hidden behind a single sampled value.
-	auto dbg = qInfo(logInfo());
-	dbg << "[GRIDDIAG] convertPositionsToPix(): m_AOI_positionsAbsolute=" << m_AOI_positionsAbsolute
-		<< " offset=(" << offset.x << "," << offset.y << ") count=" << (int)positionsPix.size() << " pix=";
-	for (const auto& p : positionsPix) {
-		dbg << "(" << p.x << "," << p.y << ")";
-	}
 	return positionsPix;
 }
