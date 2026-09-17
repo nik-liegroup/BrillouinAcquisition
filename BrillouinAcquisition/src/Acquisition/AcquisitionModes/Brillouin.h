@@ -483,6 +483,19 @@ public slots:
 	// grid from the dense grid's pixel-space bounding box, which could disagree with
 	// where the pre-scan really goes (e.g. once ROI masking shrinks that bounding box).
 	std::vector<POINT2> surfacePreScanGridXY() const;
+	// Background reference points are calibration/sanity-check spectra (e.g. a water
+	// Brillouin-shift check), not sample measurements - they get their own HDF5 group and
+	// "Background" channel label precisely so they're never mistaken for, or counted alongside,
+	// the actual sample grid. An xy grid at the SAME spacing as the main scan's x/y steps
+	// (xMax-xMin)/(xSteps-1), but confined to settings.backgroundRoiPolygonUm's own bounding
+	// box (which can sit anywhere, including entirely outside the main grid's xMin/xMax/
+	// yMin/yMax) and masked to that polygon - deliberately NOT the same rectangle the main grid
+	// uses. Plan-frame, same convention as roiPolygonUm/coarseXYSamples(). Empty whenever
+	// useBackgroundRoiMask is off or the polygon has fewer than 3 points. Public (unlike
+	// captureBackgroundPoints() below) so the GUI's own preview
+	// (BrillouinAcquisition::updateBackgroundPositionsPreview()) can show the same points
+	// without duplicating this computation.
+	std::vector<POINT2> backgroundGridPoints() const;
 	// Total number of BF overview images that saveOverviewBrightfieldPerZ will capture
 	// across the whole grid (all z-planes combined) - 0 if that option is off. Used by the
 	// GUI's estimated-acquisition-time calculation, which needs this count without
@@ -542,16 +555,6 @@ private:
 	// surfacePreScanGridXY() (the GUI's live preview), so the two can never drift apart -
 	// see planPositionToGridFrame()'s comment for why that matters here specifically.
 	std::vector<POINT2> additionalBoundaryXYPoints(int count) const;
-	// Background reference points are calibration/sanity-check spectra (e.g. a water
-	// Brillouin-shift check), not sample measurements - they get their own HDF5 group and
-	// "Background" channel label precisely so they're never mistaken for, or counted alongside,
-	// the actual sample grid. An xy grid at the SAME spacing as the main scan's x/y steps
-	// (xMax-xMin)/(xSteps-1), but confined to settings.backgroundRoiPolygonUm's own bounding
-	// box (which can sit anywhere, including entirely outside the main grid's xMin/xMax/
-	// yMin/yMax) and masked to that polygon - deliberately NOT the same rectangle the main grid
-	// uses. Plan-frame, same convention as roiPolygonUm/coarseXYSamples(). Empty whenever
-	// useBackgroundRoiMask is off or the polygon has fewer than 3 points.
-	std::vector<POINT2> backgroundGridPoints() const;
 	// Captures one real Brillouin spectrum (same frameCount/exposure/gain as the main grid) at
 	// every (backgroundGridPoints() x, z-step) combination, AFTER the main grid's own
 	// measurement loop finishes - a separate, self-contained pass, not interleaved with it and
