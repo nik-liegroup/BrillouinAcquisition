@@ -747,11 +747,6 @@ void Brillouin::updatePositions() {
 	}
 }
 
-void Brillouin::adjustStartPositionForFovOffsetChange(POINT2 deltaUm) {
-	m_startPosition.x += deltaUm.x;
-	m_startPosition.y += deltaUm.y;
-}
-
 void Brillouin::setCurrentFocusAsZOrigin() {
 	if (!m_scanControl) {
 		return;
@@ -1180,7 +1175,18 @@ POINT3 Brillouin::rawPositionToGridFrame(const POINT3& rawPosition) const {
 }
 
 POINT3 Brillouin::resolvedGridOriginUm() const {
-	const auto offsetUm = m_scanControl ? m_scanControl->getActiveObjectiveFovOffsetUm() : POINT2{ 0, 0 };
+	// getActiveObjectiveFovOffsetUm() is deliberately NOT folded in here (it used to be). This
+	// origin feeds the REAL absolute-mode measurement target (see updatePositions()'s
+	// plannerInput.absoluteGridOriginUm, which becomes the actual stage command in
+	// runMeasurementPhase()), not just the display - baking a live FOV-offset into it meant
+	// pressing Start on a non-reference objective introduced a real, physical stage jump
+	// relative to whatever was visually verified while idle (idle display never included this
+	// term - see ScanControl::getPositionOffset()'s own comment), because updatePositions()
+	// re-bakes fresh right before the measurement loop starts. Operator-confirmed: a
+	// measurement must target exactly the same real coordinates that were set up while idle, on
+	// any objective - FOV-offset is a real but small, known residual in where the BEAM points,
+	// relevant only to how the marker itself is drawn, not to where the stage actually goes.
+	//
 	// z is deliberately NOT part of the absolute/relative origin split x/y gets above -
 	// "absolute grid coordinates" only ever meant "x/y anchored to a fixed physical point,
 	// independent of wherever Start happens to be pressed", which is meaningless for z: there
@@ -1192,9 +1198,10 @@ POINT3 Brillouin::resolvedGridOriginUm() const {
 	// offset, not x/y, never needs its own separate z-specific handling the way x/y's FOV offset
 	// does. m_settings.absoluteGridOriginUm.z itself is still written (it round-trips through
 	// preservePhysicalGridForAbsoluteMode()'s POINT3 assignment) but is otherwise unused.
+	const auto offsetUm = m_scanControl ? m_scanControl->getActiveObjectiveFovOffsetUm() : POINT2{ 0, 0 };
 	const POINT3 result{
-		m_settings.absoluteGridOriginUm.x + offsetUm.x,
-		m_settings.absoluteGridOriginUm.y + offsetUm.y,
+		m_settings.absoluteGridOriginUm.x,
+		m_settings.absoluteGridOriginUm.y,
 		m_startPosition.z
 	};
 	// [FOVDIAG] Temporary - re-investigating the absolute-mode objective-switch FOV translation
@@ -2834,16 +2841,18 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 
 	// get current stage position
 	if (m_scanControl) {
-		// Fold in the active objective's own FOV-center offset at capture time - see
-		// ScanControl::enableMeasurementMode()'s identical treatment of its own (separate)
-		// m_startPosition for the full reasoning: relative-mode targets are "current stage
-		// position, translated by the active objective's FOV offset, plus the grid offset", one
-		// formula always, not "current stage position" alone with the FOV term only ever applied
-		// as a later correction on a subsequent switch. adjustStartPositionForFovOffsetChange()
-		// keeps this invariant intact across any later switch/FOV-offset save.
+		// getActiveObjectiveFovOffsetUm() is deliberately NOT folded in here (it used to be).
+		// m_startPosition is the real anchor relative-mode targets are built from
+		// (updatePositions() -> ScanPlanner: relativePosition's origin), so baking a live
+		// FOV-offset into it meant a measurement on a non-reference objective targeted a
+		// different real location than whatever was visually verified while idle just before
+		// Start - a real, physical stage jump, not a display artifact. See
+		// Brillouin::resolvedGridOriginUm()'s own comment for the matching absolute-mode fix and
+		// the full reasoning (operator-confirmed): the stage must go exactly where the idle
+		// preview showed, on any objective - FOV-offset only ever describes where the marker
+		// itself should be drawn.
 		auto stagePosition = m_scanControl->getPosition();
-		auto fovOffsetUm = m_scanControl->getActiveObjectiveFovOffsetUm();
-		m_startPosition = POINT3{ stagePosition.x + fovOffsetUm.x, stagePosition.y + fovOffsetUm.y, stagePosition.z };
+		m_startPosition = POINT3{ stagePosition.x, stagePosition.y, stagePosition.z };
 		// Enable measurement mode (so the AOI display is correct).
 		m_scanControl->enableMeasurementMode(true);
 		// Dose protection's resting state is "closed" - acquireAndorFrame() is solely

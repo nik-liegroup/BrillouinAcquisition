@@ -193,21 +193,13 @@ void ScanControl::enableMeasurementMode(bool enabled) {
 	// so the AOI positions display has the correct origin.
 	if (enabled) {
 		auto pos = getPosition();
-		// Fold in the active objective's own FOV-center offset at capture time - relative-mode
-		// targets are "current stage position, translated by the active objective's FOV offset,
-		// plus the grid offset" (one formula, always), not "current stage position" alone with
-		// the FOV term only ever applied as a later correction on a subsequent switch. Without
-		// this, a grid defined and started while already sitting on a non-reference objective
-		// (no switch involved at all) would silently target the wrong physical location by
-		// exactly that objective's own offset. adjustStartPositionForFovOffsetChange() keeps this
-		// invariant (m_startPosition == stage position + active objective's FOV offset) intact
-		// across any later switch/FOV-offset save.
-		auto fovOffsetUm = getActiveObjectiveFovOffsetUm();
-		m_startPosition = POINT2{ pos.x + fovOffsetUm.x, pos.y + fovOffsetUm.y };
-		// [FOVDIAG] Temporary - see the matching logs in getPositionOffset(). Remove once resolved.
-		qInfo(logInfo()) << "[FOVDIAG] enableMeasurementMode(true): pos=(" << pos.x << "," << pos.y
-			<< ") fovOffset=(" << fovOffsetUm.x << "," << fovOffsetUm.y << ") -> m_startPosition=("
-			<< m_startPosition.x << "," << m_startPosition.y << ")";
+		// getActiveObjectiveFovOffsetUm() is deliberately NOT folded in here (it used to be) -
+		// see Brillouin::resolvedGridOriginUm()'s own comment for the full reasoning
+		// (operator-confirmed): a measurement must target exactly the real coordinates verified
+		// while idle, on any objective. This m_startPosition is ScanControl's own display-only
+		// copy (feeds getPositionOffset()'s measurementMode branch), kept numerically in step
+		// with Brillouin::m_startPosition, which now also excludes this term.
+		m_startPosition = POINT2{ pos.x, pos.y };
 	}
 	m_measurementMode = enabled;
 }
@@ -572,42 +564,16 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 	auto offsetUm = hasFovOffset ? calibration.fovOffsetUm : POINT2{ 0, 0 };
 	auto offsetSigmaUm = hasFovOffset ? calibration.fovOffsetSigmaUm : 0.0;
 
-	// See adjustStartPositionForFovOffsetChange()'s own doc comment for what m_startPosition
-	// means here and why this needs correcting on a switch.
-	if (previousSlot >= 0) {
-		auto previousCalibration = getObjectiveCalibration(previousSlot);
-		if (hasFovOffset && previousCalibration.hasFovOffset) {
-			adjustStartPositionForFovOffsetChange(POINT2{
-				offsetUm.x - previousCalibration.fovOffsetUm.x,
-				offsetUm.y - previousCalibration.fovOffsetUm.y
-			});
-		}
-	}
+	// No longer shifts m_startPosition here on a switch (adjustStartPositionForFovOffsetChange()
+	// used to be called for exactly that) - m_startPosition no longer has any FOV-offset baked
+	// into it at all (see enableMeasurementMode()'s own comment), so there is nothing left to
+	// correct when the active objective's FOV-offset changes.
 
 	// previousSlot == -1 is the initial hardware read at startup/connect, not an
 	// operator-driven switch - do not warn about it (there is nothing to have translated
 	// grids/ROIs relative to yet).
 	if (previousSlot >= 0) {
 		emit(s_objectiveSwitched(previousSlot, newSlot, hasCalibration, hasFovOffset, offsetUm, offsetSigmaUm));
-	}
-}
-
-void ScanControl::adjustStartPositionForFovOffsetChange(POINT2 deltaUm) {
-	// m_startPosition here is the AOI/grid-marker DISPLAY offset reference for relative-mode
-	// positions during an active/paused measurement (see getPositionOffset()'s measurement-mode
-	// branch: offset = m_startPosition - m_positionStage) - a different variable from
-	// Brillouin::m_startPosition (the actual measurement-target anchor, corrected separately via
-	// Brillouin::adjustStartPositionForFovOffsetChange()), but capturing the exact same physical
-	// stage position at the exact same moment (enableMeasurementMode(true) vs. Brillouin's own
-	// capture, both at "Start"). Without shifting this one too, the on-screen grid/AOI markers
-	// would keep showing the OLD (no-longer-correct) positions after the active objective's known
-	// FOV offset changes mid-run, even though the actual upcoming moves are already correctly
-	// re-targeted - i.e. the overlay would silently stop matching where the scan is actually
-	// about to measure. No-op outside measurement mode - nothing reads m_startPosition then, and
-	// it gets a fresh live capture the next time a measurement actually starts anyway.
-	if (m_measurementMode) {
-		m_startPosition.x += deltaUm.x;
-		m_startPosition.y += deltaUm.y;
 	}
 }
 
@@ -646,62 +612,65 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	// stage. What looks like "the marker moving through the grid" is actually the grid
 	// sliding past a fixed marker.
 	//
-	// getActiveObjectiveFovOffsetUm() means two different things depending on WHAT is being
-	// converted, which is why it's handled differently below instead of being a single global
-	// on/off:
+	// getActiveObjectiveFovOffsetUm() is added in the two idle branches below (live-preview
+	// relative, and idle absolute), never in either measurement-mode branch - it means two
+	// different things depending on what's being converted:
 	//
-	// - m_positionScanner (used by both relative branches) is stored with its CAPTURING
+	// - m_positionScanner (live-preview relative branch) is stored with its CAPTURING
 	// objective's own fovOffsetUm already subtracted out (see locatePositionScanner()) - it's
-	// only meaningful again once the CURRENTLY active objective's fovOffsetUm is added back, in
-	// EVERY relative branch, idle or not. This is not a measurement-time-only correction; it's
-	// how m_positionScanner's storage convention is defined, full stop.
+	// only meaningful again once the CURRENTLY active objective's fovOffsetUm is added back.
+	// This is how m_positionScanner's storage convention is defined, full stop - unrelated to
+	// measurement targeting, since idle-preview grid points don't go anywhere physically.
 	//
-	// - Absolute-mode targets (absoluteGridOriginUm + gridOffset) are pure stage-frame physical
-	// locations with no such convention - each objective's OWN scale calibration (independently
-	// measured, see setObjectiveCalibration()) is what correctly re-projects them to this
-	// objective's raw pixel frame, needing no extra term here. Unlike a previous revision of this
-	// branch, fovOffsetUm is NOT added again here even while measuring: resolvedGridOriginUm()
-	// already bakes the active objective's fovOffsetUm into the stored target exactly once (see
-	// its own comment), and that same value is what's being converted to a pixel right now -
-	// adding fovOffsetUm a second time here double-counted it, which is what made the grid
-	// overlay visibly jump away from the sample by a second, spurious fovOffsetUm the instant
-	// Start was pressed on a non-reference objective, even though the real stage target (which
-	// never went through this function) was already correct. Idle and measuring are identical
-	// for this reason - both just need "target minus current stage", nothing else.
+	// - Absolute targets and m_startPosition (both measurement-mode branches) are real
+	// stage-frame physical locations with no such convention, and no longer have any live
+	// fovOffsetUm folded in anywhere (see Brillouin::resolvedGridOriginUm() and
+	// Brillouin::acquire()'s own comments for the full reasoning, operator-confirmed): a
+	// measurement must target exactly the same real coordinates verified while idle, on any
+	// objective - pressing Start must never introduce a real stage jump just because the active
+	// objective has a nonzero calibrated FOV-offset. The marker (announcePositionScanner()) is
+	// the only thing that still shows fovOffsetUm - a real, small, known residual in where the
+	// BEAM points, which the currently-measured grid point may now sit slightly off from on a
+	// non-reference objective. That's an accepted, honest small gap, not a bug to chase by
+	// perturbing the real target.
+	//
+	// The idle absolute branch is the one exception that DOES need fovOffsetUm added, purely for
+	// display: resolvedGridOriginUm() itself is objective-invariant now (no fovOffsetUm baked
+	// in), so without this term here the idle preview would stop tracking the sample across an
+	// objective switch (the stored target doesn't move, but the live camera view really does
+	// shift by fovOffsetUm when the stage hasn't moved - see the operator's own physical
+	// explanation of why this term is real, not cosmetic). This never touches the real target -
+	// resolvedGridOriginUm() itself, which actually gets sent to the stage, is untouched by it.
 	auto offset = m_positionScanner + getActiveObjectiveFovOffsetUm();
 	if (positionIsAbsolute && m_measurementMode) {
 		offset = POINT2{} - m_positionStage;
 		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(measurementMode, absolute): m_positionStage=("
 			<< m_positionStage.x << "," << m_positionStage.y << ") m_positionScanner=("
-			<< m_positionScanner.x << "," << m_positionScanner.y << ") fovOffset(not applied, already baked into target)=("
+			<< m_positionScanner.x << "," << m_positionScanner.y << ") fovOffset(not applied)=("
 			<< getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
 			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
 	}
 	else if (positionIsAbsolute) {
-		// Idle (not measuring): no fovOffsetUm term - see this function's own top comment for
-		// why an absolute target needs none while idle, unlike m_positionScanner.
-		offset = POINT2{} - m_positionStage;
+		offset = POINT2{} - m_positionStage + getActiveObjectiveFovOffsetUm();
 		qInfo(logInfo()) << "[GRIDDIAG] getPositionOffset(idle, absolute): m_positionStage=("
-			<< m_positionStage.x << "," << m_positionStage.y << ") fovOffset(not applied)=("
+			<< m_positionStage.x << "," << m_positionStage.y << ") fovOffset(applied, display-only)=("
 			<< getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
 			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
 	}
 	// In measurement mode, the positions are shown relative to the start position.
 	else if (m_measurementMode) {
-		// m_startPosition is captured as getPosition(BOTH) (stage + scanner) PLUS the active
-		// objective's fovOffsetUm, in enableMeasurementMode() - i.e. it already has fovOffsetUm
-		// baked in exactly once (mirroring resolvedGridOriginUm()'s absolute-mode bake). Adding
-		// getActiveObjectiveFovOffsetUm() again here double-counted it (same bug as the absolute
-		// branch above - see this function's own top comment), so it is deliberately not added a
-		// second time. This is the literal formula from commit 0c70d11; adding a
-		// "- m_positionScanner" term here (as a previous revision of this function did) shifts
-		// the whole grid by the scanner offset instead of leaving it centered on the marker.
+		// m_startPosition is captured as getPosition(BOTH) (stage + scanner) in
+		// enableMeasurementMode(), but the scanner term cancels exactly the same way as
+		// above - only stage needs to be subtracted here. This is the literal formula from
+		// commit 0c70d11; adding a "- m_positionScanner" term here (as a previous revision of
+		// this function did) shifts the whole grid by the scanner offset instead of leaving it
+		// centered on the marker.
 		offset = m_startPosition - m_positionStage;
 		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(measurementMode, relative): m_startPosition=("
 			<< m_startPosition.x << "," << m_startPosition.y << ") m_positionStage=("
 			<< m_positionStage.x << "," << m_positionStage.y << ") m_positionScanner=("
 			<< m_positionScanner.x << "," << m_positionScanner.y
-			<< ") fovOffset(not applied, already baked into m_startPosition)=(" << getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
+			<< ") fovOffset(not applied)=(" << getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
 			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
 	}
 	// [GRIDDIAG] Temporary - the plain live-preview branch (not absolute, not mid-measurement)
