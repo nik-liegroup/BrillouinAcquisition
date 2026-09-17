@@ -201,9 +201,14 @@ public slots:
 	// manual beampath button uses, using the same "Close"=1/"Open"=2 convention every
 	// backend that has this element shares. No-op if this backend has no element named
 	// "Beam Block" (e.g. ZeissMTB_Erlangen2, which has no such element wired up) - returns
-	// false in that case so a caller (e.g. a dose-protection settle delay) can skip work
-	// that would only make sense if this actually did something.
+	// false in that case so a caller (e.g. Brillouin::acquireAndorFrame()'s dose protection)
+	// can fall back to setRLShutterOpen() instead.
 	bool setBeamBlockOpen(bool open);
+	// Side-effect-free check for the same element setBeamBlockOpen() looks for - lets a caller
+	// (e.g. Brillouin::acquire(), deciding whether to hold RL Shutter open for the whole run)
+	// know in advance whether setBeamBlockOpen() will actually do anything, without needing to
+	// call it just to probe.
+	bool hasBeamBlockElement() const;
 	void announcePosition();
 	void startAnnouncing();
 	void stopAnnouncing();

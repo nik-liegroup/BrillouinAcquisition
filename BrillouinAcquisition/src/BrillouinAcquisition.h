@@ -189,6 +189,13 @@ private:
 	QCPItemRect* ensureSpectralProxyRoiRect(int index);
 	void updateSpectralProxyRoiRect(int index);
 	void clearSpectralProxyRois();
+	// The spectral camera ROI to treat as "the current frame" for spectral-proxy-ROI drawing/
+	// display: m_deviceSettings.camera.roi (the live crop/zoom UI state) while idle/previewing -
+	// so the overlay tracks crop/zoom changes immediately instead of only at the next Start -
+	// and m_Brillouin->settings.camera.roi (the hardware-confirmed, Start-frozen copy) once a
+	// measurement is actually running, since m_deviceSettings.camera.roi only reflects what was
+	// requested, not necessarily what the driver actually applied.
+	CAMERA_ROI currentSpectralCameraRoi() const;
 	ScanControl::SCAN_DEVICE m_scanControllerType = ScanControl::SCAN_DEVICE::ZEISSECU;
 	ScanControl::SCAN_DEVICE m_scanControllerTypeTemporary = m_scanControllerType;
 
@@ -478,6 +485,8 @@ private slots:
 
 	void initializeLaserPositionLocation();
 	void on_addFocusMarker_brightfield_clicked();
+	void setLaserPositionLocationArmed(bool armed);
+	void relocateBeamKeepingGridFixed(POINT2 newMarkerPix);
 
 	void showEvent(QShowEvent* event);
 	void on_actionAbout_triggered();

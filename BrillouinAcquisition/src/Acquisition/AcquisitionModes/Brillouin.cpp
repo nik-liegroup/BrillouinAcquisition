@@ -525,6 +525,13 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 		m_scanControl->setPreset(ScanPreset::SCAN_LASEROFF);
 		// Acquisition is aborting - don't leave the RL shutter forced open.
 		m_scanControl->setRLShutterOpen(false);
+		// Dose protection can leave the Beam Block open if the abort landed between
+		// acquireAndorFrame()'s per-exposure open and close (e.g. mid-frameCount loop) - nothing
+		// else in this class ever closes it again, so it must happen here too, not just at
+		// normal end-of-run (see runMeasurementPhase()'s matching teardown).
+		if (m_settings.useDoseProtection) {
+			m_scanControl->setBeamBlockOpen(false);
+		}
 		// Always back to m_startPosition ("wherever the stage physically was right before
 		// Start" - see acquire()), in both modes - the operator wants to end up back where they
 		// started measuring from, not at the grid's mathematical origin, unconditionally
@@ -755,7 +762,14 @@ void Brillouin::setCurrentFocusAsZOrigin() {
 	if (!m_scanControl) {
 		return;
 	}
-	m_startPosition.z = m_scanControl->getPosition().z;
+	const auto currentZ = m_scanControl->getPosition().z;
+	if (m_settings.gridCoordinatesAbsolute) {
+		// Persistent, Start-independent - see resolvedGridOriginUm()'s own comment for why this
+		// (not m_startPosition.z) is what absolute mode actually reads.
+		m_settings.absoluteGridOriginUm.z = currentZ;
+	} else {
+		m_startPosition.z = currentZ;
+	}
 	updatePositions();
 }
 
@@ -1182,21 +1196,16 @@ POINT3 Brillouin::resolvedGridOriginUm() const {
 	// ScanControl::getPositionOffset() adds the active FOV translation only when
 	// projecting those targets into the camera image, both idle and measuring.
 	//
-	// z is deliberately NOT part of the absolute/relative origin split x/y gets above -
-	// "absolute grid coordinates" only ever meant "x/y anchored to a fixed physical point,
-	// independent of wherever Start happens to be pressed", which is meaningless for z: there
-	// is no separate scanner/stage-frame split for focus, and unlike x/y there is no per-
-	// objective FOV-center shift to compensate for either. z always uses m_startPosition.z -
-	// refreshed at every "Start" the same way relative mode's x/y already are, or on demand via
-	// setCurrentFocusAsZOrigin() ("Set plane", offered specifically while gridCoordinatesAbsolute
-	// is true and Set home is disabled) - so an objective switch that changes only the focus
-	// offset, not x/y, never needs its own separate z-specific handling the way x/y's FOV offset
-	// does. m_settings.absoluteGridOriginUm.z itself is still written (it round-trips through
-	// preservePhysicalGridForAbsoluteMode()'s POINT3 assignment) but is otherwise unused.
+	// z does not get its own absolute/relative *origin-anchoring* split the way x/y does (there's
+	// no per-objective FOV-center shift to compensate for in focus) - but it still needs to be
+	// Start-independent in absolute mode, the same way x/y's absoluteGridOriginUm is: relative
+	// mode re-anchors z fresh at every Start (m_startPosition.z), while absolute mode uses
+	// whatever z was last set via setCurrentFocusAsZOrigin() ("Set plane") and must survive an
+	// intervening Start untouched, exactly like absoluteGridOriginUm.x/y already do.
 	const POINT3 result{
 		m_settings.absoluteGridOriginUm.x,
 		m_settings.absoluteGridOriginUm.y,
-		m_startPosition.z
+		m_settings.gridCoordinatesAbsolute ? m_settings.absoluteGridOriginUm.z : m_startPosition.z
 	};
 	return result;
 }
@@ -2809,10 +2818,17 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		);
 		// set optical elements for brightfield/Brillouin imaging
 		m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
-		// Force the RL shutter open for the whole acquisition, regardless of whatever
-		// manual state the user left it in beforehand - see ScanControl::setPreset()'s
-		// comment on why this isn't handled by the preset table itself.
-		m_scanControl->setRLShutterOpen(true);
+		// Force the RL shutter open for the whole acquisition, regardless of whatever manual
+		// state the user left it in beforehand - see ScanControl::setPreset()'s comment on why
+		// this isn't handled by the preset table itself. Skipped when dose protection is on and
+		// this backend has no "Beam Block" element: acquireAndorFrame() then falls back to
+		// driving RL Shutter itself, per-exposure - forcing it open here for the whole run would
+		// immediately undo that per-exposure gating. Its resting state instead starts "closed"
+		// just below, matching the Beam Block case.
+		const auto doseProtectViaRLShutter = m_settings.useDoseProtection && !m_scanControl->hasBeamBlockElement();
+		if (!doseProtectViaRLShutter) {
+			m_scanControl->setRLShutterOpen(true);
+		}
 	} else {
 		m_abort = true;
 		return;
@@ -2832,9 +2848,12 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		// responsible for opening it, right around each actual exposure, for the rest of
 		// this acquisition. This one-time close only matters for whatever state the beam
 		// happened to be left in before "Start" (e.g. open from live preview) - after the
-		// first frame, it would already be closed anyway.
+		// first frame, it would already be closed anyway. Same fallback to RL Shutter as
+		// acquireAndorFrame() itself, on a backend with no Beam Block element.
 		if (m_settings.useDoseProtection) {
-			m_scanControl->setBeamBlockOpen(false);
+			if (!m_scanControl->setBeamBlockOpen(false)) {
+				m_scanControl->setRLShutterOpen(false);
+			}
 		}
 	} else {
 		m_abort = true;
@@ -2978,8 +2997,13 @@ void Brillouin::continueAfterSurfaceReview(bool fullGrid) {
 // full open-before/close-after cycle with no caller changes needed.
 //
 // No-op wrapper (just calls getImageForAcquisition() directly, no margin added, openBeam/
-// closeBeam ignored) if dose protection is off or this scan controller has no Beam Block
-// element - matching this class's pre-dose-protection behavior exactly in that case.
+// closeBeam ignored) if dose protection is off.
+//
+// setBeamBlockOpen() itself is a no-op (returns false) on any backend with no "Beam Block"
+// element (e.g. ZeissMTB_Erlangen2) - falls back to setRLShutterOpen() there, so dose protection
+// still actually gates the beam per-exposure on that class of rig instead of doing nothing at
+// all. See Brillouin::acquire()'s own comment for the matching change that keeps this fallback's
+// closes from being immediately undone by the "hold RL Shutter open for the whole run" call.
 void Brillouin::acquireAndorFrame(std::byte* buffer, bool openBeam, bool closeBeam) {
 	if (!m_andor) {
 		return;
@@ -2989,11 +3013,16 @@ void Brillouin::acquireAndorFrame(std::byte* buffer, bool openBeam, bool closeBe
 		constexpr auto kDoseProtectionOpenMarginMs = 20;
 		if (m_scanControl->setBeamBlockOpen(true)) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(kDoseProtectionOpenMarginMs));
+		} else {
+			m_scanControl->setRLShutterOpen(true);
+			std::this_thread::sleep_for(std::chrono::milliseconds(kDoseProtectionOpenMarginMs));
 		}
 	}
 	m_andor->getImageForAcquisition(buffer);
 	if (doseProtect && closeBeam) {
-		m_scanControl->setBeamBlockOpen(false);
+		if (!m_scanControl->setBeamBlockOpen(false)) {
+			m_scanControl->setRLShutterOpen(false);
+		}
 	}
 }
 
@@ -3705,6 +3734,11 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		m_scanControl->setPreset(ScanPreset::SCAN_LASEROFF);
 		// Acquisition has finished - don't leave the RL shutter forced open.
 		m_scanControl->setRLShutterOpen(false);
+		// See abortMode()'s identical call for why this is needed alongside the RL Shutter
+		// close above, not covered by it.
+		if (m_settings.useDoseProtection) {
+			m_scanControl->setBeamBlockOpen(false);
+		}
 
 		// Always back to m_startPosition, both modes - see abortMode()'s identical branch for
 		// why (by request: return to where the operator started measuring from, not the grid's

@@ -550,8 +550,9 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			const auto y1 = ui->customplot->yAxis->pixelToCoord(event->pos().y());
 
 			auto* mapData = m_BrillouinPlot.colorMap ? m_BrillouinPlot.colorMap->data() : nullptr;
-			const int frameW = mapData ? std::max(1, mapData->keySize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.width_binned);
-			const int frameH = mapData ? std::max(1, mapData->valueSize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.height_binned);
+			const auto liveRoi = currentSpectralCameraRoi();
+			const int frameW = mapData ? std::max(1, mapData->keySize()) : std::max(1, (int)liveRoi.width_binned);
+			const int frameH = mapData ? std::max(1, mapData->valueSize()) : std::max(1, (int)liveRoi.height_binned);
 			int cellX0{ 0 };
 			int cellY0{ 0 };
 			int cellX1{ 0 };
@@ -575,8 +576,10 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			// Absolute sensor position/size of the frame this ROI is being drawn against,
 			// so estimateFrameMetric() can remap it correctly even if the camera ROI's
 			// origin (not just its size) differs at measurement time - see the comment
-			// on surfaceProxyRoiFrameWidth in Brillouin.h.
-			const auto& currentRoi = m_Brillouin->settings.camera.roi;
+			// on surfaceProxyRoiFrameWidth in Brillouin.h. liveRoi (not
+			// m_Brillouin->settings.camera.roi) so this matches frameW/frameH above exactly -
+			// see currentSpectralCameraRoi()'s own comment.
+			const auto& currentRoi = liveRoi;
 			if (m_spectralProxyActiveRoiIndex == 1) {
 				m_Brillouin->settings.surfaceProxyRoi2Left = clampedLeft;
 				m_Brillouin->settings.surfaceProxyRoi2Top = displayRoiTop;
@@ -1083,7 +1086,10 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 
 	// If we currently select the new focus, don't move there
 	if (m_locatePositionScanner) {
-		m_scanControl->locatePositionScanner(positionInRawPix);
+		relocateBeamKeepingGridFixed(positionInRawPix);
+		// Confirmed - disarm immediately so the button reverts to idle/blue and the next click
+		// resumes normal click-to-move, instead of relocating the marker again.
+		setLaserPositionLocationArmed(false);
 	} else {
 		auto xRange = m_ODTPlot.plotHandle->xAxis->range();
 		auto yRange = m_ODTPlot.plotHandle->yAxis->range();
@@ -1297,6 +1303,15 @@ QCPItemRect* BrillouinAcquisition::ensureSpectralProxyRoiRect(int index) {
 	return *rectItem;
 }
 
+CAMERA_ROI BrillouinAcquisition::currentSpectralCameraRoi() const {
+	// See this function's own declaration for why the source switches here rather than always
+	// reading one or the other.
+	if (m_Brillouin && m_Brillouin->getStatus() > ACQUISITION_STATUS::STOPPED) {
+		return m_Brillouin->settings.camera.roi;
+	}
+	return m_deviceSettings.camera.roi;
+}
+
 void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	const auto& settings = m_Brillouin->settings;
 	const auto rawLeft = index == 1 ? settings.surfaceProxyRoi2Left : settings.surfaceProxyRoiLeft;
@@ -1325,9 +1340,10 @@ void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	}
 
 	auto* rect = ensureSpectralProxyRoiRect(index);
+	const auto liveRoi = currentSpectralCameraRoi();
 	auto* mapData = m_BrillouinPlot.colorMap ? m_BrillouinPlot.colorMap->data() : nullptr;
-	const int frameW = mapData ? std::max(1, mapData->keySize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.width_binned);
-	const int frameH = mapData ? std::max(1, mapData->valueSize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.height_binned);
+	const int frameW = mapData ? std::max(1, mapData->keySize()) : std::max(1, (int)liveRoi.width_binned);
+	const int frameH = mapData ? std::max(1, mapData->valueSize()) : std::max(1, (int)liveRoi.height_binned);
 	// Remap onto the currently displayed frame if it differs from whatever frame this ROI
 	// was drawn against, so the visible rectangle never silently drifts off-screen, shrinks
 	// to nothing, or lands on the wrong physical location after a camera ROI/binning change
@@ -1335,8 +1351,8 @@ void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	// estimateFrameMetric() for why the actual measurement does the same remap.
 	const PROXY_ROI_FRAME currentFrame{
 		frameW, frameH,
-		m_Brillouin->settings.camera.roi.left, m_Brillouin->settings.camera.roi.bottom,
-		m_Brillouin->settings.camera.roi.width_physical, m_Brillouin->settings.camera.roi.height_physical
+		liveRoi.left, liveRoi.bottom,
+		liveRoi.width_physical, liveRoi.height_physical
 	};
 	int left{ rawLeft }, top{ rawTop }, width{ rawWidth }, height{ rawHeight };
 	Brillouin::remapProxyRoi(rawLeft, rawTop, rawWidth, rawHeight, drawnFrame, currentFrame,
@@ -2273,9 +2289,7 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 	// relocation (armed by a click, not yet confirmed by a second click) rather than leaving the
 	// button stuck in its "Ok" state with no way to finish it once disabled.
 	if (running && m_locatePositionScanner) {
-		m_locatePositionScanner = false;
-		ui->addFocusMarker_brightfield->setIcon(m_icons.fluoBlue);
-		ui->addFocusMarker_brightfield->setText("");
+		setLaserPositionLocationArmed(false);
 	}
 	ui->addFocusMarker_brightfield->setDisabled(running);
 
@@ -2727,9 +2741,12 @@ void BrillouinAcquisition::on_addFocusMarker_brightfield_clicked() {
 		}
 	}
 
-	m_locatePositionScanner = !m_locatePositionScanner;
+	setLaserPositionLocationArmed(!m_locatePositionScanner);
+}
 
-	if (!m_locatePositionScanner) {
+void BrillouinAcquisition::setLaserPositionLocationArmed(bool armed) {
+	m_locatePositionScanner = armed;
+	if (!armed) {
 		ui->addFocusMarker_brightfield->setIcon(m_icons.fluoBlue);
 		ui->addFocusMarker_brightfield->setText("");
 	} else {
@@ -2738,6 +2755,67 @@ void BrillouinAcquisition::on_addFocusMarker_brightfield_clicked() {
 		ui->addFocusMarker_brightfield->setIcon(m_icons.fluoGreen);
 		ui->addFocusMarker_brightfield->setText("Ok");
 	}
+}
+
+// Relocates the beam marker (B) the way an explicit, mid-session correction should behave: in
+// relative mode, every already-configured grid target stays physically fixed on screen, and the
+// AOI numbers (xMin/xMax/yMin/yMax) plus both ROI polygons are compensated instead. This is
+// deliberately NOT what ScanControl::locatePositionScanner() itself does (that path - initial
+// one-time setup, and the startup restore from settings - leaves the grid following B, since
+// relative idle mode is not permanently sample-anchored - see the grid-math comment on
+// ScanPlanner::buildLegacyCartesianPlan()). Only this explicit relocation button gets the
+// compensating behavior.
+//
+// Absolute mode's grid formula has no B term at all (same comment), so there is nothing to
+// compensate there - relocating B only moves the marker itself.
+//
+// Implementation reuses gridOffsetToImagePlaneUm()/imagePlaneUmToGridOffset() - the same two
+// functions preservePhysicalGridForAbsoluteMode() uses to preserve physical targets across a
+// mode change - held at the relative-mode convention throughout, with B (not the mode) changing
+// in between the two calls. Deliberately not implemented by toggling the real
+// gridCoordinatesAbsolute setting and back: that would re-trigger the full async mode-switch
+// chain (queued Brillouin::updatePositions(), spinbox enable/disable, redraw) twice in a row as
+// an "invisible" implementation detail, risking exactly the kind of GUI-thread/worker-thread
+// race the rest of the coordinate-system cleanup eliminated.
+void BrillouinAcquisition::relocateBeamKeepingGridFixed(POINT2 newMarkerPix) {
+	if (!m_scanControl) {
+		return;
+	}
+	if (m_Brillouin->settings.gridCoordinatesAbsolute) {
+		m_scanControl->locatePositionScanner(newMarkerPix);
+		return;
+	}
+
+	auto& settings = m_Brillouin->settings;
+	const auto oldMinUm = gridOffsetToImagePlaneUm(POINT2{ settings.xMin, settings.yMin }, false);
+	const auto oldMaxUm = gridOffsetToImagePlaneUm(POINT2{ settings.xMax, settings.yMax }, false);
+	const std::array<RoiTarget, 2> roiTargets{ mainRoiTarget(), backgroundRoiTarget() };
+	std::array<std::vector<POINT2>, 2> oldRoiUm;
+	for (size_t t = 0; t < roiTargets.size(); t++) {
+		oldRoiUm[t].reserve(roiTargets[t].polygon->size());
+		for (const auto& p : *roiTargets[t].polygon) {
+			oldRoiUm[t].push_back(gridOffsetToImagePlaneUm(p, false));
+		}
+	}
+
+	m_scanControl->locatePositionScanner(newMarkerPix);
+
+	const auto newMinXY = imagePlaneUmToGridOffset(oldMinUm, false);
+	const auto newMaxXY = imagePlaneUmToGridOffset(oldMaxUm, false);
+	settings.setXMin(newMinXY.x);
+	settings.setXMax(newMaxXY.x);
+	settings.setYMin(newMinXY.y);
+	settings.setYMax(newMaxXY.y);
+	for (size_t t = 0; t < roiTargets.size(); t++) {
+		auto& polygon = *roiTargets[t].polygon;
+		for (size_t i = 0; i < polygon.size(); i++) {
+			polygon[i] = imagePlaneUmToGridOffset(oldRoiUm[t][i], false);
+		}
+		updateRoiPolygonPreviewFor(roiTargets[t]);
+	}
+
+	updateBrillouinSettings();
+	QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
 }
 
 void BrillouinAcquisition::drawPositionScannerMarker(POINT2 positionScanner) {
@@ -2983,6 +3061,10 @@ void BrillouinAcquisition::settingsCameraUpdate(int source) {
 	if (source == ROI_SOURCE::BOX || xChanged || yChanged) {
 		ui->customplot->replot();
 	}
+	// Crop/zoom just changed - the spectral proxy ROI overlay's "current frame" reference
+	// (currentSpectralCameraRoi()) tracks this live, so refresh it now instead of leaving it to
+	// silently resync at the next measurement Start.
+	refreshSpectralProxyRoiRects();
 }
 
 std::vector<AT_64> BrillouinAcquisition::checkROI(std::vector<AT_64> values, std::vector<AT_64> requirements) {
@@ -6727,14 +6809,13 @@ void BrillouinAcquisition::on_setHome_clicked() {
 	// Same button, two roles - "Set home" (x/y/z) in relative mode, "Set plane" (z only) in
 	// absolute mode, where Set home doesn't have a sensible x/y meaning any more (the absolute
 	// origin is a fixed point, not something a button click should silently redefine) but z
-	// still needs a way to re-anchor before the next Start does it automatically - see
-	// Brillouin::resolvedGridOriginUm()'s comment for why z always follows m_startPosition.z
-	// regardless of mode. Swapping roles on the one button (rather than a separate, always-
+	// still needs a way to re-anchor - see Brillouin::resolvedGridOriginUm()'s comment for how z
+	// is anchored in each mode. Swapping roles on the one button (rather than a separate, always-
 	// visible "Set plane" button) keeps the control count the same in both modes.
+	if (!m_Brillouin) {
+		return;
+	}
 	if (m_Brillouin->settings.gridCoordinatesAbsolute) {
-		if (!m_Brillouin) {
-			return;
-		}
 		QMetaObject::invokeMethod(m_Brillouin, "setCurrentFocusAsZOrigin", Qt::AutoConnection);
 		return;
 	}

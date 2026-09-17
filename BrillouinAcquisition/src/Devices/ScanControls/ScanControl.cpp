@@ -268,6 +268,15 @@ void ScanControl::setRLShutterOpen(bool open) {
 	}
 }
 
+bool ScanControl::hasBeamBlockElement() const {
+	for (const auto& element : m_deviceElements) {
+		if (element.name == "Beam Block") {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool ScanControl::setBeamBlockOpen(bool open) {
 	for (gsl::index ii{ 0 }; ii < m_deviceElements.size(); ii++) {
 		if (m_deviceElements[ii].name == "Beam Block") {
@@ -426,6 +435,14 @@ void ScanControl::setScaleCalibration(const ScaleCalibrationData& scaleCalibrati
 
 	calculateBounds();
 	calculateHomePositionBounds();
+	// m_absoluteBounds can be objective/magnification-dependent (see e.g. NIDAQ::calculateBounds(),
+	// derived from the active pixel-to-um calibration) - refresh the AOI spinboxes' min/max
+	// (ui->startX/endX/... via currentPositionBoundsChanged) here too, or they stay at the
+	// previous objective's (wider) bounds until an unrelated later move happens to recompute
+	// them, which can leave a stale minimum >= 0 and make Qt's spinbox validator reject typed
+	// negative numbers (arrow-key stepping bypasses that validation, so it looks like "only
+	// arrows work" until the next move silently fixes it).
+	calculateCurrentPositionBounds();
 	// A pure objective/calibration switch changes neither m_positionStage nor m_positionScanner,
 	// so announcePositions() (the usual path to this pair of emissions) never runs on its own -
 	// emit the same pair here too, in the same order (offset before pixel positions, so a queued
