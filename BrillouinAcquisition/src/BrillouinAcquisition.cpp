@@ -550,8 +550,9 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			const auto y1 = ui->customplot->yAxis->pixelToCoord(event->pos().y());
 
 			auto* mapData = m_BrillouinPlot.colorMap ? m_BrillouinPlot.colorMap->data() : nullptr;
-			const int frameW = mapData ? std::max(1, mapData->keySize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.width_binned);
-			const int frameH = mapData ? std::max(1, mapData->valueSize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.height_binned);
+			const auto liveRoi = currentSpectralCameraRoi();
+			const int frameW = mapData ? std::max(1, mapData->keySize()) : std::max(1, (int)liveRoi.width_binned);
+			const int frameH = mapData ? std::max(1, mapData->valueSize()) : std::max(1, (int)liveRoi.height_binned);
 			int cellX0{ 0 };
 			int cellY0{ 0 };
 			int cellX1{ 0 };
@@ -575,8 +576,10 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			// Absolute sensor position/size of the frame this ROI is being drawn against,
 			// so estimateFrameMetric() can remap it correctly even if the camera ROI's
 			// origin (not just its size) differs at measurement time - see the comment
-			// on surfaceProxyRoiFrameWidth in Brillouin.h.
-			const auto& currentRoi = m_Brillouin->settings.camera.roi;
+			// on surfaceProxyRoiFrameWidth in Brillouin.h. liveRoi (not
+			// m_Brillouin->settings.camera.roi) so this matches frameW/frameH above exactly -
+			// see currentSpectralCameraRoi()'s own comment.
+			const auto& currentRoi = liveRoi;
 			if (m_spectralProxyActiveRoiIndex == 1) {
 				m_Brillouin->settings.surfaceProxyRoi2Left = clampedLeft;
 				m_Brillouin->settings.surfaceProxyRoi2Top = displayRoiTop;
@@ -1293,6 +1296,15 @@ QCPItemRect* BrillouinAcquisition::ensureSpectralProxyRoiRect(int index) {
 	return *rectItem;
 }
 
+CAMERA_ROI BrillouinAcquisition::currentSpectralCameraRoi() const {
+	// See this function's own declaration for why the source switches here rather than always
+	// reading one or the other.
+	if (m_Brillouin && m_Brillouin->getStatus() > ACQUISITION_STATUS::STOPPED) {
+		return m_Brillouin->settings.camera.roi;
+	}
+	return m_deviceSettings.camera.roi;
+}
+
 void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	const auto& settings = m_Brillouin->settings;
 	const auto rawLeft = index == 1 ? settings.surfaceProxyRoi2Left : settings.surfaceProxyRoiLeft;
@@ -1321,9 +1333,10 @@ void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	}
 
 	auto* rect = ensureSpectralProxyRoiRect(index);
+	const auto liveRoi = currentSpectralCameraRoi();
 	auto* mapData = m_BrillouinPlot.colorMap ? m_BrillouinPlot.colorMap->data() : nullptr;
-	const int frameW = mapData ? std::max(1, mapData->keySize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.width_binned);
-	const int frameH = mapData ? std::max(1, mapData->valueSize()) : std::max(1, (int)m_Brillouin->settings.camera.roi.height_binned);
+	const int frameW = mapData ? std::max(1, mapData->keySize()) : std::max(1, (int)liveRoi.width_binned);
+	const int frameH = mapData ? std::max(1, mapData->valueSize()) : std::max(1, (int)liveRoi.height_binned);
 	// Remap onto the currently displayed frame if it differs from whatever frame this ROI
 	// was drawn against, so the visible rectangle never silently drifts off-screen, shrinks
 	// to nothing, or lands on the wrong physical location after a camera ROI/binning change
@@ -1331,8 +1344,8 @@ void BrillouinAcquisition::updateSpectralProxyRoiRect(int index) {
 	// estimateFrameMetric() for why the actual measurement does the same remap.
 	const PROXY_ROI_FRAME currentFrame{
 		frameW, frameH,
-		m_Brillouin->settings.camera.roi.left, m_Brillouin->settings.camera.roi.bottom,
-		m_Brillouin->settings.camera.roi.width_physical, m_Brillouin->settings.camera.roi.height_physical
+		liveRoi.left, liveRoi.bottom,
+		liveRoi.width_physical, liveRoi.height_physical
 	};
 	int left{ rawLeft }, top{ rawTop }, width{ rawWidth }, height{ rawHeight };
 	Brillouin::remapProxyRoi(rawLeft, rawTop, rawWidth, rawHeight, drawnFrame, currentFrame,
@@ -1663,6 +1676,15 @@ void BrillouinAcquisition::addListToComboBox(QComboBox* box, const std::vector<s
 }
 
 void BrillouinAcquisition::cameraSettingsChanged(const CAMERA_SETTINGS& settings) {
+	// The driver-reported ROI is the only place .bottom/.right/.width_binned/.height_binned
+	// (as opposed to .left/.top/.width_physical/.height_physical, which the live crop UI's own
+	// value-changed handlers already push into m_deviceSettings.camera.roi via
+	// settingsCameraUpdate()) ever get computed correctly - see andor.cpp's ROI application.
+	// Without this, those fields stayed frozen at CAMERA_ROI's defaults forever, silently
+	// breaking anything that needs the camera frame's real vertical/right origin, e.g.
+	// remapProxyRoi()'s "drawnFrame" vs "currentFrame" comparison for the spectral proxy ROI.
+	m_deviceSettings.camera.roi = settings.roi;
+
 	ui->exposureTime->setValue(settings.exposureTime);
 	ui->frameCount->setValue(settings.frameCount);
 	//ui->ROILeft->setValue(settings.roi.left);
@@ -2933,6 +2955,10 @@ void BrillouinAcquisition::settingsCameraUpdate(int source) {
 	if (source == ROI_SOURCE::BOX || xChanged || yChanged) {
 		ui->customplot->replot();
 	}
+	// Crop/zoom just changed - the spectral proxy ROI overlay's "current frame" reference
+	// (currentSpectralCameraRoi()) tracks this live, so refresh it now instead of leaving it to
+	// silently resync at the next measurement Start.
+	refreshSpectralProxyRoiRects();
 }
 
 std::vector<AT_64> BrillouinAcquisition::checkROI(std::vector<AT_64> values, std::vector<AT_64> requirements) {
@@ -5725,11 +5751,16 @@ void BrillouinAcquisition::on_BrillouinStart_clicked() {
 			return;
 		}
 
-	// set camera ROI
-	m_Brillouin->settings.camera.roi.top = m_deviceSettings.camera.roi.top;
-		m_Brillouin->settings.camera.roi.left = m_deviceSettings.camera.roi.left;
-		m_Brillouin->settings.camera.roi.width_physical = m_deviceSettings.camera.roi.width_physical;
-		m_Brillouin->settings.camera.roi.height_physical = m_deviceSettings.camera.roi.height_physical;
+		// set camera ROI
+		// Copy the whole struct, not just top/left/width_physical/height_physical - .bottom in
+		// particular is what remapProxyRoi() needs for the spectral proxy ROI's vertical origin
+		// (see cameraSettingsChanged(), which is what keeps m_deviceSettings.camera.roi's copy
+		// of it live/correct). A partial copy here left .bottom stale at whatever
+		// m_Brillouin->settings.camera.roi last held (its CAMERA_ROI default, in practice, since
+		// nothing else ever wrote it) even once everything else was updated to the real crop -
+		// exactly the kind of same-looking-but-wrong desync that made a spectral ROI drawn under
+		// one crop silently misalign against the signal once a measurement actually started.
+		m_Brillouin->settings.camera.roi = m_deviceSettings.camera.roi;
 		m_Brillouin->setSettings(m_Brillouin->settings);
 		QMetaObject::invokeMethod(
 			m_Brillouin,

@@ -756,8 +756,8 @@ bool Brillouin::remapProxyRoi(
 	}
 	if (from.widthPhysical <= 0 || from.heightPhysical <= 0 || to.widthPhysical <= 0 || to.heightPhysical <= 0) {
 		// Missing physical geometry (e.g. a settings file saved before this existed) -
-		// fall back to the old, origin-blind proportional rescale. Still wrong whenever
-		// the two frames don't share a sensor origin, same as before this function existed.
+		// fall back to an origin-blind proportional rescale. Still wrong whenever the two
+		// frames don't share a sensor origin.
 		const auto scaleX = (double)to.width / from.width;
 		const auto scaleY = (double)to.height / from.height;
 		outLeft = (int)std::lround(roiLeft * scaleX);
