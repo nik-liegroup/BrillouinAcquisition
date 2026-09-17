@@ -1175,17 +1175,9 @@ POINT3 Brillouin::rawPositionToGridFrame(const POINT3& rawPosition) const {
 }
 
 POINT3 Brillouin::resolvedGridOriginUm() const {
-	// getActiveObjectiveFovOffsetUm() is deliberately NOT folded in here (it used to be). This
-	// origin feeds the REAL absolute-mode measurement target (see updatePositions()'s
-	// plannerInput.absoluteGridOriginUm, which becomes the actual stage command in
-	// runMeasurementPhase()), not just the display - baking a live FOV-offset into it meant
-	// pressing Start on a non-reference objective introduced a real, physical stage jump
-	// relative to whatever was visually verified while idle (idle display never included this
-	// term - see ScanControl::getPositionOffset()'s own comment), because updatePositions()
-	// re-bakes fresh right before the measurement loop starts. Operator-confirmed: a
-	// measurement must target exactly the same real coordinates that were set up while idle, on
-	// any objective - FOV-offset is a real but small, known residual in where the BEAM points,
-	// relevant only to how the marker itself is drawn, not to where the stage actually goes.
+	// This origin feeds real stage targets. Keep it objective-independent:
+	// ScanControl::getPositionOffset() adds the active FOV translation only when
+	// projecting those targets into the camera image, both idle and measuring.
 	//
 	// z is deliberately NOT part of the absolute/relative origin split x/y gets above -
 	// "absolute grid coordinates" only ever meant "x/y anchored to a fixed physical point,
@@ -2841,16 +2833,8 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 
 	// get current stage position
 	if (m_scanControl) {
-		// getActiveObjectiveFovOffsetUm() is deliberately NOT folded in here (it used to be).
-		// m_startPosition is the real anchor relative-mode targets are built from
-		// (updatePositions() -> ScanPlanner: relativePosition's origin), so baking a live
-		// FOV-offset into it meant a measurement on a non-reference objective targeted a
-		// different real location than whatever was visually verified while idle just before
-		// Start - a real, physical stage jump, not a display artifact. See
-		// Brillouin::resolvedGridOriginUm()'s own comment for the matching absolute-mode fix and
-		// the full reasoning (operator-confirmed): the stage must go exactly where the idle
-		// preview showed, on any objective - FOV-offset only ever describes where the marker
-		// itself should be drawn.
+		// Capture the physical stage + scanner anchor without a FOV translation.
+		// The same display-only FOV translation is applied before and after Start.
 		auto stagePosition = m_scanControl->getPosition();
 		m_startPosition = POINT3{ stagePosition.x, stagePosition.y, stagePosition.z };
 		// Enable measurement mode (so the AOI display is correct).

@@ -605,87 +605,22 @@ POINT2 ScanControl::getPositionPix(POINT3 positionMicrometer, bool positionIsAbs
 }
 
 POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
-	// This is the mechanism from commit 0c70d11: the grid itself pans with the current
-	// stage position, so that whichever point is currently being measured always lands at
-	// the same fixed screen pixel - coinciding with the laser marker, which is a static
-	// calibration reference (see announcePositionScanner()) and does NOT itself track the
-	// stage. What looks like "the marker moving through the grid" is actually the grid
-	// sliding past a fixed marker.
-	//
-	// getActiveObjectiveFovOffsetUm() is added in the two idle branches below (live-preview
-	// relative, and idle absolute), never in either measurement-mode branch - it means two
-	// different things depending on what's being converted:
-	//
-	// - m_positionScanner (live-preview relative branch) is stored with its CAPTURING
-	// objective's own fovOffsetUm already subtracted out (see locatePositionScanner()) - it's
-	// only meaningful again once the CURRENTLY active objective's fovOffsetUm is added back.
-	// This is how m_positionScanner's storage convention is defined, full stop - unrelated to
-	// measurement targeting, since idle-preview grid points don't go anywhere physically.
-	//
-	// - Absolute targets and m_startPosition (both measurement-mode branches) are real
-	// stage-frame physical locations with no such convention, and no longer have any live
-	// fovOffsetUm folded in anywhere (see Brillouin::resolvedGridOriginUm() and
-	// Brillouin::acquire()'s own comments for the full reasoning, operator-confirmed): a
-	// measurement must target exactly the same real coordinates verified while idle, on any
-	// objective - pressing Start must never introduce a real stage jump just because the active
-	// objective has a nonzero calibrated FOV-offset. The marker (announcePositionScanner()) is
-	// the only thing that still shows fovOffsetUm - a real, small, known residual in where the
-	// BEAM points, which the currently-measured grid point may now sit slightly off from on a
-	// non-reference objective. That's an accepted, honest small gap, not a bug to chase by
-	// perturbing the real target.
-	//
-	// The idle absolute branch is the one exception that DOES need fovOffsetUm added, purely for
-	// display: resolvedGridOriginUm() itself is objective-invariant now (no fovOffsetUm baked
-	// in), so without this term here the idle preview would stop tracking the sample across an
-	// objective switch (the stored target doesn't move, but the live camera view really does
-	// shift by fovOffsetUm when the stage hasn't moved - see the operator's own physical
-	// explanation of why this term is real, not cosmetic). This never touches the real target -
-	// resolvedGridOriginUm() itself, which actually gets sent to the stage, is untouched by it.
-	auto offset = m_positionScanner + getActiveObjectiveFovOffsetUm();
-	if (positionIsAbsolute && m_measurementMode) {
-		offset = POINT2{} - m_positionStage;
-		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(measurementMode, absolute): m_positionStage=("
-			<< m_positionStage.x << "," << m_positionStage.y << ") m_positionScanner=("
-			<< m_positionScanner.x << "," << m_positionScanner.y << ") fovOffset(not applied)=("
-			<< getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
-			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
+	// FOV-offset is a camera-frame translation, not part of a physical stage target.
+	// Apply it once in EVERY display mode, just as announcePositionScanner() does.
+	// Dropping it on Start moves only the overlay, although the stage still measures
+	// the correct sample points.
+	const auto fovOffset = getActiveObjectiveFovOffsetUm();
+	if (positionIsAbsolute) {
+		return POINT2{} - m_positionStage + fovOffset;
 	}
-	else if (positionIsAbsolute) {
-		offset = POINT2{} - m_positionStage + getActiveObjectiveFovOffsetUm();
-		qInfo(logInfo()) << "[GRIDDIAG] getPositionOffset(idle, absolute): m_positionStage=("
-			<< m_positionStage.x << "," << m_positionStage.y << ") fovOffset(applied, display-only)=("
-			<< getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
-			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
+	if (m_measurementMode) {
+		// The captured start is stage + scanner, with no FOV-offset baked in.
+		// For a measured target T, the stage backend sets stage = T - scanner;
+		// hence T - stage + FOV projects exactly onto the laser marker.
+		return m_startPosition - m_positionStage + fovOffset;
 	}
-	// In measurement mode, the positions are shown relative to the start position.
-	else if (m_measurementMode) {
-		// m_startPosition is captured as getPosition(BOTH) (stage + scanner) in
-		// enableMeasurementMode(), but the scanner term cancels exactly the same way as
-		// above - only stage needs to be subtracted here. This is the literal formula from
-		// commit 0c70d11; adding a "- m_positionScanner" term here (as a previous revision of
-		// this function did) shifts the whole grid by the scanner offset instead of leaving it
-		// centered on the marker.
-		offset = m_startPosition - m_positionStage;
-		qInfo(logInfo()) << "[FOVDIAG] getPositionOffset(measurementMode, relative): m_startPosition=("
-			<< m_startPosition.x << "," << m_startPosition.y << ") m_positionStage=("
-			<< m_positionStage.x << "," << m_positionStage.y << ") m_positionScanner=("
-			<< m_positionScanner.x << "," << m_positionScanner.y
-			<< ") fovOffset(not applied)=(" << getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
-			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
-	}
-	// [GRIDDIAG] Temporary - the plain live-preview branch (not absolute, not mid-measurement)
-	// previously had no log at all, even though this is the formula active for the entire time
-	// an operator is setting up a relative grid and switching objectives BEFORE pressing Start -
-	// exactly the scenario being reproduced. Logging every call (not just on change) is
-	// deliberate: this function is called once per convertPositionsToPix()/getPositionPix(), so
-	// its call frequency alone shows how often the grid is actually being repositioned.
-	else {
-		qInfo(logInfo()) << "[GRIDDIAG] getPositionOffset(live-preview, relative): m_positionScanner=("
-			<< m_positionScanner.x << "," << m_positionScanner.y
-			<< ") fovOffset(applied)=(" << getActiveObjectiveFovOffsetUm().x << "," << getActiveObjectiveFovOffsetUm().y
-			<< ") -> offset=(" << offset.x << "," << offset.y << ")";
-	}
-	return offset;
+	// At Start, start - stage == scanner, so the relative grid stays continuous.
+	return m_positionScanner + fovOffset;
 }
 
 /*
