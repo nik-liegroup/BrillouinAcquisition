@@ -1121,10 +1121,12 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 
 	// If we currently select the new focus, don't move there
 	if (m_locatePositionScanner) {
+		// Deliberately stays armed - restores the original click-to-place behavior (pre-dating
+		// the guarded relocate feature below, which introduced disarm-after-one-click for both
+		// branches here): the operator can click repeatedly to nudge the marker into place, then
+		// toggle the "Set" button off themselves (setLaserPositionLocationArmed(false), via
+		// on_..._clicked()) once satisfied, rather than the first click always ending placement.
 		m_scanControl->locatePositionScanner(positionInRawPix);
-		// Confirmed - disarm immediately so the button reverts to idle and the next click
-		// resumes normal click-to-move, instead of relocating the marker again.
-		setLaserPositionLocationArmed(false);
 	} else if (m_relocatePositionScanner) {
 		relocateBeamKeepingGridFixed(positionInRawPix);
 		setRelocateFocusMarkerArmed(false);
@@ -1666,6 +1668,16 @@ void BrillouinAcquisition::preservePhysicalGridForAbsoluteMode(bool enabled) {
 	m_Brillouin->settings.setYMax(newMaxXY.y);
 
 	for (auto& point : m_Brillouin->settings.roiPolygonUm) {
+		point = convertXY(point);
+	}
+	// The background ROI polygon (settings.backgroundRoiPolygonUm) is stored in the exact same
+	// grid-offset frame as roiPolygonUm above (see its own declaration comment) but was missing
+	// from this round-trip, so it silently kept the OLD mode's coordinates on a mode switch -
+	// same physical drift bug this whole function exists to prevent for the main ROI, just not
+	// caught here yet. Background reference points (Brillouin::backgroundGridPoints()) are
+	// resampled from this polygon at capture time, so leaving it stale here would silently
+	// capture from the wrong physical location too.
+	for (auto& point : m_Brillouin->settings.backgroundRoiPolygonUm) {
 		point = convertXY(point);
 	}
 }

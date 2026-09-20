@@ -2385,6 +2385,13 @@ void enqueueOverviewBrightfieldImage(
 	const std::vector<std::byte>& image,
 	const POINT3& targetPosition,
 	const POINT3& stagePosition,
+	// The Brillouin repetition (Brillouin::m_currentRepetition) this image was captured as
+	// part of - see FLUOIMAGE::hasBrillouinRepetition's own comment. Every caller of this
+	// function is itself part of a Brillouin measurement (the per-z overview and per-point
+	// brightfield below), never a standalone Fluorescence-tab capture (that path builds its
+	// own FLUOIMAGE directly, see Fluorescence::__acquire()), so this is always known and
+	// required here, not optional.
+	int brillouinRepetitionIndex,
 	const std::string& channel = "Brightfield z overview",
 	// Chunked + gzip-deflated HDF5 dataset layout instead of the default contiguous,
 	// uncompressed one - see FLUOIMAGE::compress's own comment. Off by default (the per-z
@@ -2425,7 +2432,9 @@ void enqueueOverviewBrightfieldImage(
 		targetPosition,
 		true,
 		stagePosition,
-		compress
+		compress,
+		true,
+		brillouinRepetitionIndex
 	);
 
 	QMetaObject::invokeMethod(
@@ -2651,10 +2660,10 @@ void Brillouin::captureOverviewBrightfield(
 
 	auto queuedImage = false;
 	if (brightfieldSettings.readout.dataType == "unsigned short") {
-		enqueueOverviewBrightfieldImage<unsigned short>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition);
+		enqueueOverviewBrightfieldImage<unsigned short>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition);
 		queuedImage = true;
 	} else if (brightfieldSettings.readout.dataType == "unsigned char") {
-		enqueueOverviewBrightfieldImage<unsigned char>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition);
+		enqueueOverviewBrightfieldImage<unsigned char>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition);
 		queuedImage = true;
 	}
 
@@ -2723,10 +2732,10 @@ void Brillouin::capturePerPointBrightfieldImage(
 		// per-z overview's comparatively few images).
 		if (brightfieldSettings.readout.dataType == "unsigned short") {
 			enqueueOverviewBrightfieldImage<unsigned short>(
-				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, "Brightfield per-point", true);
+				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition, "Brightfield per-point", true);
 		} else if (brightfieldSettings.readout.dataType == "unsigned char") {
 			enqueueOverviewBrightfieldImage<unsigned char>(
-				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, "Brightfield per-point", true);
+				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition, "Brightfield per-point", true);
 		}
 	} else {
 		m_brightfieldCamera->stopAcquisition();
@@ -2795,10 +2804,10 @@ void Brillouin::finishPerPointBrightfieldDuring(
 	// per-point captures opt into this.
 	if (brightfieldSettings.readout.dataType == "unsigned short") {
 		enqueueOverviewBrightfieldImage<unsigned short>(
-			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, "Brightfield per-point", true);
+			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition, "Brightfield per-point", true);
 	} else if (brightfieldSettings.readout.dataType == "unsigned char") {
 		enqueueOverviewBrightfieldImage<unsigned char>(
-			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, "Brightfield per-point", true);
+			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition, "Brightfield per-point", true);
 	}
 }
 
@@ -3359,6 +3368,34 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		storage->setPositions("roi-polygon-x-um", roiPolyX, 1, roiPolyDims);
 		storage->setPositions("roi-polygon-y-um", roiPolyY, 1, roiPolyDims);
 	}
+
+	// Background ROI polygon vertices (BrillouinAcquisition's second, independent ROI - see
+	// Brillouin::captureBackgroundPoints()/backgroundGridPoints() and settings.
+	// backgroundRoiPolygonUm's own comment). The captured points' own per-image positions
+	// already reveal roughly where this was drawn, but not its exact shape/extent - the same
+	// gap roi-polygon-x/y-um above closes for the main ROI. backgroundRoiPolygonUm lives in
+	// the same grid-plan frame as roiPolygonUm (backgroundGridPoints() tests it against that
+	// frame directly, the same way isPointInPolygonUm() callers test roiPolygonUm) -
+	// planPositionToGridFrame() converts it the same way, into the same frame positions-x/y/z
+	// and roi-polygon-x/y-um are saved in.
+	if (!m_settings.backgroundRoiPolygonUm.empty()) {
+		const hsize_t backgroundRoiPolyDims[1] = { (hsize_t)m_settings.backgroundRoiPolygonUm.size() };
+		std::vector<double> backgroundRoiPolyX(m_settings.backgroundRoiPolygonUm.size());
+		std::vector<double> backgroundRoiPolyY(m_settings.backgroundRoiPolygonUm.size());
+		for (size_t i = 0; i < m_settings.backgroundRoiPolygonUm.size(); i++) {
+			const auto stored = planPositionToGridFrame(
+				POINT3{ m_settings.backgroundRoiPolygonUm[i].x, m_settings.backgroundRoiPolygonUm[i].y, 0 });
+			backgroundRoiPolyX[i] = stored.x;
+			backgroundRoiPolyY[i] = stored.y;
+		}
+		storage->setPositions("background-roi-polygon-x-um", backgroundRoiPolyX, 1, backgroundRoiPolyDims);
+		storage->setPositions("background-roi-polygon-y-um", backgroundRoiPolyY, 1, backgroundRoiPolyDims);
+	}
+	// Whether the background ROI was even enabled - without this, an empty/missing
+	// background-roi-polygon-x/y-um is ambiguous between "feature off" and "on, but the
+	// polygon had fewer than 3 vertices" (backgroundGridPoints() also requires >= 3 - see its
+	// own guard). Same convention as roi-mask-used above.
+	storage->setPositions("background-roi-mask-used", std::vector<double>{ m_settings.useBackgroundRoiMask ? 1.0 : 0.0 }, 1, originDims);
 
 	// BF overview coverage settings actually used (their effect on shape is already visible
 	// in overview-brightfield-x/y/z + point-count/point-stack-counts, but the flags

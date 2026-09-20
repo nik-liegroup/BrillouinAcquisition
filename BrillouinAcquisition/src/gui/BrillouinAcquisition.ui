@@ -2302,7 +2302,7 @@ QTabBar::tab:!selected {
                           <widget class="QPushButton" name="drawBackgroundRoiButton">
                            <property name="minimumSize">
                             <size>
-                             <width>100</width>
+                             <width>115</width>
                              <height>24</height>
                             </size>
                            </property>
@@ -2318,7 +2318,7 @@ QTabBar::tab:!selected {
                           <widget class="QPushButton" name="clearBackgroundRoiButton">
                            <property name="minimumSize">
                             <size>
-                             <width>100</width>
+                             <width>115</width>
                              <height>24</height>
                             </size>
                            </property>
