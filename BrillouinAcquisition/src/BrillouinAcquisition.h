@@ -438,6 +438,9 @@ private:
 	// is deliberately NOT persisted: a brand new acquisition always gets a fresh timestamped
 	// name (see on_actionNew_Acquisition_triggered()), never the last one reused.
 	StoragePath m_storagePath{ "", "." };
+	// Reset (to allow showing it again) whenever a new/different file is opened - see
+	// updateFilename() and the Acquisition::s_writeError connection in the constructor.
+	bool m_writeErrorShown{ false };
 	// Persisted (readSettings()/writeSettings()) folder proposed for a brand new acquisition
 	// file (on_actionNew_Acquisition_triggered()) only when m_storagePath.folder is still the
 	// unconfigured "." default (i.e. nothing has ever been saved/opened) - set via the File

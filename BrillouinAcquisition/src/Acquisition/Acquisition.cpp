@@ -40,6 +40,10 @@ void Acquisition::openFile(const StoragePath& path, int flag, bool forceOpen) {
 	emit(s_filenameChanged(m_path.filename));
 	m_storage = std::make_unique <StorageWrapper>(nullptr, m_path.fullPath(), flag);
 
+	if (!m_storage->isWritable()) {
+		emit(s_openFileFailed());
+	}
+
 	// Move storage object to own thread
 	m_storageThread->startWorker(m_storage.get());
 
@@ -54,6 +58,12 @@ void Acquisition::openFile(const StoragePath& path, int flag, bool forceOpen) {
 		&StorageWrapper::finished,
 		this,
 		&Acquisition::finishedWritingToFile
+	);
+	connection = QWidget::connect(
+		m_storage.get(),
+		&StorageWrapper::s_writeError,
+		this,
+		&Acquisition::s_writeError
 	);
 }
 
@@ -72,7 +82,12 @@ void Acquisition::newRepetition(ACQUISITION_MODE mode) {
 	if (m_storage == nullptr) {
 		openFile();
 	}
-	m_storage->newRepetition(mode);
+	// m_storage lives on m_storageThread; its write-queue timer touches the same HDF5 file
+	// handle concurrently, so run this call there too instead of directly on this thread.
+	auto* storagePtr = m_storage.get();
+	QMetaObject::invokeMethod(storagePtr, [storagePtr, mode]() {
+		storagePtr->newRepetition(mode);
+	}, Qt::BlockingQueuedConnection);
 }
 
 void Acquisition::startedWritingToFile() {
@@ -90,11 +105,10 @@ int Acquisition::closeFile() {
 		return -1;
 	}
 	if (m_storage) {
-		// Create a reference to the current thread
-		QThread* acquisitionThread = QThread::currentThread();
-		// Move the acquisition class back to the main thread
-		m_storage->moveToThread(acquisitionThread);
-		m_storage.reset();
+		// m_storage lives on m_storageThread; QObject::moveToThread() only works when called
+		// from the object's own thread, so it can't be pulled back onto this one here.
+		// deleteLater() is safe to call from any thread and destroys it on its own thread.
+		m_storage.release()->deleteLater();
 	}
 	return 0;
 }

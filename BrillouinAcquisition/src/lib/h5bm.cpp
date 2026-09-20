@@ -1,12 +1,19 @@
 #include "stdafx.h"
 #include "h5bm.h"
+#include "src/helper/logger.h"
 #include "filesystem"
 
 using namespace std::filesystem;
 
+void H5BM::reportWriteError(const QString& message) {
+	qWarning(logWarning()) << "H5BM:" << message;
+	emit(s_writeError(message));
+}
+
 H5BM::H5BM(QObject *parent, const std::string& filename, int flags) noexcept
 	: QObject(parent) {
-	if (flags & H5F_ACC_RDONLY) {
+	// H5F_ACC_RDONLY is 0, so "flags & H5F_ACC_RDONLY" can never be true - compare directly.
+	if (flags == H5F_ACC_RDONLY) {
 		m_fileWritable = false;
 		if (exists(filename)) {
 			m_file = H5Fopen(&filename[0], flags, H5P_DEFAULT);
@@ -155,16 +162,16 @@ void H5BM::setAttribute(const std::string& attrName, T attr) {
 
 template<typename T>
 T H5BM::getAttribute(std::string attrName, hid_t parent) {
-	T buf;
-	try {
-		hid_t attr_id = H5Aopen(parent, attrName.c_str(), H5P_DEFAULT);
-		hsize_t attr_size = H5Aget_storage_size(attr_id);
+	// Returned as-is if the attribute doesn't exist or the read fails.
+	T buf{};
+	hid_t attr_id = H5Aopen(parent, attrName.c_str(), H5P_DEFAULT);
+	if (attr_id >= 0) {
 		hid_t attr_type = H5Aget_type(attr_id);
-		H5Aread(attr_id, attr_type, &buf);
-		H5Tclose(attr_type);
+		if (attr_type >= 0) {
+			H5Aread(attr_id, attr_type, &buf);
+			H5Tclose(attr_type);
+		}
 		H5Aclose(attr_id);
-	} catch (int e) {
-		// attribute was not found
 	}
 	return buf;
 }
@@ -172,19 +179,19 @@ T H5BM::getAttribute(std::string attrName, hid_t parent) {
 template<>
 std::string H5BM::getAttribute(std::string attrName, hid_t parent) {
 	std::string string = "";
-	try {
-		hid_t attr_id = H5Aopen(parent, attrName.c_str(), H5P_DEFAULT);
+	hid_t attr_id = H5Aopen(parent, attrName.c_str(), H5P_DEFAULT);
+	if (attr_id >= 0) {
 		hsize_t attr_size = H5Aget_storage_size(attr_id);
 		hid_t attr_type = H5Aget_type(attr_id);
-		char *buf = new char[attr_size + 1];
-		H5Aread(attr_id, attr_type, buf);
-		string.assign(buf, attr_size);
-		delete[] buf;
-		buf = nullptr;
-		H5Tclose(attr_type);
+		if (attr_type >= 0) {
+			char *buf = new char[attr_size + 1];
+			H5Aread(attr_id, attr_type, buf);
+			string.assign(buf, attr_size);
+			delete[] buf;
+			buf = nullptr;
+			H5Tclose(attr_type);
+		}
 		H5Aclose(attr_id);
-	} catch (int e) {
-		// attribute was not found
 	}
 	return string;
 }

@@ -52,5 +52,10 @@ void AcquisitionMode::writeScaleCalibration(std::unique_ptr <StorageWrapper>& st
 	extended.fovOffsetSigmaUm = activeCalibration.fovOffsetSigmaUm;
 	extended.missingOffsetAccepted = !activeCalibration.hasFovOffset && m_scanControl->isMissingObjectiveOffsetAccepted();
 
-	storage->setScaleCalibration(mode, extended);
+	// storage lives on its own worker thread; run this HDF5 write there rather than on the
+	// calling acquisition thread.
+	auto* storagePtr = storage.get();
+	QMetaObject::invokeMethod(storagePtr, [storagePtr, mode, extended]() {
+		storagePtr->setScaleCalibration(mode, extended);
+	}, Qt::BlockingQueuedConnection);
 }

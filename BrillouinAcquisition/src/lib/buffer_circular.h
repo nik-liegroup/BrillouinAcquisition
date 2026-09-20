@@ -64,7 +64,7 @@ inline CircularBuffer<T>::~CircularBuffer() {
 		delete m_freeBuffers;
 		m_freeBuffers = nullptr;
 	}
-	if (m_freeBuffers) {
+	if (m_usedBuffers) {
 		delete m_usedBuffers;
 		m_usedBuffers = nullptr;
 	}

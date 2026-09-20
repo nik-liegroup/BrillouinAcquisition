@@ -111,6 +111,9 @@ void VoltageCalibration::load(std::string filepath) {
 void VoltageCalibration::abortMode(std::unique_ptr <StorageWrapper>& storage) {}
 
 void VoltageCalibration::abortMode() {
+	if (m_camera) {
+		m_camera->stopAcquisition();
+	}
 	m_acquisition->disableMode(ACQUISITION_MODE::VOLTAGECALIBRATION);
 	setAcquisitionStatus(ACQUISITION_STATUS::ABORTED);
 }
@@ -312,7 +315,7 @@ void VoltageCalibration::__acquire() {
 			auto iterator_max = std::max_element((*images_).begin(), (*images_).end());
 			auto index = std::distance((*images_).begin(), iterator_max);
 			if (*iterator_max > m_minimalIntensity) {
-				int y = m_cameraSettings.roi.height_binned - floor(index / m_cameraSettings.roi.width_binned);
+				int y = m_cameraSettings.roi.height_binned - 1 - (int)floor(index / m_cameraSettings.roi.width_binned);
 				int x = index % m_cameraSettings.roi.width_binned;
 
 				POINT2 pos = m_ODTControl->pixToMicroMeter({ (double)x, (double)y });

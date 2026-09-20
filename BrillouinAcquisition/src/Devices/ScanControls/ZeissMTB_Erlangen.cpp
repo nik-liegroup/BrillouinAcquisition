@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "ZeissMTB_Erlangen.h"
+#include "src/helper/logger.h"
 
 namespace {
 	constexpr const char* kMtbUnitMicrometer = "\xB5m";
@@ -76,7 +77,6 @@ ZeissMTB_Erlangen::~ZeissMTB_Erlangen() {
 }
 
 void ZeissMTB_Erlangen::setPosition(POINT2 position) {
-	auto success{ false };
 	if (!(m_stageX && m_stageY)) {
 		return;
 	}
@@ -84,16 +84,22 @@ void ZeissMTB_Erlangen::setPosition(POINT2 position) {
 	auto positionStage = position - m_positionScanner;
 	if (abs(m_positionStage.x - positionStage.x) > 1e-6) {
 		try {
-			m_positionStage.x = positionStage.x;
-			success = m_stageX->SetPosition(m_positionStage.x, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500);
+			if (m_stageX->SetPosition(positionStage.x, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500)) {
+				m_positionStage.x = positionStage.x;
+			} else {
+				qWarning(logWarning()) << "ZeissMTB_Erlangen::setPosition() - stage X move was not confirmed, cached position left unchanged.";
+			}
 		} catch (_com_error& e) {
 			qDebug() << "Error setting stage X position:" << e.ErrorMessage();
 		}
 	}
 	if (abs(m_positionStage.y - positionStage.y) > 1e-6) {
 		try {
-			m_positionStage.y = positionStage.y;
-			success = m_stageY->SetPosition(m_positionStage.y, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500);
+			if (m_stageY->SetPosition(positionStage.y, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500)) {
+				m_positionStage.y = positionStage.y;
+			} else {
+				qWarning(logWarning()) << "ZeissMTB_Erlangen::setPosition() - stage Y move was not confirmed, cached position left unchanged.";
+			}
 		} catch (_com_error& e) {
 			qDebug() << "Error setting stage Y position:" << e.ErrorMessage();
 		}
@@ -105,15 +111,17 @@ void ZeissMTB_Erlangen::setPosition(POINT2 position) {
 }
 
 void ZeissMTB_Erlangen::setPosition(POINT3 position) {
-	auto success{ false };
 	if (!m_ObjectiveFocus) {
 		return;
 	}
 	// Only set position if it has changed
 	if (abs(m_positionFocus - position.z) > 1e-6) {
 		try {
-			m_positionFocus = position.z;
-			success = m_ObjectiveFocus->SetPosition(m_positionFocus, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500);
+			if (m_ObjectiveFocus->SetPosition(position.z, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500)) {
+				m_positionFocus = position.z;
+			} else {
+				qWarning(logWarning()) << "ZeissMTB_Erlangen::setPosition() - focus move was not confirmed, cached position left unchanged.";
+			}
 		} catch (_com_error& e) {
 			qDebug() << "Error setting focus position:" << e.ErrorMessage();
 		}
@@ -122,22 +130,27 @@ void ZeissMTB_Erlangen::setPosition(POINT3 position) {
 }
 
 void ZeissMTB_Erlangen::movePosition(POINT2 distance) {
-	auto success{ false };
 	if (!(m_stageX && m_stageY)) {
 		return;
 	}
 	if (abs(distance.x) > 1e-6) {
 		try {
-			m_positionStage.x += distance.x;
-			success = m_stageX->SetPosition(distance.x, kMtbUnitMicrometer, (MTBCmdSetModes)(MTBCmdSetModes::MTBCmdSetModes_Synchronous | MTBCmdSetModes::MTBCmdSetModes_Relative), 500);
+			if (m_stageX->SetPosition(distance.x, kMtbUnitMicrometer, (MTBCmdSetModes)(MTBCmdSetModes::MTBCmdSetModes_Synchronous | MTBCmdSetModes::MTBCmdSetModes_Relative), 500)) {
+				m_positionStage.x += distance.x;
+			} else {
+				qWarning(logWarning()) << "ZeissMTB_Erlangen::movePosition() - stage X move was not confirmed, cached position left unchanged.";
+			}
 		} catch (_com_error& e) {
 			qDebug() << "Error moving stage X:" << e.ErrorMessage();
 		}
 	}
 	if (abs(distance.y) > 1e-6) {
 		try {
-			m_positionStage.y += distance.y;
-			success = m_stageY->SetPosition(distance.y, kMtbUnitMicrometer, (MTBCmdSetModes)(MTBCmdSetModes::MTBCmdSetModes_Synchronous | MTBCmdSetModes::MTBCmdSetModes_Relative), 500);
+			if (m_stageY->SetPosition(distance.y, kMtbUnitMicrometer, (MTBCmdSetModes)(MTBCmdSetModes::MTBCmdSetModes_Synchronous | MTBCmdSetModes::MTBCmdSetModes_Relative), 500)) {
+				m_positionStage.y += distance.y;
+			} else {
+				qWarning(logWarning()) << "ZeissMTB_Erlangen::movePosition() - stage Y move was not confirmed, cached position left unchanged.";
+			}
 		} catch (_com_error& e) {
 			qDebug() << "Error moving stage Y:" << e.ErrorMessage();
 		}
@@ -446,10 +459,15 @@ int ZeissMTB_Erlangen::getMirror() {
 }
 
 void ZeissMTB_Erlangen::setBeamBlock(int position) {
-	m_beamBlockOpen = position;
 	// Write digital voltages
-	const auto	voltage = (uInt8)m_beamBlockOpen;
-	DAQmxWriteDigitalLines(DOtaskHandle_BeamBlock, 1, false, 10, DAQmx_Val_GroupByChannel, &voltage, NULL, NULL);
+	const auto voltage = (uInt8)position;
+	auto error = DAQmxWriteDigitalLines(DOtaskHandle_BeamBlock, 1, false, 10, DAQmx_Val_GroupByChannel, &voltage, NULL, NULL);
+	if (error) {
+		qWarning(logWarning()) << "ZeissMTB_Erlangen::setBeamBlock() - DAQmxWriteDigitalLines failed with error code"
+			<< error << ", beam block state left unchanged.";
+	} else {
+		m_beamBlockOpen = position;
+	}
 }
 
 int ZeissMTB_Erlangen::getBeamBlock() {

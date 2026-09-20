@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "com.h"
+#include "src/helper/logger.h"
 
 /*
 * Functions regarding the serial communication
@@ -45,7 +46,7 @@ void com::send(std::string message) {
 	bool wasWritten = waitForBytesWritten(1000);
 
 	if (!wasWritten) {
-		int tmp = 0;
+		qWarning(logWarning()) << "com::send() - write did not complete for" << QString::fromStdString(message);
 	}
 }
 
@@ -62,11 +63,11 @@ std::string helper::dec2hex(int dec, int digits = 6) {
 	return stream.str();
 }
 
-int helper::hex2dec(std::string s) {
+std::optional<int> helper::hex2dec(std::string s) {
 	if (s.size() < 6) {
-		return NAN;
+		return std::nullopt;
 	} else {
-		return std::stoul(s, nullptr, 16);
+		return static_cast<int>(std::stoul(s, nullptr, 16));
 	}
 }
 

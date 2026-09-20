@@ -327,7 +327,24 @@ void Brillouin::waitForNextRepetition() {
 		}
 
 		setAcquisitionStatus(ACQUISITION_STATUS::STARTED);
-		acquire(m_acquisition->m_storage);
+		// An uncaught exception here (a hardware call throwing, a std:: container access
+		// failing, ...) would otherwise propagate out of this Qt slot and terminate the
+		// application with whatever data was written so far and the hardware left in whatever
+		// state the exception interrupted it in. Route it through abortMode() instead, which
+		// stops the camera/dose-protection shutter and waits for the storage queue to drain.
+		try {
+			acquire(m_acquisition->m_storage);
+		} catch (const std::exception& e) {
+			qCritical(logCritical()) << "Brillouin::waitForNextRepetition: uncaught exception in acquire():" << e.what();
+			m_abort = true;
+			abortMode(m_acquisition->m_storage);
+			return;
+		} catch (...) {
+			qCritical(logCritical()) << "Brillouin::waitForNextRepetition: uncaught unknown exception in acquire().";
+			m_abort = true;
+			abortMode(m_acquisition->m_storage);
+			return;
+		}
 
 		if (m_abort) {
 			this->abortMode(m_acquisition->m_storage);
@@ -519,6 +536,13 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 	m_startOfLastRepetition.invalidate();
 	if (m_andor) {
 		m_andor->stopAcquisition();
+	}
+	// The "during" per-point brightfield capture (perPointBrightfieldDuringAcquisition) starts
+	// m_brightfieldCamera before a point's Brillouin exposure and only stops it afterward in
+	// finishPerPointBrightfieldDuring() - an abort landing inside that window skips that call,
+	// so it has to be stopped here too.
+	if (m_brightfieldCamera) {
+		m_brightfieldCamera->stopAcquisition();
 	}
 
 	if (m_scanControl) {
@@ -2860,14 +2884,18 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		return;
 	}
 
+	// storage lives on its own worker thread; its timer concurrently calls into the same HDF5
+	// file handle to flush the payload queue (StorageWrapper::s_writeQueues()), so these calls
+	// run on that thread too instead of directly here.
 	auto commentIn = std::string{ "Brillouin data" };
-	storage->setComment(commentIn);
-
-	storage->setResolution("x", m_settings.xSteps);
-	storage->setResolution("y", m_settings.ySteps);
-	storage->setResolution("z", m_settings.zSteps);
-
-	auto resolutionXout = storage->getResolution("x");
+	auto* storagePtr = storage.get();
+	QMetaObject::invokeMethod(storagePtr, [storagePtr, commentIn,
+		xSteps = m_settings.xSteps, ySteps = m_settings.ySteps, zSteps = m_settings.zSteps]() {
+			storagePtr->setComment(commentIn);
+			storagePtr->setResolution("x", xSteps);
+			storagePtr->setResolution("y", ySteps);
+			storagePtr->setResolution("z", zSteps);
+		}, Qt::BlockingQueuedConnection);
 
 	writeScaleCalibration(storage, ACQUISITION_MODE::BRILLOUIN);
 	if (m_settings.saveOverviewBrightfieldPerZ) {
@@ -2942,7 +2970,16 @@ void Brillouin::continueAfterSurfaceReview(bool fullGrid) {
 		filteredPositionsRelative.reserve(m_orderedPositionsRelative.size());
 		filteredIndices.reserve(m_orderedIndices.size());
 		filteredCalibrationAllowed.reserve(m_calibrationAllowed.size());
+		// m_calibrationAllowed has exactly one true per scan line, at that line's first index
+		// (see ScanPlanner::buildLegacyCartesianPlan()'s lineStarted). Used here as a line
+		// boundary marker rather than copied through as-is: if a line's own first point has no
+		// surface value and gets filtered out below, the next surviving point from that same
+		// line takes over its calibration-allowed flag, so the line isn't left with none.
+		auto lineHasSurvivingPoint = false;
 		for (size_t ll = 0; ll < m_orderedPositions.size(); ll++) {
+			if (m_calibrationAllowed[ll]) {
+				lineHasSurvivingPoint = false;
+			}
 			const auto key = std::make_pair(m_orderedIndices[ll].x, m_orderedIndices[ll].y);
 			if (m_surfaceFoundXYIndices.find(key) == m_surfaceFoundXYIndices.end()) {
 				continue;
@@ -2950,7 +2987,8 @@ void Brillouin::continueAfterSurfaceReview(bool fullGrid) {
 			filteredPositions.push_back(m_orderedPositions[ll]);
 			filteredPositionsRelative.push_back(m_orderedPositionsRelative[ll]);
 			filteredIndices.push_back(m_orderedIndices[ll]);
-			filteredCalibrationAllowed.push_back(m_calibrationAllowed[ll]);
+			filteredCalibrationAllowed.push_back(!lineHasSurvivingPoint);
+			lineHasSurvivingPoint = true;
 		}
 		m_orderedPositions = std::move(filteredPositions);
 		m_orderedPositionsRelative = std::move(filteredPositionsRelative);
@@ -2965,7 +3003,20 @@ void Brillouin::continueAfterSurfaceReview(bool fullGrid) {
 		m_scanControl->setRLShutterOpen(true);
 	}
 	setAcquisitionStatus(ACQUISITION_STATUS::STARTED);
-	runMeasurementPhase(m_acquisition->m_storage);
+	// See the matching try/catch in waitForNextRepetition() around its acquire() call.
+	try {
+		runMeasurementPhase(m_acquisition->m_storage);
+	} catch (const std::exception& e) {
+		qCritical(logCritical()) << "Brillouin::continueAfterSurfaceReview: uncaught exception in runMeasurementPhase():" << e.what();
+		m_abort = true;
+		abortMode(m_acquisition->m_storage);
+		return;
+	} catch (...) {
+		qCritical(logCritical()) << "Brillouin::continueAfterSurfaceReview: uncaught unknown exception in runMeasurementPhase().";
+		m_abort = true;
+		abortMode(m_acquisition->m_storage);
+		return;
+	}
 
 	// Mirrors waitForNextRepetition()'s own post-acquire() check: if the measurement
 	// itself aborted (hardware failure, user abort, ...), don't advance to the next

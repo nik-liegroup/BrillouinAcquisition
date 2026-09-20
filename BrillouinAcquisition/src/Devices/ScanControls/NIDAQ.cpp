@@ -1,8 +1,11 @@
 #include "stdafx.h"
 #include <windows.h>
+#include <chrono>
+#include <thread>
 
 #include "NIDAQ.h"
 #include "src/lib/math/simplemath.h"
+#include "src/helper/logger.h"
 
 /*
  * Public definitions
@@ -413,6 +416,13 @@ void NIDAQ::setBeamBlock(int position) {
 		position = 1;
 	}
 	Thorlabs_KSC::SC_SetOperatingState(m_serialNo_KSC, (Thorlabs_KSC::SC_OperatingStates)position);
+	auto i{ 0 };
+	while (Thorlabs_KSC::SC_GetSolenoidState(m_serialNo_KSC) != position && i++ < 10) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
+	if (Thorlabs_KSC::SC_GetSolenoidState(m_serialNo_KSC) != position) {
+		qWarning(logWarning()) << "NIDAQ::setBeamBlock() - beam block did not reach position" << position << "within 1 s.";
+	}
 }
 
 int NIDAQ::getBeamBlock() {

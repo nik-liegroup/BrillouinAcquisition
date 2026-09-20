@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "ZeissECU.h"
+#include "src/helper/logger.h"
 
 #include <chrono>
 #include <thread>
@@ -328,6 +329,9 @@ void ZeissECU::setBeamBlock(int position) {
 	while (getBeamBlock() != position && i++ < 10) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
+	if (getBeamBlock() != position) {
+		qWarning(logWarning()) << "ZeissECU::setBeamBlock() - beam block did not reach position" << position << "within 1 s.";
+	}
 }
 
 int ZeissECU::getBeamBlock() {
@@ -526,7 +530,13 @@ void Focus::setZ(double position) {
 
 double Focus::getZ() {
 	auto position = "0x" + receive("Zp");
-	auto pos = helper::hex2dec(position);
+	auto parsed = helper::hex2dec(position);
+	if (!parsed) {
+		qWarning(logWarning()) << "Focus::getZ() - could not parse position reply, returning last known position.";
+	} else {
+		m_lastRawPosition = *parsed;
+	}
+	auto pos = m_lastRawPosition;
 	// The actual travel range of the focus is significantly smaller than the theoretically possible maximum increment value (FFFFFF or 16777215).
 	// When the microscope starts, it sets it home position to (0, 0, 0). Values in the negative range are then adressed as (16777215 - positionInInc).
 	// Hence, we consider all values > 16777215/2 to actually be negative and wrap them accordingly (similar to what positive_modulo(...,...) for the setPosition() functions does).
@@ -626,7 +636,15 @@ void MCU::setPosition(const std::string& axis, double position) {
 
 double MCU::getPosition(const std::string& axis) {
 	auto position = receive(axis + "p");
-	auto pos = helper::hex2dec(position);
+	auto parsed = helper::hex2dec(position);
+	auto& lastRawPosition = (axis == "X") ? m_lastRawPositionX : m_lastRawPositionY;
+	if (!parsed) {
+		qWarning(logWarning()) << "MCU::getPosition() - could not parse position reply for axis"
+			<< QString::fromStdString(axis) << ", returning last known position.";
+	} else {
+		lastRawPosition = *parsed;
+	}
+	auto pos = lastRawPosition;
 	// The actual travel range of the stage is significantly smaller than the theoretically possible maximum increment value (FFFFFF or 16777215).
 	// When the microscope starts, it sets it home position to (0, 0, 0). Values in the negative range are then adressed as (16777215 - positionInInc).
 	// Hence, we consider all values > 16777215/2 to actually be negative and wrap them accordingly (similar to what positive_modulo(...,...) for the setPosition() functions does).

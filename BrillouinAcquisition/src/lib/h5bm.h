@@ -267,6 +267,10 @@ public:
 	ModeHandles* getModeHandle(ACQUISITION_MODE mode);
 	void newRepetition(ACQUISITION_MODE mode);
 
+	// True once the file is open/created for writing. False means every setData()/
+	// setPositions() call is a no-op.
+	bool isWritable() const { return m_fileWritable; };
+
 	// date
 	void setDate(const std::string& datestring);
 	std::string getDate();
@@ -333,6 +337,11 @@ public:
 	std::string getCalibrationSample(int index);
 	double getCalibrationShift(int index);
 
+signals:
+	// Emitted when an HDF5 dataset create/write call fails (e.g. disk full, permission denied,
+	// network share dropped).
+	void s_writeError(QString message);
+
 private:
 	bool m_fileWritable = false;
 	bool m_fileValid = false;
@@ -386,6 +395,8 @@ private:
 	void getGroupHandles(ModeHandles& handle, bool create = false);
 
 	void writePoint(hid_t group, const std::string& subGroupName, POINT2 point);
+
+	void reportWriteError(const QString& message);
 
 	// set/get attribute
 
@@ -451,7 +462,16 @@ hid_t H5BM::setDataset(hid_t parent, std::vector<T> data, std::string name, cons
 		}
 	}
 
-	H5Dwrite(dset_id, get_memtype<T>(), H5S_ALL, H5S_ALL, H5P_DEFAULT, data.data());
+	if (dset_id < 0) {
+		reportWriteError(QString("Failed to create/open HDF5 dataset \"%1\" - this data was NOT saved.")
+			.arg(QString::fromStdString(name)));
+	} else {
+		herr_t writeStatus = H5Dwrite(dset_id, get_memtype<T>(), H5S_ALL, H5S_ALL, H5P_DEFAULT, data.data());
+		if (writeStatus < 0) {
+			reportWriteError(QString("Failed to write HDF5 dataset \"%1\" - this data was NOT saved.")
+				.arg(QString::fromStdString(name)));
+		}
+	}
 
 	H5Sclose(space_id);
 	H5Tclose(type_id);

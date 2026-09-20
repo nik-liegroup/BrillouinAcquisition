@@ -329,7 +329,7 @@ void Fluorescence::__acquire(std::unique_ptr <StorageWrapper>& storage, std::vec
 
 		// Sometimes the uEye camera returns a black image (only zeros), we try to catch this here by
 		// repeating the acquisition a maximum of 5 times
-		unsigned char sum = simplemath::sum(*images_);
+		auto sum = simplemath::sum(*images_);
 		int i{ 0 };
 		while (sum == 0 && 5 > i++) {
 			if (m_camera) {
