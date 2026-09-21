@@ -1527,6 +1527,7 @@ void BrillouinAcquisition::updateBrillouinStartAvailability() {
 }
 
 void BrillouinAcquisition::showPosition(POINT3 position) {
+	m_currentPosition = position;
 	ui->positionX->setText(QString::number(position.x));
 	ui->positionY->setText(QString::number(position.y));
 	ui->positionZ->setText(QString::number(position.z));
@@ -1542,6 +1543,11 @@ void BrillouinAcquisition::showPosition(POINT3 position) {
 		const QSignalBlocker blocker(ui->setPositionZ);
 		ui->setPositionZ->setValue(position.z);
 	}
+	updateAbsoluteGridStatus();
+}
+
+void BrillouinAcquisition::showStagePosition(POINT3 position) {
+	m_currentStagePosition = position;
 	updateAbsoluteGridStatus();
 }
 
@@ -1689,18 +1695,14 @@ void BrillouinAcquisition::updateAbsoluteGridStatus() {
 	// Resolved (offset-applied), not the raw stored setting, so this status readout is
 	// directly comparable to the live Stage/Focus positions shown alongside it.
 	const auto origin = m_Brillouin->resolvedGridOriginUm();
-	// m_scanControl lives on its own worker thread and getPosition() there can involve live
-	// hardware I/O (serial/COM reads on some backends) - called directly from here it would
-	// race whatever the acquisition thread is doing with the same connection.
-	auto currentFocus = POINT3{};
-	auto currentStage = POINT3{};
-	if (m_scanControl) {
-		auto* scanControl = m_scanControl;
-		QMetaObject::invokeMethod(scanControl, [scanControl, &currentFocus, &currentStage]() {
-			currentFocus = scanControl->getPosition();
-			currentStage = scanControl->getPosition(PositionType::STAGE);
-		}, Qt::BlockingQueuedConnection);
-	}
+	// m_scanControl lives on its own worker thread, so its position can't be read directly from
+	// here without a race. Rather than a live query (which used to mean a blocking round trip
+	// onto that thread on every call - including every 100 ms position tick - freezing the GUI
+	// for as long as that thread stayed busy, e.g. for the whole duration of an acquisition),
+	// this uses the values last pushed via the currentPosition/currentPositionStage signals -
+	// see showPosition()/showStagePosition().
+	const auto& currentFocus = m_currentPosition;
+	const auto& currentStage = m_currentStagePosition;
 	const auto mode = m_Brillouin->settings.gridCoordinatesAbsolute
 		? QString("absolute, grid relative to origin")
 		: QString("relative, grid relative to acquisition start");
@@ -5187,6 +5189,12 @@ void BrillouinAcquisition::initScanControl() {
 		&ScanControl::currentPosition,
 		this,
 		[this](POINT3 position) { showPosition(position); }
+	);
+	connection = QWidget::connect(
+		m_scanControl,
+		&ScanControl::currentPositionStage,
+		this,
+		[this](POINT3 position) { showStagePosition(position); }
 	);
 	connection = QWidget::connect(
 		&buttonDelegate,

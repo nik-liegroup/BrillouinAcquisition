@@ -371,6 +371,10 @@ signals:
 	void elementPositionsChanged(std::vector<double>);
 	void elementPositionChanged(DeviceElement, double);
 	void currentPosition(POINT3);
+	// Stage-only position (no scanner offset, no home-position subtraction), emitted alongside
+	// currentPosition from the same hardware read in announcePosition() - lets a receiver on
+	// another thread cache both without a second, separately-timed hardware round trip.
+	void currentPositionStage(POINT3);
 	void savedPositionsChanged(std::vector<POINT3>);
 	void homePositionBoundsChanged(BOUNDS);
 	void currentPositionBoundsChanged(BOUNDS);
