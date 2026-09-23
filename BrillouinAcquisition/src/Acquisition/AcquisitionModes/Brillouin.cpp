@@ -492,21 +492,31 @@ void Brillouin::setScanOrderAuto(bool automatical) {
 	determineScanOrder();
 }
 
+bool Brillouin::isZOutermostInPlan() const {
+	for (size_t ii{ 1 }; ii < m_orderedIndices.size(); ii++) {
+		if (m_orderedIndices[ii].z < m_orderedIndices[ii - 1].z) {
+			return false;
+		}
+	}
+	return true;
+}
+
 void Brillouin::determineScanOrder() {
 	if (m_scanOrder.automatical) {
-		// determine scan order based on step numbers
-		// highest step number first, then descending
-		auto stepNumbers = std::vector<int>{ m_settings.xSteps, m_settings.ySteps, m_settings.zSteps };
-		auto indices = simplemath::tag_sort_inverse(stepNumbers);
-		auto order = std::vector<int>(stepNumbers.size());
-		for (gsl::index jj{ 0 }; jj < order.size(); jj++) {
-			order[indices[jj]] = jj;
+		// z is always the outermost loop (plane by plane), no matter how many z steps there are:
+		// per-z overview brightfield images are captured once a plane is finished, which only
+		// works out that way with z outermost (see runMeasurementPhase()). A step count based
+		// choice used to put z on an inner loop whenever it had more steps than x or y.
+		// x and y are still ordered automatically: the axis with more steps is the inner loop
+		// (fewer, longer sweeps). Ties keep x innermost.
+		if (m_settings.xSteps >= m_settings.ySteps) {
+			m_scanOrder.x = 0;
+			m_scanOrder.y = 1;
+		} else {
+			m_scanOrder.x = 1;
+			m_scanOrder.y = 0;
 		}
-
-		m_scanOrder.x = order[0];
-		m_scanOrder.y = order[1];
-		m_scanOrder.z = order[2];
-
+		m_scanOrder.z = 2;
 	}
 	emit(s_scanOrderChanged(m_scanOrder));
 }
@@ -791,6 +801,11 @@ void Brillouin::setCurrentFocusAsZOrigin() {
 		// Persistent, Start-independent - see resolvedGridOriginUm()'s own comment for why this
 		// (not m_startPosition.z) is what absolute mode actually reads.
 		m_settings.absoluteGridOriginUm.z = currentZ;
+		// Also re-anchors the live z position readout (Focus/positionZ) to 0 here, same as
+		// switching to relative mode, clicking "Set home", and switching back used to achieve
+		// as a manual workaround - without this, the grid still measured correctly centered on
+		// this z, but the on-screen number never actually read 0 the way that workaround's did.
+		m_scanControl->setHomeZ(currentZ);
 	} else {
 		m_startPosition.z = currentZ;
 	}
@@ -860,9 +875,6 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 
 	const int width = (int)m_settings.camera.roi.width_binned;
 	const int height = (int)m_settings.camera.roi.height_binned;
-	if (width <= 0 || height <= 0) {
-		return 0.0;
-	}
 
 	auto getDisplayValue = [&](int x, int displayY) -> double {
 		const auto rawY = height - 1 - displayY;
@@ -878,6 +890,32 @@ double Brillouin::estimateFrameMetric(const std::vector<std::byte>& image) const
 		const auto* data = reinterpret_cast<const unsigned char*>(image.data());
 		return data[idx];
 	};
+
+	return estimateFrameMetricGeneric(width, height, getDisplayValue);
+}
+
+double Brillouin::estimateFrameMetricFromSum(const std::vector<double>& sumBuffer) const {
+	if (sumBuffer.empty()) {
+		return 0.0;
+	}
+
+	const int width = (int)m_settings.camera.roi.width_binned;
+	const int height = (int)m_settings.camera.roi.height_binned;
+
+	auto getDisplayValue = [&](int x, int displayY) -> double {
+		const auto rawY = height - 1 - displayY;
+		const auto idx = (size_t)rawY * width + x;
+		return sumBuffer[idx];
+	};
+
+	return estimateFrameMetricGeneric(width, height, getDisplayValue);
+}
+
+double Brillouin::estimateFrameMetricGeneric(
+	int width, int height, const std::function<double(int, int)>& getDisplayValue) const {
+	if (width <= 0 || height <= 0) {
+		return 0.0;
+	}
 
 	std::vector<double> metrics;
 	auto appendMetric = [&](int roiLeft, int roiDisplayBottom, int roiWidth, int roiHeight) {
@@ -1083,7 +1121,8 @@ std::vector<POINT2> Brillouin::additionalBoundaryXYPoints(int count) const {
 }
 
 std::optional<double> Brillouin::measureBoundarySurfaceZ(
-	POINT2 xyPlan, double seedZRel, double zTravel, double zStep, double referenceThreshold
+	POINT2 xyPlan, double seedZRel, double zTravel, double zStep, double referenceThreshold,
+	const std::function<void(double zRel, double metric)>& onSample
 ) {
 	// Mirrors searchColumn()'s algorithm (local to runSurfacePreScan()) exactly - seed,
 	// rewind if already past the interface, forward search, verification window with a
@@ -1107,14 +1146,23 @@ std::optional<double> Brillouin::measureBoundarySurfaceZ(
 		approachGridPosition(target);
 		const auto frames = std::max(1, frameAverage);
 		double sum = 0.0;
-		for (int f = 0; f < frames; f++) {
-			if (m_abort) {
-				return std::nullopt;
+		{
+			// RAII: see runMeasurementPhase()'s identical guard for why - an abort partway
+			// through this loop (f >= 1, after the beam block has already been opened by
+			// f == 0) previously returned without ever closing it.
+			struct ShutterCloseGuard {
+				Brillouin* self;
+				~ShutterCloseGuard() { self->closeDoseProtectionShutter(); }
+			} shutterCloseGuard{ this };
+			for (int f = 0; f < frames; f++) {
+				if (m_abort) {
+					return std::nullopt;
+				}
+				// Back-to-back frames at the same position - open once before the first,
+				// close once after the last, not between every one.
+				acquireAndorFrame(frame.data(), f == 0, f == frames - 1);
+				sum += estimateFrameMetric(frame);
 			}
-			// Back-to-back frames at the same position - open once before the first, close
-			// once after the last, not between every one.
-			acquireAndorFrame(frame.data(), f == 0, f == frames - 1);
-			sum += estimateFrameMetric(frame);
 		}
 		return sum / frames;
 	};
@@ -1123,6 +1171,9 @@ std::optional<double> Brillouin::measureBoundarySurfaceZ(
 	auto metric = measureHere(zRel, 1);
 	if (!metric) {
 		return std::nullopt;
+	}
+	if (onSample) {
+		onSample(zRel, *metric);
 	}
 
 	auto rewound = 0.0;
@@ -1136,6 +1187,9 @@ std::optional<double> Brillouin::measureBoundarySurfaceZ(
 		if (!metric) {
 			return std::nullopt;
 		}
+		if (onSample) {
+			onSample(zRel, *metric);
+		}
 	}
 
 	while (zRel <= zTravel) {
@@ -1147,6 +1201,9 @@ std::optional<double> Brillouin::measureBoundarySurfaceZ(
 				return std::nullopt;
 			}
 			window.push_back(*candidateAvg);
+			if (onSample) {
+				onSample(candidateZ, *candidateAvg);
+			}
 
 			auto verified = true;
 			for (int k = 1; k <= std::max(0, m_settings.surfaceVerificationSteps); k++) {
@@ -1160,6 +1217,9 @@ std::optional<double> Brillouin::measureBoundarySurfaceZ(
 					return std::nullopt;
 				}
 				window.push_back(*mk);
+				if (onSample) {
+					onSample(zk, *mk);
+				}
 				if (*mk > referenceThreshold) {
 					verified = false;
 					break;
@@ -1186,6 +1246,9 @@ std::optional<double> Brillouin::measureBoundarySurfaceZ(
 		metric = measureHere(zRel, 1);
 		if (!metric) {
 			return std::nullopt;
+		}
+		if (onSample) {
+			onSample(zRel, *metric);
 		}
 	}
 
@@ -1287,14 +1350,38 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	// in favor of whichever neighbor was measured most recently.
 	std::vector<std::vector<int>> processOrder(ySamples.size(), std::vector<int>(xSamples.size(), -1));
 	auto frame = std::vector<std::byte>(m_settings.camera.roi.bytesPerFrame);
-	// Progress is based on columns (coarse xy points), not z-measurement steps: the
-	// neighbor-seeded search below takes a variable, usually small, number of z-steps per
-	// column once a few neighbors are found, nowhere near the worst-case full zStepsCoarse
-	// sweep a column could take. Estimating progress from steps-so-far against that
-	// worst-case denominator badly underestimates how far along the scan really is (e.g.
-	// showing ~10% when nearly every column is already done). The column count, in
-	// contrast, is known exactly up front and every column is visited exactly once.
-	const auto totalColumnsExpected = std::max(1, (int)(xSamples.size() * ySamples.size()));
+	// Progress is based on points (coarse columns + boundary points), not z-measurement steps:
+	// the neighbor-seeded search below takes a variable, usually small, number of z-steps per
+	// point once a few neighbors are found, nowhere near the worst-case full zStepsCoarse sweep
+	// a point could take. Estimating progress from steps-so-far against that worst-case
+	// denominator badly underestimates how far along the scan really is (e.g. showing ~10% when
+	// nearly every point is already done). The point count, in contrast, is known exactly up
+	// front and every point is visited exactly once.
+	//
+	// Computed up front, before any measuring starts, so the "point N/M" progress is accurate
+	// from the very first message - both pieces are pure functions of settings/geometry, not of
+	// scan results: coarseColumnCount mirrors the traversal loop's own ROI skip below exactly
+	// (so it never counts a column that loop will skip), and additionalBoundaryXYPoints() is
+	// const or geometry alone (see its own comment) - moved up here from where it used to be
+	// computed, right before the boundary loop that consumes it, since it's now needed for the
+	// denominator this much earlier too.
+	int coarseColumnCount = 0;
+	for (gsl::index yi{ 0 }; yi < (gsl::index)ySamples.size(); yi++) {
+		for (gsl::index xi{ 0 }; xi < (gsl::index)xSamples.size(); xi++) {
+			if (m_settings.useRoiMask && !isPointInPolygonUm(POINT2{ xSamples[xi], ySamples[yi] }, m_settings.roiPolygonUm)) {
+				continue;
+			}
+			coarseColumnCount++;
+		}
+	}
+	const auto boundaryXY = additionalBoundaryXYPoints(m_settings.additionalBoundaryPoints);
+	const auto totalPointsExpected = std::max(1, coarseColumnCount + (int)boundaryXY.size());
+	int pointsMapped = 0;
+
+	// Coarse-column-only count, kept separately from pointsMapped/totalPointsExpected above -
+	// this one still feeds the final "found for N of M columns" summary message
+	// (applySurfaceFollowPlan()), which is deliberately about the rectangular grid alone, not
+	// boundary points.
 	int totalColumns = 0;
 	int processCounter = 0;
 
@@ -1329,27 +1416,40 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	}
 	const int refFrames = std::max(1, m_settings.mediumReferenceFrameCount);
 	double refSum = 0.0;
-	for (int i = 0; i < refFrames; i++) {
-		if (m_abort) {
-			return {};
+	{
+		// RAII: see runMeasurementPhase()'s identical guard for why - an abort partway
+		// through this loop (i >= 1, after the beam block has already been opened by i == 0)
+		// previously returned without ever closing it.
+		struct ShutterCloseGuard {
+			Brillouin* self;
+			~ShutterCloseGuard() { self->closeDoseProtectionShutter(); }
+		} shutterCloseGuard{ this };
+		for (int i = 0; i < refFrames; i++) {
+			if (m_abort) {
+				return {};
+			}
+			// Back-to-back frames at the same (reference) position - open once before the
+			// first, close once after the last, not between every one.
+			acquireAndorFrame(frame.data(), i == 0, i == refFrames - 1);
+			const auto refMetric = estimateFrameMetric(frame);
+			refSum += refMetric;
+			// Held at 0, not its own small scale, so the bar doesn't start climbing before any
+			// point (coarse or boundary) has actually been mapped, and can't dip back down to 0
+			// once the point-mapping loop below starts emitting its own, real percentage - see
+			// emitSurfaceProgress()'s comment. The reference measurement isn't a "point" in that
+			// count, just a one-time calibration step before it.
+			emit(s_surfaceScanProgress(
+				0.0,
+				QString("Surface reference %1/%2: metric %3")
+					.arg(i + 1)
+					.arg(refFrames)
+					.arg(refMetric, 0, 'f', 3)
+			));
 		}
-		// Back-to-back frames at the same (reference) position - open once before the
-		// first, close once after the last, not between every one.
-		acquireAndorFrame(frame.data(), i == 0, i == refFrames - 1);
-		const auto refMetric = estimateFrameMetric(frame);
-		refSum += refMetric;
-		const auto refProgress = 5.0 * (double)(i + 1) / refFrames;
-		emit(s_surfaceScanProgress(
-			refProgress,
-			QString("Surface reference %1/%2: metric %3")
-				.arg(i + 1)
-				.arg(refFrames)
-				.arg(refMetric, 0, 'f', 3)
-		));
 	}
 	m_settings.mediumReferenceValue = refSum / refFrames;
 	emit(s_surfaceScanProgress(
-		5.0,
+		0.0,
 		QString("Surface reference measured: %1")
 			.arg(m_settings.mediumReferenceValue, 0, 'f', 3)
 	));
@@ -1384,20 +1484,39 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		approachGridPosition(target);
 		const auto frames = std::max(1, frameAverage);
 		double sum = 0.0;
-		for (int f = 0; f < frames; f++) {
-			if (m_abort) {
-				return std::nullopt;
+		{
+			// RAII: see runMeasurementPhase()'s identical guard for why - an abort partway
+			// through this loop (f >= 1, after the beam block has already been opened by
+			// f == 0) previously returned without ever closing it.
+			struct ShutterCloseGuard {
+				Brillouin* self;
+				~ShutterCloseGuard() { self->closeDoseProtectionShutter(); }
+			} shutterCloseGuard{ this };
+			for (int f = 0; f < frames; f++) {
+				if (m_abort) {
+					return std::nullopt;
+				}
+				// Back-to-back frames at the same position - open once before the first,
+				// close once after the last, not between every one.
+				acquireAndorFrame(frame.data(), f == 0, f == frames - 1);
+				sum += estimateFrameMetric(frame);
 			}
-			// Back-to-back frames at the same position - open once before the first, close
-			// once after the last, not between every one.
-			acquireAndorFrame(frame.data(), f == 0, f == frames - 1);
-			sum += estimateFrameMetric(frame);
 		}
 		return sum / frames;
 	};
 
+	// Overall % = points fully mapped so far / (coarse columns + boundary points), matching the
+	// dense-grid interpolation pass further down which - since it doesn't map any new physical
+	// point - just holds progress at 100 rather than restarting its own 0-100 scale (which used
+	// to make the bar visibly jump backward right when the interpolation pass began).
+	// pointsMapped only advances once a point's search actually concludes (found, not found, or
+	// aborted) - see the two callers below - not per z-step sample within it, so a slow point
+	// doesn't move the number, only finishing one does. Every "point N/M" message below uses
+	// this exact same pointsMapped value for N (not pointsMapped + 1) so the label and the % can
+	// never disagree - while still probing the very first point, that reads "point 0/M" at 0%,
+	// then "point 1/M" once it concludes.
 	auto emitSurfaceProgress = [&](const QString& message) {
-		const auto progress = std::clamp(5.0 + 95.0 * (double)totalColumns / totalColumnsExpected, 5.0, 99.9);
+		const auto progress = std::clamp(100.0 * (double)pointsMapped / totalPointsExpected, 0.0, 100.0);
 		emit(s_surfaceScanProgress(progress, message));
 	};
 
@@ -1466,9 +1585,8 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			return false;
 		}
 		recordMetricSample(xi, yi, zRel, *metric);
-		emitSurfaceProgress(QString("Surface scan: x %1/%2, y %3/%4, seeded z %5 um, metric %6, threshold %7")
-			.arg((int)xi + 1).arg((int)xSamples.size())
-			.arg((int)yi + 1).arg((int)ySamples.size())
+		emitSurfaceProgress(QString("Surface scan: point %1/%2, seeded z %3 um, metric %4, threshold %5")
+			.arg(pointsMapped).arg(totalPointsExpected)
 			.arg(zRel, 0, 'f', 1).arg(*metric, 0, 'f', 3).arg(referenceThreshold, 0, 'f', 3));
 
 		// Rewind phase.
@@ -1477,9 +1595,8 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			zRel -= zStep;
 			rewound += zStep;
 			if (rewound > m_settings.surfaceMaxRewindUm || zRel < 0.0) {
-				emitSurfaceProgress(QString("No surface found at x %1/%2, y %3/%4 (rewind limit reached)")
-					.arg((int)xi + 1).arg((int)xSamples.size())
-					.arg((int)yi + 1).arg((int)ySamples.size()));
+				emitSurfaceProgress(QString("No surface found: point %1/%2 (rewind limit reached)")
+					.arg(pointsMapped).arg(totalPointsExpected));
 				return true;
 			}
 			metric = measureAt(xi, yi, zRel, 1);
@@ -1487,9 +1604,8 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 				return false;
 			}
 			recordMetricSample(xi, yi, zRel, *metric);
-			emitSurfaceProgress(QString("Surface scan (rewind): x %1/%2, y %3/%4, z %5 um, metric %6, threshold %7")
-				.arg((int)xi + 1).arg((int)xSamples.size())
-				.arg((int)yi + 1).arg((int)ySamples.size())
+			emitSurfaceProgress(QString("Surface scan (rewind): point %1/%2, z %3 um, metric %4, threshold %5")
+				.arg(pointsMapped).arg(totalPointsExpected)
 				.arg(zRel, 0, 'f', 1).arg(*metric, 0, 'f', 3).arg(referenceThreshold, 0, 'f', 3));
 		}
 
@@ -1518,10 +1634,9 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 						return false;
 					}
 					recordMetricSample(xi, yi, zk, *mk);
-					emitSurfaceProgress(QString("Surface verification %1/%2 at x %3/%4, y %5/%6: metric %7, threshold %8")
+					emitSurfaceProgress(QString("Surface verification %1/%2 at point %3/%4: metric %5, threshold %6")
 						.arg(k).arg(m_settings.surfaceVerificationSteps)
-						.arg((int)xi + 1).arg((int)xSamples.size())
-						.arg((int)yi + 1).arg((int)ySamples.size())
+						.arg(pointsMapped).arg(totalPointsExpected)
 						.arg(*mk, 0, 'f', 3).arg(referenceThreshold, 0, 'f', 3));
 					window.push_back(*mk);
 					if (*mk > referenceThreshold) {
@@ -1551,17 +1666,15 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 						// from the verification block above; this only restores zMetric's
 						// "current" value, it doesn't add a second curve entry for it.
 						zMetric[yi][xi] = *candidateAvg;
-						emitSurfaceProgress(QString("Surface found at x %1/%2, y %3/%4, z %5 um: metric %6 <= threshold %7, verified")
-							.arg((int)xi + 1).arg((int)xSamples.size())
-							.arg((int)yi + 1).arg((int)ySamples.size())
+						emitSurfaceProgress(QString("Surface found: point %1/%2, z %3 um: metric %4 <= threshold %5, verified")
+							.arg(pointsMapped).arg(totalPointsExpected)
 							.arg(candidateZ, 0, 'f', 1).arg(*candidateAvg, 0, 'f', 3).arg(referenceThreshold, 0, 'f', 3));
 						return true;
 					}
 				}
 
-				emitSurfaceProgress(QString("No surface found at x %1/%2, y %3/%4 (candidate at z %5 um failed verification)")
-					.arg((int)xi + 1).arg((int)xSamples.size())
-					.arg((int)yi + 1).arg((int)ySamples.size())
+				emitSurfaceProgress(QString("No surface found: point %1/%2 (candidate at z %3 um failed verification)")
+					.arg(pointsMapped).arg(totalPointsExpected)
 					.arg(candidateZ, 0, 'f', 1));
 				return true;
 			}
@@ -1574,15 +1687,13 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 				return false;
 			}
 			recordMetricSample(xi, yi, zRel, *metric);
-			emitSurfaceProgress(QString("Surface scan: x %1/%2, y %3/%4, z %5 um, metric %6, threshold %7")
-				.arg((int)xi + 1).arg((int)xSamples.size())
-				.arg((int)yi + 1).arg((int)ySamples.size())
+			emitSurfaceProgress(QString("Surface scan: point %1/%2, z %3 um, metric %4, threshold %5")
+				.arg(pointsMapped).arg(totalPointsExpected)
 				.arg(zRel, 0, 'f', 1).arg(*metric, 0, 'f', 3).arg(referenceThreshold, 0, 'f', 3));
 		}
 
-		emitSurfaceProgress(QString("No surface found at x %1/%2, y %3/%4 (no drop within range)")
-			.arg((int)xi + 1).arg((int)xSamples.size())
-			.arg((int)yi + 1).arg((int)ySamples.size()));
+		emitSurfaceProgress(QString("No surface found: point %1/%2 (no drop within range)")
+			.arg(pointsMapped).arg(totalPointsExpected));
 		return true;
 	};
 
@@ -1601,6 +1712,10 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			if (!searchColumn(xi, yi)) {
 				return {};
 			}
+			// Advances only once this point's search has actually concluded - see
+			// emitSurfaceProgress()'s comment for why this, not a per-z-step count, drives
+			// the "point N/M" progress.
+			pointsMapped++;
 		}
 	}
 
@@ -1748,8 +1863,8 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	// available data (genuine or gap-filled) and from each other, using the exact same
 	// seed/rewind/verify algorithm searchColumn() uses (see measureBoundarySurfaceZ()).
 	// Folded into the dense-grid interpolation below as extra weighted neighbors, alongside -
-	// not instead of - the untouched rectangular grid above.
-	const auto boundaryXY = additionalBoundaryXYPoints(m_settings.additionalBoundaryPoints);
+	// not instead of - the untouched rectangular grid above. (boundaryXY itself is computed
+	// up front, near totalPointsExpected, not here - see that comment for why.)
 	if (!boundaryXY.empty()) {
 		std::vector<POINT3> referencePoints;
 		for (gsl::index yc{ 0 }; yc < (gsl::index)ySamples.size(); yc++) {
@@ -1759,7 +1874,6 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 				}
 			}
 		}
-		int boundaryDone = 0;
 		for (const auto& xy : boundaryXY) {
 			if (m_abort) {
 				return {};
@@ -1778,13 +1892,26 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 					seedZ = ref.z;
 				}
 			}
-			boundaryDone++;
-			emitSurfaceProgress(QString("Boundary point %1/%2").arg(boundaryDone).arg((int)boundaryXY.size()));
-			const auto found = measureBoundarySurfaceZ(xy, seedZ, zTravel, zStep, referenceThreshold);
+			// Same "point N/M" numbering (and the same combined denominator, coarse columns +
+			// boundary points) the rectangular grid above already uses - boundary points are
+			// just the tail end of that same sequence, not a separately-numbered pass.
+			emitSurfaceProgress(QString("Surface scan (boundary): point %1/%2, seeded z %3 um")
+				.arg(pointsMapped).arg(totalPointsExpected).arg(seedZ, 0, 'f', 1));
+			// Same per-step detail searchColumn()'s emitSurfaceProgress() calls show for the
+			// rectangular grid - previously missing here entirely (see measureBoundarySurfaceZ()'s
+			// onSample parameter), which made the status line go blank of anything useful for the
+			// whole duration of every boundary point.
+			const auto found = measureBoundarySurfaceZ(xy, seedZ, zTravel, zStep, referenceThreshold,
+				[&](double zRel, double metric) {
+					emitSurfaceProgress(QString("Surface scan (boundary): point %1/%2, z %3 um, metric %4, threshold %5")
+						.arg(pointsMapped).arg(totalPointsExpected)
+						.arg(zRel, 0, 'f', 1).arg(metric, 0, 'f', 3).arg(referenceThreshold, 0, 'f', 3));
+				});
 			if (found) {
 				m_surfaceBoundaryPointsUm.push_back(POINT3{ xy.x, xy.y, *found });
 				referencePoints.push_back(POINT3{ xy.x, xy.y, *found });
 			}
+			pointsMapped++;
 		}
 	}
 
@@ -1796,18 +1923,19 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	std::set<std::pair<int, int>> interpolatedXYIndices;
 
 	// This is an O(dense grid x coarse grid) pass - for a fine dense grid it can take a while,
-	// so progress and the abort flag are both checked/reported here too, on the same channel as
-	// the coarse scan above, so it shows up in the same place instead of looking like a stall.
+	// so the abort flag and a status message are both checked/reported here too, on the same
+	// channel as the coarse scan above, so it shows up in the same place instead of looking like
+	// a stall. The % itself is held at 100 throughout, not given its own 0-100 scale: every
+	// physical point (coarse + boundary) is already mapped by the time this pass starts - see
+	// emitSurfaceProgress()'s comment - and interpolation is pure computation over that already-
+	// complete data, not a new point being measured. Giving it its own scale used to make the bar
+	// visibly jump backward right as this pass began.
 	for (gsl::index yi{ 0 }; yi < (gsl::index)yDense.size(); yi++) {
 		if (m_abort) {
 			return {};
 		}
-		const auto interpolationProgress = std::clamp(
-			99.9 * (double)(yi + 1) / std::max((gsl::index)1, (gsl::index)yDense.size()),
-			0.0, 99.9
-		);
 		emit(s_surfaceScanProgress(
-			interpolationProgress,
+			100.0,
 			QString("Interpolating surface: row %1/%2").arg(yi + 1).arg(yDense.size())
 		));
 		for (gsl::index xi{ 0 }; xi < (gsl::index)xDense.size(); xi++) {
@@ -2581,12 +2709,21 @@ void Brillouin::captureBackgroundPoints(std::unique_ptr<StorageWrapper>& storage
 			const auto stagePosition = rawPositionToGridFrame(m_scanControl->getPosition());
 
 			auto images = std::vector<std::byte>((int64_t)m_settings.camera.roi.bytesPerFrame * m_settings.camera.frameCount);
-			for (gsl::index mm{ 0 }; mm < m_settings.camera.frameCount; mm++) {
-				if (m_abort) {
-					return;
+			{
+				// RAII: see runMeasurementPhase()'s identical guard for why - an abort partway
+				// through this loop (mm >= 1, after the beam block has already been opened by
+				// mm == 0) previously returned without ever closing it.
+				struct ShutterCloseGuard {
+					Brillouin* self;
+					~ShutterCloseGuard() { self->closeDoseProtectionShutter(); }
+				} shutterCloseGuard{ this };
+				for (gsl::index mm{ 0 }; mm < m_settings.camera.frameCount; mm++) {
+					if (m_abort) {
+						return;
+					}
+					const auto pointerPos = (int64_t)m_settings.camera.roi.bytesPerFrame * mm;
+					acquireAndorFrame(&images[pointerPos], mm == 0, mm == m_settings.camera.frameCount - 1);
 				}
-				const auto pointerPos = (int64_t)m_settings.camera.roi.bytesPerFrame * mm;
-				acquireAndorFrame(&images[pointerPos], mm == 0, mm == m_settings.camera.frameCount - 1);
 			}
 
 			if (m_settings.camera.readout.dataType == "unsigned short") {
@@ -3079,10 +3216,17 @@ void Brillouin::acquireAndorFrame(std::byte* buffer, bool openBeam, bool closeBe
 		}
 	}
 	m_andor->getImageForAcquisition(buffer);
-	if (doseProtect && closeBeam) {
-		if (!m_scanControl->setBeamBlockOpen(false)) {
-			m_scanControl->setRLShutterOpen(false);
-		}
+	if (closeBeam) {
+		closeDoseProtectionShutter();
+	}
+}
+
+void Brillouin::closeDoseProtectionShutter() {
+	if (!(m_settings.useDoseProtection && m_scanControl)) {
+		return;
+	}
+	if (!m_scanControl->setBeamBlockOpen(false)) {
+		m_scanControl->setRLShutterOpen(false);
 	}
 }
 
@@ -3406,6 +3550,16 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	storage->setPositions("overview-brightfield-full-stack-mosaic-used", std::vector<double>{ m_settings.overviewBrightfieldFullStackMosaic ? 1.0 : 0.0 }, 1, originDims);
 	storage->setPositions("overview-brightfield-exposure-ms-used", std::vector<double>{ (double)m_settings.overviewBrightfieldExposureMs }, 1, originDims);
 	storage->setPositions("overview-brightfield-gain-used", std::vector<double>{ m_settings.overviewBrightfieldGain }, 1, originDims);
+	// 1 = the per-z overview batches were spread evenly across the whole scan (z not the
+	// outermost axis, so no plane finishes before the end - see runMeasurementPhase()), 0 =
+	// each batch was captured right after its own z-plane finished (or overviews are off).
+	// Downstream code registering overviews to the spectra needs to know which one applies.
+	storage->setPositions("overview-brightfield-spread-across-scan-used",
+		std::vector<double>{ (m_settings.saveOverviewBrightfieldPerZ && !isZOutermostInPlan()) ? 1.0 : 0.0 }, 1, originDims);
+	// Loop level per axis (0 = innermost ... 2 = outermost), as actually planned.
+	const hsize_t scanOrderDims[1] = { 3 };
+	storage->setPositions("grid-scan-order-used",
+		std::vector<double>{ (double)m_scanOrder.x, (double)m_scanOrder.y, (double)m_scanOrder.z }, 1, scanOrderDims);
 
 	// Grid-stepping/camera settings not otherwise recorded per-image.
 	storage->setPositions("use-grid-hysteresis-compensation-used", std::vector<double>{ m_settings.useGridHysteresisCompensation ? 1.0 : 0.0 }, 1, originDims);
@@ -3520,8 +3674,26 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	);
 
 	auto rank_data{ 3 };
+	// Adaptive frame extension (m_settings.extendFramesOnLowSignal): when actually usable
+	// (maxAdditionalFrames > 0), the frame-count dimension is padded to the fixed maximum
+	// (camera.frameCount + maxAdditionalFrames) for EVERY point, so the whole grid keeps one
+	// uniform dataset shape - the HDF5 format's existing fixed-shape assumption bmlab's
+	// results-array model (EvaluationModel.initialize_results_arrays()) relies on. Each
+	// point's own IMAGE<T> then additionally carries how many of those padded slots are real
+	// (framesActual below), written as a "frames_actual" attribute right alongside the other
+	// per-point dataset attributes (H5BM::setData()); trailing unused slots are left as
+	// whatever std::vector<std::byte>'s zero-initialization already gives them - harmless,
+	// since a correct reader stops at frames_actual and never looks at them (no pixel-value
+	// sentinel is used or needed).
+	// When the feature is off or maxAdditionalFrames == 0, this is a deliberate no-op: the
+	// dimension is exactly camera.frameCount as before, and no "frames_actual" attribute is
+	// written at all (see the IMAGE<T> construction below) - i.e. today's exact file layout,
+	// unchanged, for anyone not using the feature.
+	const auto frameExtensionEnabled = m_settings.extendFramesOnLowSignal && m_settings.maxAdditionalFrames > 0;
+	const auto framesAllocatedPerPoint = m_settings.camera.frameCount
+		+ (frameExtensionEnabled ? m_settings.maxAdditionalFrames : 0);
 	hsize_t dims_data[3] = {
-		(hsize_t)m_settings.camera.frameCount,
+		(hsize_t)framesAllocatedPerPoint,
 		(hsize_t)m_settings.camera.roi.height_binned,
 		(hsize_t)m_settings.camera.roi.width_binned
 	};
@@ -3535,19 +3707,46 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 
 	auto measurementTimer = QElapsedTimer{};
 	measurementTimer.start();
+	emit(s_measurementElapsed(0));
 
 	auto calibrationTimer = QElapsedTimer{};
 	calibrationTimer.start();
-	// Last traversal index at which each z-index appears, so its overview can be captured
-	// once it's actually done being measured - not before any of it has, and not affected by
-	// which axis (x/y/z) is scanned outermost (m_scanOrder), unlike triggering on each
-	// z-index's *first* appearance would be: with z scanned innermost, that first-appearance
-	// approach would trigger for most z-indices within the first few points, looking like
-	// every overview gets captured upfront.
-	auto lastIndexForZ = std::vector<gsl::index>(m_settings.zSteps, -1);
-	for (gsl::index ll{ 0 }; ll < (gsl::index)nrPositions; ll++) {
-		const auto zIdx = std::clamp(m_orderedIndices[ll].z, 0, std::max(0, m_settings.zSteps - 1));
-		lastIndexForZ[zIdx] = ll;
+	// Which z-indices' overview batches to capture right after measured point ll (one list
+	// per point; empty for most).
+	//  - z outermost (the default, see determineScanOrder()): each z-plane's overview is
+	//    captured right after that plane's last point, i.e. once the plane is actually done
+	//    being measured - not before any of it has been.
+	//  - z NOT outermost (only reachable via a manual scan order): no plane is finished until
+	//    the very end (with z innermost, every plane's last point falls into the final xy
+	//    column), so triggering per plane would bunch every batch together at the end. Instead
+	//    the same number of batches (one per z-index, in z order) is spread evenly over the
+	//    whole acquisition: batch k of zSteps goes after point ceil((k + 1) * N / zSteps) - 1,
+	//    so the last one is captured after every grid point has been scanned. Each batch
+	//    still images "its" z-index exactly as it would with z outermost (same image
+	//    numbers/layout) - only WHEN it is taken changes, so it no longer shows the sample
+	//    right after that plane's own measurement.
+	const auto pointCountU = (size_t)std::max(0, nrPositions);
+	auto overviewZAfterPoint = std::vector<std::vector<int>>(pointCountU);
+	if (m_settings.saveOverviewBrightfieldPerZ && pointCountU > 0) {
+		const auto zCount = (size_t)std::max(1, m_settings.zSteps);
+		if (isZOutermostInPlan()) {
+			auto lastIndexForZ = std::vector<gsl::index>(zCount, -1);
+			for (gsl::index ll{ 0 }; ll < (gsl::index)nrPositions; ll++) {
+				const auto zIdx = std::clamp(m_orderedIndices[ll].z, 0, (int)zCount - 1);
+				lastIndexForZ[zIdx] = ll;
+			}
+			for (size_t zIdx{ 0 }; zIdx < zCount; zIdx++) {
+				if (lastIndexForZ[zIdx] >= 0) {
+					overviewZAfterPoint[lastIndexForZ[zIdx]].push_back((int)zIdx);
+				}
+			}
+		} else {
+			for (size_t kk{ 0 }; kk < zCount; kk++) {
+				const auto after = std::min<size_t>(
+					pointCountU - 1, ((kk + 1) * pointCountU + zCount - 1) / zCount - 1);
+				overviewZAfterPoint[after].push_back((int)kk);
+			}
+		}
 	}
 
 	// move stage to first position, wait 50 ms for it to finish
@@ -3590,8 +3789,6 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		auto nextCalibration = int{ (int)(100 * (1e-3 * calibrationTimer.elapsed()) / (60 * m_settings.conCalibrationInterval)) };
 		emit(s_timeToCalibration(nextCalibration));
 
-		const auto zIndex = std::clamp(m_orderedIndices[ll].z, 0, std::max(0, m_settings.zSteps - 1));
-
 		// Actual stage position for this point's own spectrum dataset, read back once right
 		// before its exposures start (same rawPositionToGridFrame() convention as every other
 		// stored position, see its own comment) - the stage has already been moved into place,
@@ -3601,7 +3798,11 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 			? rawPositionToGridFrame(m_scanControl->getPosition())
 			: targetPositionForPoint;
 
-		std::vector<std::byte> images(m_settings.camera.roi.bytesPerFrame * m_settings.camera.frameCount);
+		// Pre-allocated up front for the padded maximum (framesAllocatedPerPoint, see
+		// dims_data's own comment above) - never resized mid-loop, even when adaptive frame
+		// extension ends up taking fewer than maxAdditionalFrames extra frames (or none at
+		// all) at this particular point; unused trailing slots are simply left zero-initialized.
+		std::vector<std::byte> images((size_t)m_settings.camera.roi.bytesPerFrame * framesAllocatedPerPoint);
 
 		// "During" per-point brightfield: started here, before this point's Brillouin
 		// exposure begins, so its own (normally much shorter) exposure/readout overlaps the
@@ -3613,26 +3814,133 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 			duringBrightfieldSettings = startPerPointBrightfieldDuring();
 		}
 
-		for (gsl::index mm{ 0 }; mm < m_settings.camera.frameCount; mm++) {
-			if (m_abort) {
-				m_abort = true;
-				return;
-			}
-			const auto displayedPosition = m_settings.gridCoordinatesAbsolute
-				? m_orderedPositions[ll] - resolvedGridOriginUm()
-				: m_orderedPositions[ll] - m_startPosition;
-			emit(s_positionChanged(displayedPosition, mm + 1));
-			// acquire images
-			auto pointerPos = (int64_t)m_settings.camera.roi.bytesPerFrame * mm;
+		// framesActual must outlive the acquisition block below (it's used further down when
+		// constructing this point's IMAGE<T>), so it's declared out here even though it's only
+		// mutated inside that block.
+		auto framesActual = (gsl::index)m_settings.camera.frameCount;
+		{
+			// RAII: guarantees closeDoseProtectionShutter() runs on every exit from this
+			// nested block - normal completion, at the closing brace below (the same point the
+			// explicit call used to sit) - OR an early "m_abort = true; return;"/lost-camera
+			// return from either loop below, every one of which previously left the beam block
+			// open, since those returns skip past any code that would otherwise have closed
+			// it. Calling closeDoseProtectionShutter() when the shutter is already closed (the
+			// normal-completion case, where the last real acquireAndorFrame() call already
+			// closed it) is a harmless no-op - setBeamBlockOpen(false)/setRLShutterOpen(false)
+			// on an already-closed shutter, not a hardware round-trip with side effects. Scoped
+			// tightly to this block (not the whole per-point iteration) so the shutter closes
+			// here, before per-point brightfield capture/HDF5 writing below - not after them.
+			struct ShutterCloseGuard {
+				Brillouin* self;
+				~ShutterCloseGuard() { self->closeDoseProtectionShutter(); }
+			} shutterCloseGuard{ this };
 
-			if (m_andor) {
-				// Back-to-back frames at the same point - open the beam block once before
-				// the first, close once after the last, not between every one (see
-				// acquireAndorFrame()'s own comment).
-				acquireAndorFrame(&images[pointerPos], mm == 0, mm == m_settings.camera.frameCount - 1);
-			} else {
-				m_abort = true;
-				return;
+			for (gsl::index mm{ 0 }; mm < m_settings.camera.frameCount; mm++) {
+				if (m_abort) {
+					m_abort = true;
+					return;
+				}
+				const auto displayedPosition = m_settings.gridCoordinatesAbsolute
+					? m_orderedPositions[ll] - resolvedGridOriginUm()
+					: m_orderedPositions[ll] - m_startPosition;
+				emit(s_positionChanged(displayedPosition, mm + 1));
+				// acquire images
+				auto pointerPos = (int64_t)m_settings.camera.roi.bytesPerFrame * mm;
+
+				if (m_andor) {
+					// Back-to-back frames at the same point - open the beam block once before
+					// the first, close once after the last, not between every one (see
+					// acquireAndorFrame()'s own comment). If adaptive frame extension is
+					// enabled for this run, closing after the last "normal" frame is deferred -
+					// possible extra frames (below) must not see the shutter close and reopen
+					// between the normal frames and the extra ones; it closes only once, after
+					// whichever frame turns out to be the truly last one taken at this point
+					// (or via shutterCloseGuard above, on an early return).
+					const auto isLastNormalFrame = mm == m_settings.camera.frameCount - 1;
+					acquireAndorFrame(&images[pointerPos], mm == 0, isLastNormalFrame && !frameExtensionEnabled);
+				} else {
+					m_abort = true;
+					return;
+				}
+			}
+
+			// Adaptive frame extension: whether a point's signal is "enough" is a question
+			// about its ACCUMULATED photon count, not any single frame's own reading - a fresh
+			// frame drawn from the same low-signal point looks just as weak as the last one,
+			// so checking each new frame in isolation against a fixed threshold would almost
+			// never clear it and would just burn through maxAdditionalFrames every time
+			// without helping. Instead: a running per-pixel SUM is built across every frame
+			// taken so far at this point (the initial camera.frameCount frames, then each
+			// extra one as it's added), and checked via estimateFrameMetricFromSum() against
+			// proxyRoiMetricThreshold scaled by how many frames are already in that sum
+			// relative to camera.frameCount - the threshold is calibrated for camera.frameCount
+			// frames combined (see its own comment), so this scaling keeps that same
+			// calibration meaningful as extras raise the frame count above it, one frame at a
+			// time, instead of requiring a different threshold per possible total frame count.
+			// Never discards anything: whatever frames actually get taken (frameCount, or
+			// frameCount+1..+maxAdditionalFrames) are all saved; framesActual (used further
+			// down, when constructing this point's IMAGE<T>) records exactly how many of the
+			// padded images buffer's slots are real.
+			if (frameExtensionEnabled) {
+				const auto bytesPerFrame = (int64_t)m_settings.camera.roi.bytesPerFrame;
+				const auto pixelCount = (size_t)m_settings.camera.roi.width_binned
+					* (size_t)m_settings.camera.roi.height_binned;
+				// Widened to double specifically to avoid overflowing the camera's own
+				// narrower per-pixel type (e.g. unsigned short) once a handful of frames have
+				// been added - the whole point of summing is that per-pixel values grow past
+				// what one frame's own type can hold.
+				auto accumulateFrame = [&](const std::byte* frame, std::vector<double>& sum) {
+					if (m_settings.camera.readout.dataType == "unsigned short") {
+						const auto* data = reinterpret_cast<const unsigned short*>(frame);
+						for (size_t i{ 0 }; i < pixelCount; i++) {
+							sum[i] += data[i];
+						}
+					} else if (m_settings.camera.readout.dataType == "unsigned int") {
+						const auto* data = reinterpret_cast<const unsigned int*>(frame);
+						for (size_t i{ 0 }; i < pixelCount; i++) {
+							sum[i] += data[i];
+						}
+					} else {
+						const auto* data = reinterpret_cast<const unsigned char*>(frame);
+						for (size_t i{ 0 }; i < pixelCount; i++) {
+							sum[i] += data[i];
+						}
+					}
+				};
+
+				std::vector<double> sumBuffer(pixelCount, 0.0);
+				for (gsl::index k{ 0 }; k < framesActual; k++) {
+					accumulateFrame(&images[bytesPerFrame * k], sumBuffer);
+				}
+				// A fixed, absolute target for the running sum - NOT scaled by how many frames
+				// have gone into it. proxyRoiMetricThreshold is meant to be calibrated directly
+				// against "max counts in the image that actually gets fit", which is exactly
+				// what the running sum is - so the same number applies whether that sum ends up
+				// built from camera.frameCount frames alone or with extras added, with no
+				// rescaling in between.
+				auto metric = estimateFrameMetricFromSum(sumBuffer);
+				while (metric < m_settings.proxyRoiMetricThreshold
+						&& (framesActual - (gsl::index)m_settings.camera.frameCount) < m_settings.maxAdditionalFrames) {
+					if (m_abort) {
+						m_abort = true;
+						return;
+					}
+					if (!m_andor) {
+						m_abort = true;
+						return;
+					}
+					const auto pointerPos = bytesPerFrame * framesActual;
+					// The beam block is still open from the initial loop above (its close was
+					// deferred, see there) - stays open across every extra frame too.
+					acquireAndorFrame(&images[pointerPos], false, false);
+					accumulateFrame(&images[pointerPos], sumBuffer);
+					framesActual++;
+					metric = estimateFrameMetricFromSum(sumBuffer);
+				}
+				// Whichever frame ended up being the truly last one taken at this point (a
+				// normal frame if the metric already passed after the first attempt, or the
+				// final extra frame otherwise) - shutterCloseGuard above closes the beam block
+				// now, exactly once, whether this loop ran zero or more iterations.
 			}
 		}
 
@@ -3670,7 +3978,9 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				m_settings.camera.roi,
 				targetPositionForPoint,
 				(bool)m_scanControl,
-				stagePositionForPoint
+				stagePositionForPoint,
+				frameExtensionEnabled,
+				(int)framesActual
 			);
 
 			QMetaObject::invokeMethod(
@@ -3694,7 +4004,9 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				m_settings.camera.roi,
 				targetPositionForPoint,
 				(bool)m_scanControl,
-				stagePositionForPoint
+				stagePositionForPoint,
+				frameExtensionEnabled,
+				(int)framesActual
 			);
 
 			QMetaObject::invokeMethod(
@@ -3718,7 +4030,9 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				m_settings.camera.roi,
 				targetPositionForPoint,
 				(bool)m_scanControl,
-				stagePositionForPoint
+				stagePositionForPoint,
+				frameExtensionEnabled,
+				(int)framesActual
 			);
 
 			QMetaObject::invokeMethod(
@@ -3728,10 +4042,11 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 			);
 		}
 
-		// This z-plane's last point has now actually been measured - only now capture its
-		// overview, not before any of it was (see lastIndexForZ above for why "last
-		// occurrence" rather than "first" is what makes this robust to scan order).
-		if (m_settings.saveOverviewBrightfieldPerZ && ll == lastIndexForZ[zIndex]) {
+		// Capture every overview batch scheduled after this point (see overviewZAfterPoint
+		// above: with z outermost that's the plane whose last point was just measured, otherwise
+		// the evenly spread batches). overviewZ is the z-index whose overview is captured, which
+		// is NOT necessarily this point's own z-index when the batches are spread.
+		for (const auto overviewZ : overviewZAfterPoint[ll]) {
 			// The overview image's xy point(s) each get their own stack (1 for the legacy
 			// single-image-per-z behaviour, zSteps for a full stack), followed by "sampled
 			// grid points" (if on) which always get a single flat image each - see
@@ -3739,7 +4054,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 			// triple since the point count and each point's stack depth are constant across
 			// z slices (must match the flat-index scheme the "overview-brightfield-x/y/z"
 			// metadata above uses).
-			const auto capturePoints = overviewCapturePoints(zIndex, directionsZ);
+			const auto capturePoints = overviewCapturePoints(overviewZ, directionsZ);
 			size_t totalPerZ = 0;
 			for (const auto& point : capturePoints) {
 				totalPerZ += point.zAbs.size();
@@ -3757,9 +4072,9 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 			auto flatIndexWithinZ = size_t{ 0 };
 			for (const auto& point : capturePoints) {
 				for (const auto z : point.zAbs) {
-					const auto imageNumber = (int)((size_t)zIndex * totalPerZ + flatIndexWithinZ);
+					const auto imageNumber = (int)((size_t)overviewZ * totalPerZ + flatIndexWithinZ);
 					const auto position = POINT3{ point.xy.x, point.xy.y, z };
-					captureOverviewBrightfield(storage, imageNumber, zIndex, position);
+					captureOverviewBrightfield(storage, imageNumber, overviewZ, position);
 					flatIndexWithinZ++;
 					if (m_abort) {
 						return;
@@ -3792,8 +4107,13 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		}
 
 		auto percentage{ 100 * (double)(ll + 1) / nrPositions };
-		auto remaining{ (int)(1e-3 * measurementTimer.elapsed() / (ll + 1) * ((int64_t)nrPositions - ll + 1)) };
+		// Points remaining after finishing point index ll (0-indexed, so ll + 1 points done):
+		// nrPositions - (ll + 1). This previously read "- ll + 1" (off by 2 vs. the correct
+		// "- ll - 1"), which overestimated remaining time by ~2 points' worth on every point -
+		// most visible as a nonzero "remaining" still showing at 100% complete.
+		auto remaining{ (int)(1e-3 * measurementTimer.elapsed() / (ll + 1) * ((int64_t)nrPositions - ll - 1)) };
 		emit(s_repetitionProgress(percentage, remaining));
+		emit(s_measurementElapsed((int)(1e-3 * measurementTimer.elapsed())));
 	}
 
 	// Background reference points, if configured - a separate pass, after the main grid

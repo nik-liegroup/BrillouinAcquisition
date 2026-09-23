@@ -17,9 +17,11 @@ public:
 	template <typename T>
 	IMAGE(int indX, int indY, int indZ, int rank, hsize_t* dims, const std::string& date, const std::vector<T>& data,
 		double exposure = 0, double gain = 1, const CAMERA_ROI& roi = CAMERA_ROI{},
-		POINT3 targetPosition = POINT3{ 0, 0, 0 }, bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 }) :
+		POINT3 targetPosition = POINT3{ 0, 0, 0 }, bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 },
+		bool hasFramesActual = false, int framesActual = -1) :
 		indX(indX), indY(indY), indZ(indZ), rank(rank), dims(dims), date(date), data(data), exposure(exposure), gain(gain), roi(roi),
-		targetPosition(targetPosition), hasStagePosition(hasStagePosition), stagePosition(stagePosition) {};
+		targetPosition(targetPosition), hasStagePosition(hasStagePosition), stagePosition(stagePosition),
+		hasFramesActual(hasFramesActual), framesActual(framesActual) {};
 
 	const int indX;
 	const int indY;
@@ -39,6 +41,16 @@ public:
 	const POINT3 targetPosition;
 	const bool hasStagePosition;
 	const POINT3 stagePosition;
+	// Adaptive frame extension (Brillouin::m_settings.extendFramesOnLowSignal): only set when
+	// the feature was actually usable for this run (maxAdditionalFrames > 0), in which case
+	// `dims`'s own frame-count dimension is padded to a fixed camera.frameCount +
+	// maxAdditionalFrames for every point, and framesActual records how many of those padded
+	// slots are real for THIS point (frameCount..frameCount+maxAdditionalFrames). Written as
+	// the "frames_actual" HDF5 attribute (see H5BM::setData()) only when hasFramesActual is
+	// true, so files where the feature is unused keep today's exact layout - no attribute,
+	// `dims` equal to the plain camera.frameCount.
+	const bool hasFramesActual;
+	const int framesActual;
 };
 
 template <typename T>
@@ -438,7 +450,8 @@ private:
 		double exposure = 0, double gain = 1, CAMERA_ROI roi = CAMERA_ROI{},
 		bool hasPosition = false, POINT3 position = POINT3{ 0, 0, 0 },
 		bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 }, bool compress = false,
-		bool hasBrillouinRepetition = false, int brillouinRepetitionIndex = -1);
+		bool hasBrillouinRepetition = false, int brillouinRepetitionIndex = -1,
+		bool hasFramesActual = false, int framesActual = -1);
 
 	std::vector<double> getData(const std::string& name, hid_t parent);
 	std::string getDate(std::string name, hid_t parent);
@@ -496,7 +509,8 @@ template <typename T>
 void H5BM::setData(const std::vector<T>& data, const std::string& name, hid_t parent, const int rank, const hsize_t *dims,
 	std::string date, const std::string& sample, double shift, const std::string& channel, double exposure, double gain, CAMERA_ROI roi,
 	bool hasPosition, POINT3 position, bool hasStagePosition, POINT3 stagePosition, bool compress,
-	bool hasBrillouinRepetition, int brillouinRepetitionIndex) {
+	bool hasBrillouinRepetition, int brillouinRepetitionIndex,
+	bool hasFramesActual, int framesActual) {
 	if (!m_fileWritable) {
 		return;
 	}
@@ -551,6 +565,16 @@ void H5BM::setData(const std::vector<T>& data, const std::string& name, hid_t pa
 	// apart from "part of repetition 0" without relying on a sentinel value.
 	if (hasBrillouinRepetition) {
 		setAttribute("brillouin_repetition_index", brillouinRepetitionIndex, dset_id);
+	}
+
+	// Adaptive frame extension (see IMAGE<T>::hasFramesActual's own comment): how many of
+	// this dataset's (possibly padded) frame-count dimension slots are real. Absent entirely
+	// (not just left at the dataset's own frame count) when the feature wasn't usable for
+	// this run, so a reader can tell "no padding, trust the dataset shape as-is" apart from
+	// "padded, but happens to be fully used" without relying on a sentinel value - matching
+	// the brillouin_repetition_index convention just above.
+	if (hasFramesActual) {
+		setAttribute("frames_actual", framesActual, dset_id);
 	}
 
 	// set camera meta data
@@ -613,7 +637,9 @@ void H5BM::setPayloadData(IMAGE<T>* image) {
 
 	setData(image->data, name, m_Brillouin.groups->payloadData, image->rank, image->dims, image->date,
 		"", NULL, "", image->exposure, image->gain, image->roi,
-		true, image->targetPosition, image->hasStagePosition, image->stagePosition);
+		true, image->targetPosition, image->hasStagePosition, image->stagePosition, false,
+		false, -1,
+		image->hasFramesActual, image->framesActual);
 }
 
 template <typename T>

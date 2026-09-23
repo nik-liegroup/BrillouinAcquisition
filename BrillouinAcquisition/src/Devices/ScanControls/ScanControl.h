@@ -217,6 +217,14 @@ public slots:
 	void startAnnouncingElementPosition();
 	void stopAnnouncingElementPosition();
 	void setHome();
+	// z-only counterpart to setHome() - used by absolute-grid-mode's "Set plane" (see
+	// Brillouin::setCurrentFocusAsZOrigin()), which re-anchors the grid's own z origin but has
+	// no sensible x/y meaning there (the absolute x/y origin is a separate, fixed point - see
+	// that function's own comment). Takes the target z explicitly, rather than re-reading
+	// getPosition() itself, so it's guaranteed to land on exactly the same z value
+	// setCurrentFocusAsZOrigin() just captured for absoluteGridOriginUm.z - otherwise an
+	// intervening stage move between the two calls could desync them.
+	void setHomeZ(double z);
 	POINT3 getHomePosition() const;
 	void moveHome();
 	void savePosition();

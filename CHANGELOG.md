@@ -1,3 +1,83 @@
+## Unreleased
+
+### Fixed
+- Progress bar: fixed an off-by-two error that overestimated remaining time
+  by ~2 points' worth throughout a run.
+- Dose-protection shutter is now guaranteed to close on every abort path
+  during acquisition (previously could be left open if aborting mid-run),
+  via a small RAII guard used in the main measurement loop, background
+  point capture, and surface pre-scan.
+- Large grids with many z steps made the software noticeably sluggish
+  while editing grid settings: the position-overlay markers on the
+  brightfield preview were plotted once per (x, y, z) point even though
+  z has no effect on where a point projects on screen - every z-layer of
+  a column landed on the exact same pixel and was reprojected/redrawn
+  redundantly. The overlay now plots (and connects) one marker per unique
+  (x, y) column regardless of zSteps.
+- "Set plane" (absolute grid mode) now also zeroes the live z position
+  readout at the point it's clicked, matching what switching to relative
+  mode, clicking "Set home", and switching back used to give as a manual
+  workaround - previously only the internal grid z-origin was updated, so
+  the measurement grid was already centered correctly but the on-screen
+  number never actually read 0.
+- The "Est. time" field next to the Start button was frozen at its
+  pre-run estimate for the whole run. It now shows live elapsed time
+  while a measurement is running, then reverts to the (refreshed)
+  pre-run estimate once it finishes or is aborted.
+- Surface pre-scan progress no longer matched what was actually happening:
+  the coarse grid and boundary points were numbered/reported separately
+  by (x, y) grid index, and the final dense-grid interpolation pass used
+  its own independent 0-100% scale - so the bar visibly reset backward
+  right when interpolation began. Progress is now one running count of
+  points actually mapped (coarse columns + boundary points combined, in
+  a single "point N/M" numbering) out of the true total, advancing only
+  once each point's search concludes; interpolation (which maps no new
+  point) holds at 100% instead of restarting its own scale.
+- Surface pre-scan: the "additional boundary points" pass (opt-in, extra
+  anchor points outside the main rectangular coarse grid) only ever
+  reported "Boundary point X/Y" with no metric/z/threshold - unlike every
+  other point in the pre-scan, which shows that detail live. It now shows
+  the same per-step detail throughout.
+
+### Added
+- Adaptive frame extension: an optional per-point acquisition extension
+  (BM Camera tab, "Adaptive frame extension" group) that reuses the
+  existing spectral proxy-ROI boxes (already used for surface-follow
+  autofocus) to take extra frames - up to a configurable maximum - at a
+  grid point while its signal stays below a configurable threshold,
+  instead of always accepting a fixed frame count. The decision is based
+  on the running SUM of every frame taken so far at that point (not any
+  single frame's own reading, which wouldn't improve just because earlier
+  frames exist), via the new `estimateFrameMetricFromSum()`. The
+  threshold is a fixed, absolute target (no rescaling as extra frames are
+  added) - calibrate it directly against "max counts in the image that
+  actually gets fit" for your normal frame-repeat count. Independent of
+  surface-follow scanning. The "Draw spectral ROIs"/"Measure spectral
+  ROIs" controls moved from the Surface scanning group into this new
+  group (same widget names/behavior).
+
+### Changed
+- Estimated acquisition time ("Est. time") recalibrated against the image
+  timestamps of seven real scans (3000-3400 points each): per-point
+  overhead beyond the exposure, a cost per moving x/y stage axis (instead
+  of distance / an assumed stage speed), the measured cost of overview
+  batches (~1.6 s + ~0.54 s per image - previously ~0.1 s per image, about
+  5x too low) and of spectrometer calibrations, and "after" per-point
+  brightfield now respects "every N". On those seven scans the old
+  estimate was ~13% too high (excluding its surface pre-scan term); the new
+  one is within ~3%. The surface pre-scan is no longer part of the
+  estimate (its length depends on the sample); the tooltip says so.
+- Automatic scan order now always keeps z as the outermost loop (plane by
+  plane); only x and y are ordered by step count. Previously z became an
+  inner loop whenever it had more steps than x or y.
+- With a manual scan order that does not have z outermost, per-z overview
+  images are switched off. Turning them back on asks for confirmation; they
+  are then taken as the same number of batches as with z outermost, but at
+  points spread evenly across the whole acquisition, the last one after all
+  grid points have been scanned (no z-plane is finished earlier). New file
+  metadata: `overview-brightfield-spread-across-scan-used` and
+  `grid-scan-order-used`.
+
 ## 0.3.5 - 2025-07-31
 
 ### Added
