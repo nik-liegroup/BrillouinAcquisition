@@ -181,7 +181,7 @@ QTabBar::tab:!selected {
                 <x>0</x>
                 <y>0</y>
                 <width>223</width>
-                <height>310</height>
+                <height>520</height>
                </rect>
               </property>
               <property name="sizePolicy">
@@ -193,7 +193,7 @@ QTabBar::tab:!selected {
               <property name="minimumSize">
                <size>
                 <width>223</width>
-                <height>310</height>
+                <height>520</height>
                </size>
               </property>
               <widget class="QGroupBox" name="binningROIBox">
@@ -559,6 +559,142 @@ QTabBar::tab:!selected {
                  </property>
                 </item>
                </widget>
+              </widget>
+              <widget class="QGroupBox" name="adaptiveFrameExtensionGroupBox">
+               <property name="geometry">
+                <rect>
+                 <x>8</x>
+                 <y>320</y>
+                 <width>209</width>
+                 <height>190</height>
+                </rect>
+               </property>
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="title">
+                <string>Adaptive frame extension</string>
+               </property>
+               <layout class="QGridLayout" name="adaptiveFrameExtensionGrid">
+                <property name="horizontalSpacing">
+                 <number>4</number>
+                </property>
+                <property name="verticalSpacing">
+                 <number>2</number>
+                </property>
+                <property name="leftMargin">
+                 <number>4</number>
+                </property>
+                <property name="topMargin">
+                 <number>4</number>
+                </property>
+                <property name="rightMargin">
+                 <number>4</number>
+                </property>
+                <property name="bottomMargin">
+                 <number>4</number>
+                </property>
+                <item row="0" column="0" colspan="2">
+                 <widget class="QPushButton" name="editSpectralProxyRoiCheckbox">
+                  <property name="minimumSize">
+                   <size>
+                    <width>0</width>
+                    <height>26</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>Draw spectral ROIs</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>Draw one or two spectral rectangles used for surface-drop detection and/or adaptive frame extension. If two are drawn, their metrics are averaged.</string>
+                  </property>
+                  <property name="checkable">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="0" colspan="2">
+                 <widget class="QPushButton" name="measureSpectralProxyRoiButton">
+                  <property name="minimumSize">
+                   <size>
+                    <width>0</width>
+                    <height>26</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>Measure spectral ROIs</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>Measure maximum intensity in the currently drawn spectral ROI rectangles and show the result in the status bar.</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="0" colspan="2">
+                 <widget class="QCheckBox" name="extendFramesOnLowSignalCheckbox">
+                  <property name="text">
+                   <string>Extend frames on low signal</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>Take extra frames at a point if the signal is too weak, instead of just accepting it. Works independently of Surface scanning.</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="3" column="0">
+                 <widget class="QLabel" name="proxyRoiMetricThresholdLabel">
+                  <property name="text">
+                   <string>Signal threshold [counts, summed]</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>Signal level (summed across all frames taken so far at this point) needed before accepting a measurement. Calibrate against the max counts your own fits need to work well.</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="3" column="1">
+                 <widget class="QDoubleSpinBox" name="proxyRoiMetricThresholdSpinBox">
+                  <property name="toolTip">
+                   <string>Signal level (summed across all frames taken so far at this point) needed before accepting a measurement. Calibrate against the max counts your own fits need to work well.</string>
+                  </property>
+                  <property name="decimals">
+                   <number>1</number>
+                  </property>
+                  <property name="minimum">
+                   <double>0.000000000000000</double>
+                  </property>
+                  <property name="maximum">
+                   <double>65535.000000000000000</double>
+                  </property>
+                  <property name="value">
+                   <double>249.000000000000000</double>
+                  </property>
+                 </widget>
+                </item>
+                <item row="4" column="0">
+                 <widget class="QLabel" name="maxAdditionalFramesLabel">
+                  <property name="text">
+                   <string>Max additional frames</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>Frames beyond "Number of images" a point may take while its signal metric stays under the threshold above. 0 disables extension even if "Extend frames on low signal" is checked.</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="4" column="1">
+                 <widget class="QSpinBox" name="maxAdditionalFramesSpinBox">
+                  <property name="toolTip">
+                   <string>Frames beyond "Number of images" a point may take while its signal metric stays under the threshold above. 0 disables extension even if "Extend frames on low signal" is checked.</string>
+                  </property>
+                  <property name="minimum">
+                   <number>0</number>
+                  </property>
+                  <property name="maximum">
+                   <number>100</number>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
               </widget>
               <widget class="QWidget" name="layoutWidget">
                <property name="geometry">
@@ -1553,7 +1689,7 @@ border: none;</string>
                    </size>
                   </property>
                   <property name="toolTip">
-                   <string>Only available after a surface scan pauses for review: measure every grid point instead of just the ones with a surface z value. Points without one are measured starting at their original (pre-surface-follow) z.</string>
+                   <string>Measure every grid point instead of only the ones with a surface z value. Available after a surface scan pauses for review.</string>
                   </property>
                   <property name="text">
                    <string>Full grid</string>
@@ -2155,6 +2291,9 @@ QTabBar::tab:!selected {
                        </item>
                        <item row="0" column="0">
                         <widget class="QCheckBox" name="scanDirAutoCheckbox">
+                         <property name="toolTip">
+                          <string>Automatic scan order: z is always the outermost loop (plane by plane); x and y are ordered by step count (more steps = inner loop). Unchecking allows a manual order. With z not outermost, overview images are switched off (they can be turned back on after a warning and are then spread evenly across the scan).</string>
+                         </property>
                          <property name="text">
                           <string>Auto</string>
                          </property>
@@ -2353,7 +2492,7 @@ QTabBar::tab:!selected {
                          <item row="6" column="0" colspan="2">
                           <widget class="QCheckBox" name="doseProtectionCheckbox">
                            <property name="toolTip">
-                            <string>Keep the beam block closed by default and only open it for a short margin around each actual camera exposure - not just during stage travel, but between frames at the same point, during a per-point brightfield capture, and everywhere else nothing is integrating. No-op if this scan controller has no Beam Block element.</string>
+                            <string>Keep the beam block closed except briefly around each camera exposure, to limit sample light dose. Has no effect if this scan controller has no Beam Block element.</string>
                            </property>
                            <property name="text">
                             <string>Dose protection</string>
@@ -2818,7 +2957,7 @@ QTabBar::tab:!selected {
                      <x>8</x>
                      <y>8</y>
                      <width>248</width>
-                     <height>440</height>
+                     <height>380</height>
                     </rect>
                    </property>
                    <property name="sizePolicy">
@@ -2830,13 +2969,13 @@ QTabBar::tab:!selected {
                    <property name="minimumSize">
                     <size>
                      <width>0</width>
-                     <height>440</height>
+                     <height>380</height>
                     </size>
                    </property>
                    <property name="maximumSize">
                     <size>
                      <width>16777215</width>
-                     <height>440</height>
+                     <height>380</height>
                     </size>
                    </property>
                    <property name="title">
@@ -2986,14 +3125,14 @@ QTabBar::tab:!selected {
                        <string>Rewind cap [um]</string>
                       </property>
                       <property name="toolTip">
-                       <string>Neighbor-seeded search: max distance allowed stepping back towards water when the neighboring column's z estimate is already past the surface here. If exceeded without recovering above threshold, this point is marked as no surface found.</string>
+                       <string>Max distance allowed to step back toward the medium when a neighboring point's surface is already past this one. Exceeding it without finding the surface marks this point as not found.</string>
                       </property>
                      </widget>
                     </item>
                     <item row="6" column="1">
                      <widget class="QDoubleSpinBox" name="surfaceMaxRewindSpinBox">
                       <property name="toolTip">
-                       <string>Neighbor-seeded search: max distance allowed stepping back towards water when the neighboring column's z estimate is already past the surface here. If exceeded without recovering above threshold, this point is marked as no surface found.</string>
+                       <string>Max distance allowed to step back toward the medium when a neighboring point's surface is already past this one. Exceeding it without finding the surface marks this point as not found.</string>
                       </property>
                       <property name="decimals">
                        <number>1</number>
@@ -3012,14 +3151,14 @@ QTabBar::tab:!selected {
                        <string>Verify steps [K]</string>
                       </property>
                       <property name="toolTip">
-                       <string>Number of extra z-steps measured after a candidate surface crossing before accepting it, to confirm the signal keeps behaving like a real interface (see verify tolerance) rather than a noise dip. 0 disables verification.</string>
+                       <string>Extra z-steps measured after a candidate surface crossing to confirm it's real, not a noise dip. 0 disables verification.</string>
                       </property>
                      </widget>
                     </item>
                     <item row="7" column="1">
                      <widget class="QSpinBox" name="surfaceVerificationStepsSpinBox">
                       <property name="toolTip">
-                       <string>Number of extra z-steps measured after a candidate surface crossing before accepting it, to confirm the signal keeps behaving like a real interface (see verify tolerance) rather than a noise dip. 0 disables verification.</string>
+                       <string>Extra z-steps measured after a candidate surface crossing to confirm it's real, not a noise dip. 0 disables verification.</string>
                       </property>
                       <property name="minimum">
                        <number>0</number>
@@ -3035,14 +3174,14 @@ QTabBar::tab:!selected {
                        <string>Verify frames [M]</string>
                       </property>
                       <property name="toolTip">
-                       <string>Number of frames averaged at the candidate crossing and at each of the K verification steps, to reduce noise. 1 = single frame (fastest, default).</string>
+                       <string>Frames averaged at the candidate crossing and each verification step, to reduce noise. 1 = single frame (fastest, default).</string>
                       </property>
                      </widget>
                     </item>
                     <item row="8" column="1">
                      <widget class="QSpinBox" name="surfaceVerificationFrameAverageSpinBox">
                       <property name="toolTip">
-                       <string>Number of frames averaged at the candidate crossing and at each of the K verification steps, to reduce noise. 1 = single frame (fastest, default).</string>
+                       <string>Frames averaged at the candidate crossing and each verification step, to reduce noise. 1 = single frame (fastest, default).</string>
                       </property>
                       <property name="suffix">
                        <string> frames</string>
@@ -3061,14 +3200,14 @@ QTabBar::tab:!selected {
                        <string>Verify tolerance [%]</string>
                       </property>
                       <property name="toolTip">
-                       <string>How much the mean of the (frame-averaged) second half of the K-step verification window may rise above the first half's mean before a candidate crossing is rejected as a noise dip rather than a real, monotonically dropping surface.</string>
+                       <string>How much the signal may rise back up during verification before a candidate surface crossing is rejected as a noise dip.</string>
                       </property>
                      </widget>
                     </item>
                     <item row="9" column="1">
                      <widget class="QDoubleSpinBox" name="surfaceVerificationToleranceSpinBox">
                       <property name="toolTip">
-                       <string>How much the mean of the (frame-averaged) second half of the K-step verification window may rise above the first half's mean before a candidate crossing is rejected as a noise dip rather than a real, monotonically dropping surface.</string>
+                       <string>How much the signal may rise back up during verification before a candidate surface crossing is rejected as a noise dip.</string>
                       </property>
                       <property name="decimals">
                        <number>1</number>
@@ -3081,55 +3220,20 @@ QTabBar::tab:!selected {
                       </property>
                      </widget>
                     </item>
-                    <item row="10" column="0" colspan="2">
-                     <widget class="QPushButton" name="editSpectralProxyRoiCheckbox">
-                      <property name="minimumSize">
-                       <size>
-                        <width>0</width>
-                        <height>26</height>
-                       </size>
-                      </property>
-                      <property name="text">
-                       <string>Draw spectral ROIs</string>
-                      </property>
-                      <property name="toolTip">
-                       <string>Draw one or two spectral rectangles used for surface-drop detection. If two are drawn, their metrics are averaged.</string>
-                      </property>
-                      <property name="checkable">
-                       <bool>true</bool>
-                      </property>
-                     </widget>
-                    </item>
-                    <item row="11" column="0" colspan="2">
-                     <widget class="QPushButton" name="measureSpectralProxyRoiButton">
-                      <property name="minimumSize">
-                       <size>
-                        <width>0</width>
-                        <height>26</height>
-                       </size>
-                      </property>
-                      <property name="text">
-                       <string>Measure spectral ROIs</string>
-                      </property>
-                      <property name="toolTip">
-                       <string>Measure maximum intensity in the currently drawn spectral ROI rectangles and show the result in the status bar.</string>
-                      </property>
-                     </widget>
-                    </item>
-                    <item row="12" column="0">
+                    <item row="10" column="0">
                      <widget class="QLabel" name="additionalBoundaryPointsLabel">
                       <property name="text">
                        <string>Boundary points</string>
                       </property>
                       <property name="toolTip">
-                       <string>Extra anchor points placed directly on the active outline (the ROI clipped to the grid rectangle, or the grid rectangle itself with no ROI set) - on top of, not instead of, the uniform "Grid bin" grid above. Chosen by farthest-point selection, so each one lands where coverage is thinnest along the outline. 0 = off.</string>
+                       <string>Extra points added along the outline of the scan area, on top of the regular grid, placed to fill in thin coverage. 0 = off.</string>
                       </property>
                      </widget>
                     </item>
-                    <item row="12" column="1">
+                    <item row="10" column="1">
                      <widget class="QSpinBox" name="additionalBoundaryPointsSpinBox">
                       <property name="toolTip">
-                       <string>Extra anchor points placed directly on the active outline (the ROI clipped to the grid rectangle, or the grid rectangle itself with no ROI set) - on top of, not instead of, the uniform "Grid bin" grid above. Chosen by farthest-point selection, so each one lands where coverage is thinnest along the outline. 0 = off.</string>
+                       <string>Extra points added along the outline of the scan area, on top of the regular grid, placed to fill in thin coverage. 0 = off.</string>
                       </property>
                       <property name="minimum">
                        <number>0</number>
@@ -3933,7 +4037,7 @@ QTabBar::tab:!selected {
                     <item row="0" column="0" colspan="2">
                      <widget class="QCheckBox" name="saveOverviewBrightfieldPerZCheckbox">
                       <property name="toolTip">
-                       <string>Save a brightfield overview for each finished z slice.</string>
+                       <string>Save a brightfield overview for each finished z slice. If z is not the outermost scan axis, the same number of overview images/stacks is taken at points spread evenly across the whole scan instead (the last one after all grid points).</string>
                       </property>
                       <property name="text">
                        <string>Save BF overview per z slice</string>
@@ -3966,7 +4070,7 @@ QTabBar::tab:!selected {
                     <item row="3" column="0" colspan="2">
                      <widget class="QCheckBox" name="overviewFullStackCheckbox">
                       <property name="toolTip">
-                       <string>Capture a full brightfield z-stack per finished z slice instead of one flat image, at whichever coverage mode above is currently active (single image or mosaic tiles) - each mode remembers its own setting independently, so switching modes above may change this checkbox's state. Spans zMin..zMax (surface mapping off), or the global lowest-to-highest found surface offset by zMin/zMax (surface mapping on).</string>
+                       <string>Capture a full brightfield z-stack per z slice instead of a single flat image. Spans zMin to zMax, or the found surface range when surface mapping is on.</string>
                       </property>
                       <property name="text">
                        <string>Full z-stack</string>
@@ -3976,7 +4080,7 @@ QTabBar::tab:!selected {
                     <item row="4" column="0" colspan="2">
                      <widget class="QCheckBox" name="capturePerPointBrightfieldCheckbox">
                       <property name="toolTip">
-                       <string>Capture a brightfield image at every measured grid point during the main acquisition (independent of the per-z overview above) - e.g. for post-hoc drift correction against each point's own image. Never before this point's Brillouin spectrum - either right after it (default, see below) or overlapped with it. Reuses the exposure/gain above.</string>
+                       <string>Capture a brightfield image at every measured grid point, e.g. for drift correction. Taken right after (or overlapped with) this point's Brillouin spectrum, never before it.</string>
                       </property>
                       <property name="text">
                        <string>Capture BF at each point</string>
@@ -4006,7 +4110,7 @@ QTabBar::tab:!selected {
                     <item row="6" column="0" colspan="2">
                      <widget class="QCheckBox" name="perPointBrightfieldDuringAcquisitionCheckbox">
                       <property name="toolTip">
-                       <string>On: overlap the brightfield exposure with this point's Brillouin exposure instead of switching presets before/after it - adds no extra time on a properly synchronized setup, at the cost of spectrum quality (the brightfield illumination is then present during the actual spectral exposure too). Verify on your own setup before trusting it for real data. Off (default): a clean, sequential capture right after each point's spectrum, which costs more time but never touches the spectrum itself.</string>
+                       <string>On: overlap the brightfield exposure with the Brillouin exposure to save time, at the cost of spectrum quality (brightfield light is present during the spectral exposure). Off (default): capture brightfield separately, right after the spectrum - slower but doesn't affect it.</string>
                       </property>
                       <property name="text">
                        <string>Capture during acquisition</string>
@@ -4477,7 +4581,7 @@ border: none;</string>
                  <item row="3" column="0">
                   <widget class="QLabel" name="estimatedAcquisitionTime_label">
                    <property name="toolTip">
-                    <string>Estimate: spectral exposure time (points x frames x exposure) + assumed stage movement time (total planned travel distance / assumed speed, plus compensated-move overhead if enabled) + BF overview capture time (image count x exposure + overhead), if enabled. Hover the value for a breakdown.</string>
+                    <string>Estimated total acquisition time: exposure and per-point overhead, stage movement, brightfield overviews and calibrations (if enabled), excluding the surface pre-scan. Hover the value for a breakdown.</string>
                    </property>
                    <property name="text">
                     <string>Est. time</string>
@@ -4487,7 +4591,7 @@ border: none;</string>
                  <item row="3" column="1" colspan="2">
                   <widget class="QLineEdit" name="estimatedAcquisitionTime">
                    <property name="toolTip">
-                    <string>Estimate: spectral exposure time (points x frames x exposure) + assumed stage movement time (total planned travel distance / assumed speed, plus compensated-move overhead if enabled) + BF overview capture time (image count x exposure + overhead), if enabled. Hover the value for a breakdown.</string>
+                    <string>Estimated total acquisition time: exposure and per-point overhead, stage movement, brightfield overviews and calibrations (if enabled), excluding the surface pre-scan. Hover the value for a breakdown.</string>
                    </property>
                    <property name="styleSheet">
                     <string notr="true">background: #E4E4E4;

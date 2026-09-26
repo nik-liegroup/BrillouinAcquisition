@@ -173,6 +173,11 @@ private:
 	QCheckBox* m_gridHysteresisCompensationCheckbox{ nullptr };
 	QCheckBox* m_doseProtectionCheckbox{ nullptr };
 	QCheckBox* m_saveOverviewBrightfieldPerZCheckbox{ nullptr };
+	// Mirrors whether the current scan order has z as the outermost loop (see
+	// scanOrderChanged()). Always true in automatic mode; only a manual order can make it
+	// false, and then per-z overview images are switched off and need an explicit OK to be
+	// turned back on (they get spread across the whole scan instead of following planes).
+	bool m_scanOrderZOutermost{ true };
 	QRadioButton* m_overviewSingleImageRadio{ nullptr };
 	QRadioButton* m_overviewFullGridRadio{ nullptr };
 	QCheckBox* m_overviewFullStackCheckbox{ nullptr };
@@ -790,6 +795,7 @@ private slots:
 	void showEnabledModes(ACQUISITION_MODE mode);
 	void showBrillouinStatus(ACQUISITION_STATUS state);
 	void showBrillouinProgress(double progress, int seconds);
+	void showMeasurementElapsedTime(int seconds);
 	void showSurfaceScanProgress(double progress, const QString& message);
 	void on_measureSpectralProxyRoiButton_clicked();
 	void showODTStatus(ACQUISITION_STATUS state);
@@ -864,6 +870,13 @@ private slots:
 
 	void on_exposureTime_valueChanged(double);
 	void on_frameCount_valueChanged(int);
+
+	// Adaptive frame extension (BRILLOUIN_SETTINGS::extendFramesOnLowSignal/
+	// proxyRoiMetricThreshold/maxAdditionalFrames) - independent of surfaceScanningGroupBox's
+	// own controls, see their own tooltips.
+	void on_extendFramesOnLowSignalCheckbox_stateChanged(int);
+	void on_proxyRoiMetricThresholdSpinBox_valueChanged(double);
+	void on_maxAdditionalFramesSpinBox_valueChanged(int);
 
 	StoragePath splitFilePath(QString fullPath);
 	QString checkFilename(QString absoluteFilePath);

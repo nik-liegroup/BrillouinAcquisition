@@ -5,12 +5,19 @@
 #include "../../Devices/Cameras/Camera.h"
 #include "../../helper/thread.h"
 #include "src/lib/buffer_circular.h"
+#include <functional>
 #include <limits>
 #include <optional>
 #include <set>
 #include <utility>
 
 
+// Loop level of each axis: 0 = innermost (fastest), 2 = outermost (slowest).
+// Automatic: z is always the outermost loop (plane by plane), and x/y are ordered by step
+// count (more steps = more inner) - see Brillouin::determineScanOrder(). Manual: any
+// permutation, but only with z outermost do the per-z overview brightfield images follow
+// finished planes; otherwise they're spread evenly across the scan (see
+// Brillouin::runMeasurementPhase()).
 struct SCAN_ORDER {
 	bool automatical{ true };
 	int x{ 0 };	// first scan in x-direction
@@ -123,6 +130,9 @@ struct BRILLOUIN_SETTINGS {
 			perPointBrightfieldDuringAcquisition = settings.perPointBrightfieldDuringAcquisition;
 			useGridHysteresisCompensation = settings.useGridHysteresisCompensation;
 			useDoseProtection = settings.useDoseProtection;
+			extendFramesOnLowSignal = settings.extendFramesOnLowSignal;
+			proxyRoiMetricThreshold = settings.proxyRoiMetricThreshold;
+			maxAdditionalFrames = settings.maxAdditionalFrames;
 			camera = settings.camera;
 			return *this;
 		}
@@ -284,6 +294,38 @@ struct BRILLOUIN_SETTINGS {
 		// and adds no delay, if the active scan controller has no Beam Block element
 		// (setBeamBlockOpen() itself checks this).
 		bool useDoseProtection{ false };
+
+		// Adaptive frame extension: independent of, and unaffected by, surfaceScanningGroupBox/
+		// useSurfaceFollow - applies to every acquisition mode's main measurement grid loop
+		// (runMeasurementPhase()), not just surface-follow scans. Reuses the same spectral
+		// proxy-ROI boxes surface-follow autofocus already uses, now also as a per-point
+		// stopping criterion - but NOT via estimateFrameMetric() on a single frame the way
+		// autofocus reads it: a single fresh frame's own signal level doesn't improve just
+		// because earlier frames already exist, so checking each new frame in isolation would
+		// almost never clear a threshold a low-signal point was already failing, and the loop
+		// would just burn through maxAdditionalFrames every time without actually helping.
+		// What determines fit quality is the *accumulated* photon count, so
+		// runMeasurementPhase() instead keeps a running per-pixel SUM across every frame taken
+		// so far at this point (initial camera.frameCount frames, plus however many extras have
+		// been added) and checks THAT via estimateFrameMetricFromSum() - one extra frame at a
+		// time, added into the same running sum, not a fresh per-frame decision each time.
+		bool extendFramesOnLowSignal{ false };
+		// A fixed, absolute target for the running SUM described above - NOT a single frame's
+		// own max (that's what estimateFrameMetric() returns for autofocus), and NOT rescaled
+		// by how many frames have gone into the sum. Calibrate it directly against "max counts
+		// in the image that actually gets fit" for your normal camera.frameCount - e.g. if you
+		// already know from experience that a summed max of 249 counts gives a good fit at 2
+		// frame repeats, set it to 249, and the running sum is compared against that same 249
+		// whether it took camera.frameCount frames alone or needed extras added - no scaling in
+		// between. (249 here is the default because it's what a max-vs-fit-SNR calibration
+		// against real 2-frame-repeat data landed on - see
+		// ProxyMetricThresholdAnalysis/proxy_metric_vs_snr_summed.py - not a universal constant;
+		// recalibrate if your frame-repeat count or sample differs.)
+		double proxyRoiMetricThreshold{ 249.0 };
+		// Frames beyond the normal camera.frameCount a point may take while its metric stays
+		// below proxyRoiMetricThreshold. 0 disables extension even if
+		// extendFramesOnLowSignal is on.
+		int maxAdditionalFrames{ 0 };
 
 		// ROI parameters
 		const double& xMin{ m_xMin };
@@ -503,11 +545,34 @@ public slots:
 	int overviewImageCountTotal() const;
 
 private:
+	// True when the current plan visits the z-planes one after another (z outermost), i.e.
+	// the z index never decreases along the traversal. Derived from the ordered indices
+	// themselves rather than m_scanOrder, so it always describes the plan that will actually
+	// run. Decides how the per-z overview batches are scheduled - see
+	// runMeasurementPhase().
+	bool isZOutermostInPlan() const;
+
 	void abortMode(std::unique_ptr <StorageWrapper>& storage) override;
 
 	void calibrate(std::unique_ptr <StorageWrapper>& storage);
 	void applySurfaceFollowPlan();
+	// Surface-follow autofocus's own metric: raw pixel MAX in the spectral proxy ROI box(es)
+	// of a single frame, averaged across boxes. Unchanged - see estimateFrameMetricGeneric()
+	// for the logic this and estimateFrameMetricFromSum() share.
 	double estimateFrameMetric(const std::vector<std::byte>& image) const;
+	// Same metric (max in the proxy ROI box(es), averaged across boxes), but reading from a
+	// running per-pixel SUM across multiple frames instead of one raw frame - see
+	// BRILLOUIN_SETTINGS::extendFramesOnLowSignal's own comment for why adaptive frame
+	// extension needs this instead of estimateFrameMetric() on the latest frame alone.
+	// `sumBuffer` must be sized camera.roi.width_binned * camera.roi.height_binned, indexed
+	// the same raw (unflipped) row-major order as a raw camera frame buffer.
+	double estimateFrameMetricFromSum(const std::vector<double>& sumBuffer) const;
+	// Shared ROI-remap-and-max-scan logic behind both metrics above, parameterized over how a
+	// pixel's value is read (raw dataType-typed bytes for estimateFrameMetric(), a plain
+	// double for estimateFrameMetricFromSum()) so the remap/averaging logic itself - the part
+	// that actually matters for correctness - exists exactly once.
+	double estimateFrameMetricGeneric(
+		int width, int height, const std::function<double(int x, int displayY)>& getDisplayValue) const;
 
 	// The actual measurement loop - the back half of what used to be all of acquire(),
 	// split out so continueAfterSurfaceReview() can also reach it after a surface-review
@@ -575,8 +640,13 @@ private:
 	// computed for its own rectangular pass. Returns the found z (relative to the grid's z
 	// origin, same convention as zSurface[][] there), or std::nullopt if aborted or no
 	// surface found within range.
+	// onSample, if given, is invoked with (zRel, metric) after every single measurement here -
+	// same live per-step detail searchColumn()'s own emitSurfaceProgress() calls show for the
+	// rectangular grid, previously missing entirely for boundary points (the caller only ever
+	// saw the final found-or-not result, not one z/metric reading along the way).
 	std::optional<double> measureBoundarySurfaceZ(
-		POINT2 xyPlan, double seedZRel, double zTravel, double zStep, double referenceThreshold
+		POINT2 xyPlan, double seedZRel, double zTravel, double zStep, double referenceThreshold,
+		const std::function<void(double zRel, double metric)>& onSample = nullptr
 	);
 	// Converts a "grid-plan" position - the pre-origin frame directionsX/Y/Z,
 	// m_settings.roiPolygonUm and coarseXYSamples() are all expressed in (see
@@ -630,6 +700,12 @@ private:
 	// closeBeam (grabbing several frames back-to-back at one position without flapping the
 	// shutter between them).
 	void acquireAndorFrame(std::byte* buffer, bool openBeam = true, bool closeBeam = true);
+	// Factored out of acquireAndorFrame()'s own closeBeam handling so runMeasurementPhase()'s
+	// adaptive frame extension can close the beam block explicitly, exactly once, after
+	// whichever frame ends up being the truly last one taken at a point (a normal frame if
+	// extension didn't trigger or is disabled, or the final extra frame otherwise) - without
+	// duplicating the useDoseProtection/setBeamBlockOpen/setRLShutterOpen fallback logic.
+	void closeDoseProtectionShutter();
 	// Moves to a grid point during runMeasurementPhase(), honoring
 	// useGridHysteresisCompensation (compensated approach vs. a direct move).
 	void approachGridPosition(const POINT3& position);
@@ -762,6 +838,10 @@ signals:
 	void s_orderedPositionsChanged(std::vector<POINT3>, bool isAbsolute);
 	void s_excludedPositionsChanged(std::vector<POINT3>);
 	void s_surfaceScanProgress(double progress, QString message);
+	// elapsed wall-clock time since the main measurement grid started, in seconds - drives the
+	// live elapsed-time display that replaces the static pre-run estimate in estimatedAcquisitionTime
+	// once a measurement is actually running (see BrillouinAcquisition::showMeasurementElapsedTime()).
+	void s_measurementElapsed(int seconds);
 };
 
 #endif //BRILLOUIN_H

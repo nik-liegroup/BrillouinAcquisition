@@ -379,6 +379,13 @@ void ScanControl::setHome() {
 	calculateHomePositionBounds();
 }
 
+void ScanControl::setHomeZ(double z) {
+	m_homePosition.z = z;
+	announceSavedPositionsNormalized();
+	announcePosition();
+	calculateHomePositionBounds();
+}
+
 POINT3 ScanControl::getHomePosition() const {
 	return m_homePosition;
 }

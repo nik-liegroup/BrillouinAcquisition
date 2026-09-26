@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <set>
+#include <utility>
 
 #include <QRegularExpression>
 #include <QFileInfo>
@@ -227,6 +229,12 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		&Brillouin::s_repetitionProgress,
 		this,
 		[this](double progress, int seconds) { showBrillouinProgress(progress, seconds); }
+	);
+	connection = QWidget::connect(
+		m_Brillouin,
+		&Brillouin::s_measurementElapsed,
+		this,
+		[this](int seconds) { showMeasurementElapsedTime(seconds); }
 	);
 	connection = QWidget::connect(
 		m_Brillouin,
@@ -861,6 +869,28 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			});
 
 			connect(m_saveOverviewBrightfieldPerZCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
+				// With z not the outermost scan axis (manual scan order only), no z-plane is
+				// finished before the end of the scan, so overviews can't follow planes the way
+				// they otherwise do - make that explicit before allowing them back on. Nothing
+				// changes until OK is clicked.
+				if (enabled && !m_scanOrderZOutermost) {
+					const auto reply = QMessageBox::warning(this, "Overview images with z not outermost",
+						"z is not the outermost scan axis, so no z-plane is finished until the very "
+						"end of the scan.\n\n"
+						"The same number of overview images/stacks as with z outermost (one batch per "
+						"z step) will be taken, but at points spread evenly across the whole "
+						"acquisition instead of after each z-plane. The last batch is taken after all "
+						"grid points have been scanned.\n\n"
+						"The overview images therefore no longer show the sample right after "
+						"the z-plane they are assigned to (drift over the scan is not corrected).\n\n"
+						"Turn overview images on anyway?",
+						QMessageBox::Ok | QMessageBox::Cancel, QMessageBox::Cancel);
+					if (reply != QMessageBox::Ok) {
+						const QSignalBlocker blocker(m_saveOverviewBrightfieldPerZCheckbox);
+						m_saveOverviewBrightfieldPerZCheckbox->setChecked(false);
+						return;
+					}
+				}
 				m_Brillouin->settings.saveOverviewBrightfieldPerZ = enabled;
 				updateEstimatedAcquisitionTime();
 				updateBrillouinSettings();
@@ -1287,75 +1317,76 @@ void BrillouinAcquisition::updateEstimatedAcquisitionTime() {
 	const auto frameCount = std::max<int64_t>(1, settings.camera.frameCount);
 	const auto exposureSeconds = std::max(0.0, settings.camera.exposureTime);
 
-	// Per-frame overhead beyond the raw exposure time: the camera trigger/readout/data-transfer
-	// time acquireAndorFrame() pays for every single frame, on top of the exposure itself. Like
-	// kAssumedStageSpeedUmPerS below, this is a rough approximation - no hardware-reported
-	// readout time exists anywhere to query instead. Adjust it here if the estimate is
-	// consistently off for your camera/settings.
-	constexpr double kFrameOverheadS = 0.3;
-	const auto perFrameSeconds = exposureSeconds + kFrameOverheadS;
-	const auto exposureOnlySeconds = perFrameSeconds * frameCount * (double)pointCount;
+	// Timing model. All constants below are experimentally verified (estimated and measured
+	// scan durations agree within ~3%), except where a comment says "not verified".
+	constexpr double kFrameOverheadS = 0.05;           // per frame, on top of its exposure; not verified separately from kPointOverheadS (only their 2-frame sum is)
+	constexpr double kPointOverheadS = 0.134;          // per point, independent of frame count; see kFrameOverheadS
+	constexpr double kStageAxisMoveS = 0.09;           // one synchronous x or y stage move
+	constexpr double kHysteresisSettleS = 0.1;         // sleep after the approach move in setPositionCompensated()
+	constexpr double kZMoveFixedS = 0.054;             // any focus move, independent of distance
+	constexpr double kZMoveSPerUm = 0.006;             // focus move, per um travelled
+	constexpr double kSurfaceFollowStepDzUm = 2.0;     // typical z change between neighbouring points with surface follow
+	constexpr double kMinAxisMoveUm = 0.5;             // same threshold as setPositionCompensated()
+	constexpr double kOverviewBatchFixedS = 1.6;       // preset switches, shutter, re-approach
+	constexpr double kOverviewPerImageS = 0.535;       // per overview image, plus its exposure
+	constexpr double kCalibrationFixedS = 3.5;         // preset switches, optics settle, re-approach
+	constexpr double kCalibrationImageOverheadS = 0.1;
 
-	// Movement estimate: total travel distance along the actual planned path (only known
-	// once m_positionsMicrometer is populated - falls back to 0 extra time before that,
-	// same as the exposure-only estimate already did) divided by an assumed stage speed,
-	// since no hardware-reported speed exists anywhere in ScanControl to query instead.
-	// kAssumedStageSpeedUmPerS is a rough approximation, not a calibrated value - adjust it
-	// here if it's consistently far off for your hardware.
-	constexpr double kAssumedStageSpeedUmPerS = 1000.0;
-	double totalTravelUm = 0.0;
-	for (size_t i = 1; i < m_positionsMicrometer.size(); i++) {
-		const auto delta = m_positionsMicrometer[i] - m_positionsMicrometer[i - 1];
-		totalTravelUm += std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
-	}
-	const size_t moveCount = pointCount > 0 ? pointCount - 1 : 0;
-	double moveSeconds = totalTravelUm / kAssumedStageSpeedUmPerS;
-	// Compensated moves add an extra pre-approach move and a settle delay whenever xy
-	// changes (see Brillouin::approachGridPosition()/ScanControl::setPositionCompensated())
-	// - approximated here as a fixed overhead per move rather than tracking which moves
-	// actually change xy, since this is an estimate, not an exact replay of the scan.
-	if (settings.useGridHysteresisCompensation) {
-		moveSeconds += 0.1 * (double)moveCount;
+	const auto capturePerPointSeconds =
+		(double)frameCount * (exposureSeconds + kFrameOverheadS) + kPointOverheadS;
+	const auto captureSeconds = capturePerPointSeconds * (double)pointCount;
+
+	// Stage movement: replay of the planned path. A move costs time per x/y axis that actually
+	// changes (with hysteresis compensation on, that axis also pays an approach move + settle),
+	// and a focus move costs a fixed part plus a part per um whenever z changes. With surface
+	// follow every step also changes z (the surface is not flat), which the planned positions
+	// don't show, so a typical z change is added. Since it replays the real traversal, it
+	// follows the scan order automatically. Before the positions are computed, assume one moving
+	// axis per step.
+	const auto axisMoveSeconds = kStageAxisMoveS
+		+ (settings.useGridHysteresisCompensation ? kStageAxisMoveS + kHysteresisSettleS : 0.0);
+	const auto zMoveSeconds = [&](double zTravelUm) {
+		return zTravelUm > kMinAxisMoveUm ? kZMoveFixedS + kZMoveSPerUm * zTravelUm : 0.0;
+	};
+	const auto surfaceFollowDzUm = settings.useSurfaceFollow ? kSurfaceFollowStepDzUm : 0.0;
+	double moveSeconds = 0.0;
+	if (m_positionsComputed && m_positionsMicrometer.size() > 1) {
+		for (size_t i = 1; i < m_positionsMicrometer.size(); i++) {
+			const auto delta = m_positionsMicrometer[i] - m_positionsMicrometer[i - 1];
+			const auto axesMoved = (std::abs(delta.x) > kMinAxisMoveUm ? 1 : 0)
+				+ (std::abs(delta.y) > kMinAxisMoveUm ? 1 : 0);
+			moveSeconds += (double)axesMoved * axisMoveSeconds
+				+ zMoveSeconds(std::abs(delta.z) + surfaceFollowDzUm);
+		}
+	} else if (pointCount > 1) {
+		moveSeconds = (double)(pointCount - 1) * (axisMoveSeconds + zMoveSeconds(surfaceFollowDzUm));
 	}
 
-	// BF overview estimate: one exposure per captured image, plus a fixed per-image
-	// overhead for the preset switch/settle moves captureOverviewBrightfield() actually
-	// does (see its own 100 ms post-move sleep).
-	constexpr double kOverviewPerImageOverheadS = 0.1;
+	// BF overview: one batch per z step (the same count whether the batches follow the z-planes
+	// or, with z not outermost, are spread over the whole scan - see
+	// Brillouin::runMeasurementPhase()), each costing a fixed part plus a per-image part.
 	const auto overviewImageCount = m_Brillouin->overviewImageCountTotal();
 	const auto overviewExposureSeconds = 1e-3 * std::max(1, settings.overviewBrightfieldExposureMs);
-	const double overviewSeconds = (double)overviewImageCount * (overviewExposureSeconds + kOverviewPerImageOverheadS);
-
-	// Surface pre-scan estimate: paid once, before the main grid, when surface-follow is on.
-	// The neighbor-seeded search in Brillouin::runSurfacePreScan() takes a data-dependent
-	// number of z-steps per column (see that function's own comments), so this approximates
-	// each column as one seed measurement, one rewind-or-forward step, and the configured
-	// verification steps (each averaged over surfaceVerificationFrameAverage frames) - a rough
-	// middle ground, not an exact replay of the adaptive search.
-	double surfaceScanSeconds = 0.0;
-	if (settings.useSurfaceFollow) {
-		const auto columnCount = (double)m_Brillouin->surfacePreScanGridXY().size();
-		const auto refFrames = std::max(1, settings.mediumReferenceFrameCount);
-		const auto stepsPerColumn = 2.0 + std::max(0, settings.surfaceVerificationSteps)
-			* (double)std::max(1, settings.surfaceVerificationFrameAverage);
-		surfaceScanSeconds = (double)refFrames * perFrameSeconds
-			+ columnCount * stepsPerColumn * perFrameSeconds;
-	}
+	const auto overviewBatchCount = (settings.saveOverviewBrightfieldPerZ && settings.zSteps > 0)
+		? settings.zSteps : 0;
+	const double overviewSeconds = (double)overviewBatchCount * kOverviewBatchFixedS
+		+ (double)overviewImageCount * (kOverviewPerImageS + overviewExposureSeconds);
 
 	// Background reference points: a separate pass over (backgroundGridPoints() x zSteps),
-	// after the main grid, at the same per-frame cost, plus the 100 ms settle
-	// captureBackgroundPoints() waits after each move.
+	// after the main grid, at the same per-point cost, plus one axis move and the 100 ms
+	// settle captureBackgroundPoints() waits after each move.
 	const auto backgroundPointCount = (double)m_Brillouin->backgroundGridPoints().size()
 		* (double)std::max(1, settings.zSteps);
-	const double backgroundSeconds = backgroundPointCount * ((double)frameCount * perFrameSeconds + 0.1);
+	const double backgroundSeconds = backgroundPointCount
+		* (capturePerPointSeconds + axisMoveSeconds + 0.1);
 
-	// Pre-/post-/continuous spectrometer calibration: a fixed 500 ms optics-settle
-	// (Brillouin::calibrate()'s own sleep) plus nrCalibrationImages frames each. Continuous
-	// calibration during the main grid is gated by elapsed wall time (conCalibrationInterval,
-	// in minutes); approximated here against the main exposure time alone, since that
-	// dominates the run and calibrationAllowed-gating on top of it is data-dependent.
-	const auto calibrationSeconds = 0.5 + (double)std::max(1, settings.nrCalibrationImages)
-		* (std::max(0.0, settings.calibrationExposureTime) + kFrameOverheadS);
+	// Pre-/post-/continuous spectrometer calibration (see the timing model above for the
+	// measured cost). Continuous calibration during the main grid is gated by elapsed wall
+	// time (conCalibrationInterval, in minutes), so it's counted against the main grid time
+	// (capture + movement + overviews); calibrationAllowed-gating on top of it is
+	// data-dependent and ignored.
+	const auto calibrationSeconds = kCalibrationFixedS + (double)std::max(1, settings.nrCalibrationImages)
+		* (std::max(0.0, settings.calibrationExposureTime) + kCalibrationImageOverheadS);
 	double totalCalibrationSeconds = 0.0;
 	if (settings.preCalibration) {
 		totalCalibrationSeconds += calibrationSeconds;
@@ -1365,38 +1396,46 @@ void BrillouinAcquisition::updateEstimatedAcquisitionTime() {
 	}
 	if (settings.conCalibration && settings.conCalibrationInterval > 0.0) {
 		const auto intervalSeconds = 60.0 * settings.conCalibrationInterval;
-		totalCalibrationSeconds += std::floor(exposureOnlySeconds / intervalSeconds) * calibrationSeconds;
+		const auto mainGridSeconds = captureSeconds + moveSeconds + overviewSeconds;
+		totalCalibrationSeconds += std::floor(mainGridSeconds / intervalSeconds) * calibrationSeconds;
 	}
 
 	// Per-point brightfield capture, "after" variant only (perPointBrightfieldDuringAcquisition
 	// == true runs it in parallel with the spectrum exposure, adding negligible extra time).
+	// Not verified: costed like one overview batch of a single image (two preset switches per
+	// captured point).
 	double perPointBrightfieldSeconds = 0.0;
 	if (settings.capturePerPointBrightfield && !settings.perPointBrightfieldDuringAcquisition) {
-		perPointBrightfieldSeconds = (double)pointCount * (overviewExposureSeconds + kOverviewPerImageOverheadS);
+		const auto everyN = (size_t)std::max(1, settings.perPointBrightfieldEveryN);
+		const auto capturedPointCount = (pointCount + everyN - 1) / everyN;
+		perPointBrightfieldSeconds = (double)capturedPointCount
+			* (kOverviewBatchFixedS + kOverviewPerImageS + overviewExposureSeconds);
 	}
 
+	// The surface pre-scan is deliberately not part of this estimate: its length depends on
+	// the sample (see Brillouin::runSurfacePreScan()) and can't be predicted from the settings.
 	const auto totalSeconds = (int)std::ceil(
-		exposureOnlySeconds + moveSeconds + overviewSeconds + surfaceScanSeconds
+		captureSeconds + moveSeconds + overviewSeconds
 		+ backgroundSeconds + totalCalibrationSeconds + perPointBrightfieldSeconds
 	);
 	ui->estimatedAcquisitionTime->setText(formatSeconds(totalSeconds));
 	ui->estimatedAcquisitionTime->setToolTip(
-		QString("%1 points x %2 frames x %3 s exposure (%4) + ~%5 stage movement (assumes %6 um/s) + %7 BF overview images (%8)"
-			" + surface scan (%9) + background points (%10) + calibration (%11) + per-point BF (%12)."
-			" Frame times include a %13 s/frame readout-overhead approximation.")
+		QString("%1 points x (%2 frames x %3 s exposure + overhead) = %4"
+			" + stage movement (%5) + BF overview, %6 images in %7 batches (%8)"
+			" + background points (%9) + calibration (%10) + per-point BF (%11)."
+			" Excludes the surface pre-scan and any adaptive extra frames."
+			" Timing constants are experimentally verified (per-point brightfield excepted).")
 		.arg((qulonglong)pointCount)
 		.arg((qlonglong)frameCount)
 		.arg(exposureSeconds, 0, 'g', 4)
-		.arg(formatSeconds((int)std::ceil(exposureOnlySeconds)))
+		.arg(formatSeconds((int)std::ceil(captureSeconds)))
 		.arg(formatSeconds((int)std::ceil(moveSeconds)))
-		.arg(kAssumedStageSpeedUmPerS, 0, 'g', 4)
 		.arg(overviewImageCount)
+		.arg(overviewBatchCount)
 		.arg(formatSeconds((int)std::ceil(overviewSeconds)))
-		.arg(formatSeconds((int)std::ceil(surfaceScanSeconds)))
 		.arg(formatSeconds((int)std::ceil(backgroundSeconds)))
 		.arg(formatSeconds((int)std::ceil(totalCalibrationSeconds)))
 		.arg(formatSeconds((int)std::ceil(perPointBrightfieldSeconds)))
-		.arg(kFrameOverheadS, 0, 'g', 2)
 	);
 }
 
@@ -2375,6 +2414,21 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 	ui->fullGridButton->setEnabled(status == ACQUISITION_STATUS::WAITFORSURFACEREVIEW);
 	ui->progressBar->setFormat(string);
 
+	// estimatedAcquisitionTime doubles as a live elapsed-time display while running (see
+	// showMeasurementElapsedTime(), driven by Brillouin::s_measurementElapsed) - swap its
+	// label/tooltip in and out, and restore the static pre-run estimate once the run ends.
+	if (running) {
+		ui->estimatedAcquisitionTime_label->setText("Elapsed");
+		ui->estimatedAcquisitionTime_label->setToolTip("Time elapsed since the measurement started.");
+	} else {
+		ui->estimatedAcquisitionTime_label->setText("Est. time");
+		ui->estimatedAcquisitionTime_label->setToolTip(
+			"Estimated total acquisition time: exposure and per-point overhead, stage movement, "
+			"brightfield overviews and calibrations (if enabled), excluding the surface pre-scan. "
+			"Hover the value for a breakdown.");
+		updateEstimatedAcquisitionTime();
+	}
+
 	ui->actionOpen_Acquisition->setDisabled(running);
 	ui->actionNew_Acquisition->setDisabled(running);
 	ui->actionClose_Acquisition->setDisabled(running);
@@ -2512,6 +2566,15 @@ void BrillouinAcquisition::showBrillouinProgress(double progress, int seconds) {
 	string += timeString;
 	string += " remaining.";
 	ui->progressBar->setFormat(string);
+}
+
+void BrillouinAcquisition::showMeasurementElapsedTime(int seconds) {
+	// While the main grid is running, this label repurposes the space normally used for the
+	// static pre-run estimate (updateEstimatedAcquisitionTime()) to show live elapsed time
+	// instead - the pre-run number is only useful before the run starts, and showBrillouinStatus()
+	// restores it (and this label's original text/tooltip) once the run ends.
+	ui->estimatedAcquisitionTime->setText(formatSeconds(seconds));
+	ui->estimatedAcquisitionTime->setToolTip("Time elapsed since the measurement started.");
 }
 
 void BrillouinAcquisition::showSurfaceScanProgress(double progress, const QString& message) {
@@ -6224,8 +6287,34 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_editRoiCheckbox->setDisabled(acquisitionRunning);
 	}
 
+	// Drawn once, shared by two independent consumers - surface-follow autofocus and the
+	// adaptive-frame-extension group below - so this must not be gated on either one's own
+	// enabled state; only acquisitionRunning applies, same pattern (and same reasoning) as
+	// m_editRoiCheckbox just above: don't let an active edit mode run into an acquisition.
 	if (m_editSpectralProxyRoiCheckbox) {
-		m_editSpectralProxyRoiCheckbox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
+		if (acquisitionRunning && m_editSpectralProxyRoiCheckbox->isChecked()) {
+			m_editSpectralProxyRoiCheckbox->setChecked(false);
+		}
+		m_editSpectralProxyRoiCheckbox->setDisabled(acquisitionRunning);
+	}
+
+	// Adaptive frame extension - deliberately NOT gated on useSurfaceFollow like the
+	// surface-scanning controls above (it applies to every acquisition mode, not just
+	// surface-follow scans). It IS gated on acquisitionRunning though, same as
+	// exposureTime/frameCount/binning/etc. above: runMeasurementPhase() (the worker thread)
+	// reads m_settings.extendFramesOnLowSignal/proxyRoiMetricThreshold/maxAdditionalFrames
+	// with no synchronization, same as those, so editing them live from the GUI thread during
+	// a running acquisition is exactly the same data race that's why those are locked.
+	{
+		const QSignalBlocker blockerCheckbox(*ui->extendFramesOnLowSignalCheckbox);
+		ui->extendFramesOnLowSignalCheckbox->setChecked(m_Brillouin->settings.extendFramesOnLowSignal);
+		ui->extendFramesOnLowSignalCheckbox->setDisabled(acquisitionRunning);
+		const QSignalBlocker blockerThreshold(*ui->proxyRoiMetricThresholdSpinBox);
+		ui->proxyRoiMetricThresholdSpinBox->setValue(m_Brillouin->settings.proxyRoiMetricThreshold);
+		ui->proxyRoiMetricThresholdSpinBox->setDisabled(acquisitionRunning);
+		const QSignalBlocker blockerMaxFrames(*ui->maxAdditionalFramesSpinBox);
+		ui->maxAdditionalFramesSpinBox->setValue(m_Brillouin->settings.maxAdditionalFrames);
+		ui->maxAdditionalFramesSpinBox->setDisabled(acquisitionRunning);
 	}
 
 	refreshSpectralProxyRoiRects();
@@ -6358,6 +6447,33 @@ void BrillouinAcquisition::on_gridOffsetChanged(POINT2 offsetUm, bool positionIs
  * Update the plot showing the measurement positions as overlay in the brightfield preview
  */
 void BrillouinAcquisition::update_AOI_preview() {
+	// Collapses every z-layer of the same (x, y) column onto a single plotted marker: z has no
+	// effect on where a point projects on screen (ScanControl::convertPositionsToPix() only ever
+	// reads point.x/point.y - see its own comment), so a grid with many z steps was plotting
+	// zSteps visually-identical, exactly-overlapping markers per column for zero extra
+	// information, at real reprojection + QCustomPlot render cost that scaled with zSteps just
+	// like it scaled with xSteps/ySteps (which, unlike z, each really do add a new marker
+	// position). Dedup key is the source µm (x, y), not the projected pixel position - every
+	// z-layer of a column is generated from the exact same x/y grid value (not just numerically
+	// close), so exact equality here is safe, not an approximate/epsilon comparison.
+	// Only used for the two branches below that don't need index alignment with anything else
+	// (the plain marker line, and the ROI-colored inside/outside lines) - NOT for
+	// squarePositionsPixel/positionsPixelForRoi themselves, which the reviewMode branch below
+	// indexes in lockstep with getOrderedIndices() and would desync if shrunk.
+	auto dedupeByXY = [](const std::vector<POINT3>& positionsUm, const std::vector<POINT2>& positionsPix) {
+		std::vector<POINT2> unique;
+		std::set<std::pair<double, double>> seen;
+		unique.reserve(positionsPix.size());
+		const auto count = std::min(positionsUm.size(), positionsPix.size());
+		for (size_t i = 0; i < count; i++) {
+			if (!seen.insert(std::make_pair(positionsUm[i].x, positionsUm[i].y)).second) {
+				continue;
+			}
+			unique.push_back(positionsPix[i]);
+		}
+		return unique;
+	};
+
 	if (m_showPositions) {
 		// Paused for surface-scan review: show only the actual measurement-grid points
 		// that ended up with a surface z value (found or interpolated) as squares, with no
@@ -6457,20 +6573,26 @@ void BrillouinAcquisition::update_AOI_preview() {
 			// independent classification) is what let the on-screen coloring disagree with
 			// what ScanPlanner would really include, whenever the two tests' notions of the
 			// current scanner/stage offset drifted apart even slightly.
+			// positionsPixelForRoi/excludedPixelForRoi themselves stay full-length (reused
+			// as squarePositionsPixel below, index-aligned with getOrderedIndices() in
+			// reviewMode) - only the cross-marker lines built here are deduped, since
+			// nothing else reads xInside/xOutside afterward.
+			const auto insideUnique = dedupeByXY(m_positionsMicrometer, positionsPixelForRoi);
+			const auto outsideUnique = dedupeByXY(m_excludedPositionsMicrometer, excludedPixelForRoi);
 			QVector<double> xInside;
 			QVector<double> yInside;
 			QVector<double> xOutside;
 			QVector<double> yOutside;
-			xInside.reserve((int)positionsPixelForRoi.size());
-			yInside.reserve((int)positionsPixelForRoi.size());
-			xOutside.reserve((int)excludedPixelForRoi.size());
-			yOutside.reserve((int)excludedPixelForRoi.size());
+			xInside.reserve((int)insideUnique.size());
+			yInside.reserve((int)insideUnique.size());
+			xOutside.reserve((int)outsideUnique.size());
+			yOutside.reserve((int)outsideUnique.size());
 
-			for (const auto& posPix : positionsPixelForRoi) {
+			for (const auto& posPix : insideUnique) {
 				xInside.push_back(posPix.x);
 				yInside.push_back(posPix.y);
 			}
-			for (const auto& posPix : excludedPixelForRoi) {
+			for (const auto& posPix : outsideUnique) {
 				xOutside.push_back(posPix.x);
 				yOutside.push_back(posPix.y);
 			}
@@ -6545,10 +6667,13 @@ void BrillouinAcquisition::update_AOI_preview() {
 				m_positionsMarkerSquareInsideRoi = nullptr;
 			}
 		} else {
-			QVector<double> xPos(m_positionsPixel.size());
-			QVector<double> yPos(m_positionsPixel.size());
+			// Deduped (see dedupeByXY() above) - m_positionsPixel itself stays full-length,
+			// nothing else reads xPos/yPos afterward so it's safe to shrink here.
+			const auto positionsUnique = dedupeByXY(m_positionsMicrometer, m_positionsPixel);
+			QVector<double> xPos(positionsUnique.size());
+			QVector<double> yPos(positionsUnique.size());
 			int index{ 0 };
-			for (auto const& position : m_positionsPixel) {
+			for (auto const& position : positionsUnique) {
 				xPos[index] = position.x;
 				yPos[index] = position.y;
 				++index;
@@ -7172,6 +7297,19 @@ void BrillouinAcquisition::on_buttonGroup_3_buttonClicked(int button) {
 }
 
 void BrillouinAcquisition::scanOrderChanged(SCAN_ORDER scanOrder) {
+	// Loop level 2 = outermost. Automatic mode always keeps z there; only a manual order can
+	// move it. Without z outermost, per-z overview images can't follow finished planes, so
+	// they are switched off here (unchecking runs the checkbox's normal toggled handler, which
+	// also updates the settings and the time estimate); turning them back on later needs an
+	// explicit OK, see that handler.
+	m_scanOrderZOutermost = (scanOrder.z == 2);
+	if (!m_scanOrderZOutermost && m_saveOverviewBrightfieldPerZCheckbox
+		&& m_saveOverviewBrightfieldPerZCheckbox->isChecked()) {
+		m_saveOverviewBrightfieldPerZCheckbox->setChecked(false);
+		statusBar()->showMessage(
+			"z is not the outermost scan axis: overview images were turned off.", 8000);
+	}
+
 	if (scanOrder.x == 0) {
 		ui->scanDirX0->setChecked(true);
 	}
@@ -7219,6 +7357,18 @@ void BrillouinAcquisition::on_exposureTime_valueChanged(double value) {
 void BrillouinAcquisition::on_frameCount_valueChanged(int value) {
 	m_Brillouin->settings.camera.frameCount = value;
 	updateEstimatedAcquisitionTime();
+}
+
+void BrillouinAcquisition::on_extendFramesOnLowSignalCheckbox_stateChanged(int state) {
+	m_Brillouin->settings.extendFramesOnLowSignal = (bool)state;
+}
+
+void BrillouinAcquisition::on_proxyRoiMetricThresholdSpinBox_valueChanged(double value) {
+	m_Brillouin->settings.proxyRoiMetricThreshold = value;
+}
+
+void BrillouinAcquisition::on_maxAdditionalFramesSpinBox_valueChanged(int value) {
+	m_Brillouin->settings.maxAdditionalFrames = value;
 }
 
 StoragePath BrillouinAcquisition::splitFilePath(QString fullPath) {
@@ -7520,6 +7670,9 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-capture-per-point-brightfield", m_Brillouin->settings.capturePerPointBrightfield);
 	settings.setValue("brillouin-per-point-brightfield-every-n", m_Brillouin->settings.perPointBrightfieldEveryN);
 	settings.setValue("brillouin-per-point-brightfield-during-acquisition", m_Brillouin->settings.perPointBrightfieldDuringAcquisition);
+	settings.setValue("brillouin-extend-frames-on-low-signal", m_Brillouin->settings.extendFramesOnLowSignal);
+	settings.setValue("brillouin-proxy-roi-metric-threshold", m_Brillouin->settings.proxyRoiMetricThreshold);
+	settings.setValue("brillouin-max-additional-frames", m_Brillouin->settings.maxAdditionalFrames);
 	settings.setValue("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft);
 	settings.setValue("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop);
 	settings.setValue("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth);
@@ -7693,6 +7846,9 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.capturePerPointBrightfield = settings.value("brillouin-capture-per-point-brightfield", m_Brillouin->settings.capturePerPointBrightfield).toBool();
 	m_Brillouin->settings.perPointBrightfieldEveryN = settings.value("brillouin-per-point-brightfield-every-n", m_Brillouin->settings.perPointBrightfieldEveryN).toInt();
 	m_Brillouin->settings.perPointBrightfieldDuringAcquisition = settings.value("brillouin-per-point-brightfield-during-acquisition", m_Brillouin->settings.perPointBrightfieldDuringAcquisition).toBool();
+	m_Brillouin->settings.extendFramesOnLowSignal = settings.value("brillouin-extend-frames-on-low-signal", m_Brillouin->settings.extendFramesOnLowSignal).toBool();
+	m_Brillouin->settings.proxyRoiMetricThreshold = settings.value("brillouin-proxy-roi-metric-threshold", m_Brillouin->settings.proxyRoiMetricThreshold).toDouble();
+	m_Brillouin->settings.maxAdditionalFrames = settings.value("brillouin-max-additional-frames", m_Brillouin->settings.maxAdditionalFrames).toInt();
 	m_Brillouin->settings.surfaceProxyRoiLeft = settings.value("brillouin-surface-proxy-roi-left", m_Brillouin->settings.surfaceProxyRoiLeft).toInt();
 	m_Brillouin->settings.surfaceProxyRoiTop = settings.value("brillouin-surface-proxy-roi-top", m_Brillouin->settings.surfaceProxyRoiTop).toInt();
 	m_Brillouin->settings.surfaceProxyRoiWidth = settings.value("brillouin-surface-proxy-roi-width", m_Brillouin->settings.surfaceProxyRoiWidth).toInt();
