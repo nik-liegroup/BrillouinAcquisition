@@ -122,6 +122,7 @@ void Andor::getImageForAcquisition(std::byte* buffer, bool preview) {
 
 	if (preview) {
 		// write image to preview buffer
+		std::lock_guard<std::mutex> previewLock(m_previewBuffer->m_mutex);
 		memcpy(m_previewBuffer->m_buffer->getWriteBuffer(), buffer, m_settings.roi.bytesPerFrame);
 		m_previewBuffer->m_buffer->m_usedBuffers->release();
 		emit(s_imageReady());

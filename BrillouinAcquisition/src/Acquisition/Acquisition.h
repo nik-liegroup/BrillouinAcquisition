@@ -57,6 +57,7 @@ signals:
 	void s_enabledModes(ACQUISITION_MODE);	// which acquisition mode is running
 	void s_filenameChanged(std::string);
 	void s_openFileFailed();
+	void s_writeError(QString message);
 };
 
 #endif //ACQUISITION_H

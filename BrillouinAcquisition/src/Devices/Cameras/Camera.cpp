@@ -77,6 +77,10 @@ void Camera::getImageForPreview() {
 			return;
 		}
 
+		// m_previewBuffer->m_mutex also guards initializeBuffer() replacing m_buffer with a
+		// new CircularBuffer (e.g. on an ROI/exposure change while the preview is running).
+		std::lock_guard<std::mutex> previewLock(m_previewBuffer->m_mutex);
+
 		// if no image is ready return immediately
 		if (!m_previewBuffer->m_buffer->m_freeBuffers->tryAcquire()) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(50));

@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "filtermount.h"
+#include "src/helper/logger.h"
 
 void FilterMount::init() {
 	m_comObject = new com("\r\n");
@@ -58,7 +59,13 @@ void FilterMount::home() {
 double FilterMount::getPosition() {
 	std::string posString = m_comObject->receive("0gp");
 	std::string parsed = parsePosition(posString);
-	return helper::hex2dec(parsed);
+	auto pos = helper::hex2dec(parsed);
+	if (!pos) {
+		qWarning(logWarning()) << "FilterMount::getPosition() - could not parse position reply, returning last known position.";
+		return m_lastPosition;
+	}
+	m_lastPosition = *pos;
+	return m_lastPosition;
 }
 
 void FilterMount::setPosition(double position) {

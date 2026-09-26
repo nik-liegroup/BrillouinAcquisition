@@ -122,6 +122,7 @@ void PointGrey::getImageForAcquisition(std::byte* buffer, bool preview) {
 
 	if (preview && buffer != nullptr) {
 		// write image to preview buffer
+		std::lock_guard<std::mutex> previewLock(m_previewBuffer->m_mutex);
 		memcpy(m_previewBuffer->m_buffer->getWriteBuffer(), buffer, m_settings.roi.bytesPerFrame);
 		m_previewBuffer->m_buffer->m_usedBuffers->release();
 		emit(s_imageReady());
@@ -217,16 +218,31 @@ void PointGrey::readSettings() {
 	switch (fmt7ImageSettings.pixelFormat) {
 		case FlyCapture2::PIXEL_FORMAT_RAW8 :
 			m_settings.readout.pixelEncoding = L"Raw8";
+			m_settings.readout.dataType = "unsigned char";
 			break;
 		case FlyCapture2::PIXEL_FORMAT_MONO8:
 			m_settings.readout.pixelEncoding = L"Mono8";
+			m_settings.readout.dataType = "unsigned char";
 			break;
 		case FlyCapture2::PIXEL_FORMAT_MONO12:
 			m_settings.readout.pixelEncoding = L"Mono12";
+			m_settings.readout.dataType = "unsigned short";
 			break;
 		case FlyCapture2::PIXEL_FORMAT_MONO16:
 			m_settings.readout.pixelEncoding = L"Mono16";
+			m_settings.readout.dataType = "unsigned short";
 			break;
+	}
+
+	// Derived from the ROI/pixel format just read back above, not from whatever was last
+	// requested in applySettings() - a rejected Format7 request (ValidateFormat7Settings()
+	// returning false) leaves the hardware at its previous ROI, and acquireImage() reads
+	// bytesPerFrame's worth of data out of the actual (hardware) frame.
+	m_settings.roi.width_binned = m_settings.roi.width_physical;
+	m_settings.roi.height_binned = m_settings.roi.height_physical;
+	m_settings.roi.bytesPerFrame = m_settings.roi.width_binned * m_settings.roi.height_binned;
+	if (m_settings.readout.dataType == "unsigned short") {
+		m_settings.roi.bytesPerFrame *= sizeof(unsigned short);
 	}
 
 	// read trigger mode

@@ -27,6 +27,7 @@ public slots:
 private:
 	com* m_comObject{ nullptr };
 	QString m_comPort;
+	double m_lastPosition{ 0.0 };	// last successfully parsed position
 
 	std::string parsePosition(std::string position);
 };

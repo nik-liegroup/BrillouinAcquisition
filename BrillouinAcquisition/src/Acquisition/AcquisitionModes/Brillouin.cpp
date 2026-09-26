@@ -327,7 +327,24 @@ void Brillouin::waitForNextRepetition() {
 		}
 
 		setAcquisitionStatus(ACQUISITION_STATUS::STARTED);
-		acquire(m_acquisition->m_storage);
+		// An uncaught exception here (a hardware call throwing, a std:: container access
+		// failing, ...) would otherwise propagate out of this Qt slot and terminate the
+		// application with whatever data was written so far and the hardware left in whatever
+		// state the exception interrupted it in. Route it through abortMode() instead, which
+		// stops the camera/dose-protection shutter and waits for the storage queue to drain.
+		try {
+			acquire(m_acquisition->m_storage);
+		} catch (const std::exception& e) {
+			qCritical(logCritical()) << "Brillouin::waitForNextRepetition: uncaught exception in acquire():" << e.what();
+			m_abort = true;
+			abortMode(m_acquisition->m_storage);
+			return;
+		} catch (...) {
+			qCritical(logCritical()) << "Brillouin::waitForNextRepetition: uncaught unknown exception in acquire().";
+			m_abort = true;
+			abortMode(m_acquisition->m_storage);
+			return;
+		}
 
 		if (m_abort) {
 			this->abortMode(m_acquisition->m_storage);
@@ -519,6 +536,13 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 	m_startOfLastRepetition.invalidate();
 	if (m_andor) {
 		m_andor->stopAcquisition();
+	}
+	// The "during" per-point brightfield capture (perPointBrightfieldDuringAcquisition) starts
+	// m_brightfieldCamera before a point's Brillouin exposure and only stops it afterward in
+	// finishPerPointBrightfieldDuring() - an abort landing inside that window skips that call,
+	// so it has to be stopped here too.
+	if (m_brightfieldCamera) {
+		m_brightfieldCamera->stopAcquisition();
 	}
 
 	if (m_scanControl) {
@@ -2361,6 +2385,13 @@ void enqueueOverviewBrightfieldImage(
 	const std::vector<std::byte>& image,
 	const POINT3& targetPosition,
 	const POINT3& stagePosition,
+	// The Brillouin repetition (Brillouin::m_currentRepetition) this image was captured as
+	// part of - see FLUOIMAGE::hasBrillouinRepetition's own comment. Every caller of this
+	// function is itself part of a Brillouin measurement (the per-z overview and per-point
+	// brightfield below), never a standalone Fluorescence-tab capture (that path builds its
+	// own FLUOIMAGE directly, see Fluorescence::__acquire()), so this is always known and
+	// required here, not optional.
+	int brillouinRepetitionIndex,
 	const std::string& channel = "Brightfield z overview",
 	// Chunked + gzip-deflated HDF5 dataset layout instead of the default contiguous,
 	// uncompressed one - see FLUOIMAGE::compress's own comment. Off by default (the per-z
@@ -2401,7 +2432,9 @@ void enqueueOverviewBrightfieldImage(
 		targetPosition,
 		true,
 		stagePosition,
-		compress
+		compress,
+		true,
+		brillouinRepetitionIndex
 	);
 
 	QMetaObject::invokeMethod(
@@ -2627,10 +2660,10 @@ void Brillouin::captureOverviewBrightfield(
 
 	auto queuedImage = false;
 	if (brightfieldSettings.readout.dataType == "unsigned short") {
-		enqueueOverviewBrightfieldImage<unsigned short>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition);
+		enqueueOverviewBrightfieldImage<unsigned short>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition);
 		queuedImage = true;
 	} else if (brightfieldSettings.readout.dataType == "unsigned char") {
-		enqueueOverviewBrightfieldImage<unsigned char>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition);
+		enqueueOverviewBrightfieldImage<unsigned char>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition);
 		queuedImage = true;
 	}
 
@@ -2699,10 +2732,10 @@ void Brillouin::capturePerPointBrightfieldImage(
 		// per-z overview's comparatively few images).
 		if (brightfieldSettings.readout.dataType == "unsigned short") {
 			enqueueOverviewBrightfieldImage<unsigned short>(
-				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, "Brightfield per-point", true);
+				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition, "Brightfield per-point", true);
 		} else if (brightfieldSettings.readout.dataType == "unsigned char") {
 			enqueueOverviewBrightfieldImage<unsigned char>(
-				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, "Brightfield per-point", true);
+				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition, "Brightfield per-point", true);
 		}
 	} else {
 		m_brightfieldCamera->stopAcquisition();
@@ -2771,10 +2804,10 @@ void Brillouin::finishPerPointBrightfieldDuring(
 	// per-point captures opt into this.
 	if (brightfieldSettings.readout.dataType == "unsigned short") {
 		enqueueOverviewBrightfieldImage<unsigned short>(
-			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, "Brightfield per-point", true);
+			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition, "Brightfield per-point", true);
 	} else if (brightfieldSettings.readout.dataType == "unsigned char") {
 		enqueueOverviewBrightfieldImage<unsigned char>(
-			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, "Brightfield per-point", true);
+			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition, "Brightfield per-point", true);
 	}
 }
 
@@ -2860,14 +2893,18 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		return;
 	}
 
+	// storage lives on its own worker thread; its timer concurrently calls into the same HDF5
+	// file handle to flush the payload queue (StorageWrapper::s_writeQueues()), so these calls
+	// run on that thread too instead of directly here.
 	auto commentIn = std::string{ "Brillouin data" };
-	storage->setComment(commentIn);
-
-	storage->setResolution("x", m_settings.xSteps);
-	storage->setResolution("y", m_settings.ySteps);
-	storage->setResolution("z", m_settings.zSteps);
-
-	auto resolutionXout = storage->getResolution("x");
+	auto* storagePtr = storage.get();
+	QMetaObject::invokeMethod(storagePtr, [storagePtr, commentIn,
+		xSteps = m_settings.xSteps, ySteps = m_settings.ySteps, zSteps = m_settings.zSteps]() {
+			storagePtr->setComment(commentIn);
+			storagePtr->setResolution("x", xSteps);
+			storagePtr->setResolution("y", ySteps);
+			storagePtr->setResolution("z", zSteps);
+		}, Qt::BlockingQueuedConnection);
 
 	writeScaleCalibration(storage, ACQUISITION_MODE::BRILLOUIN);
 	if (m_settings.saveOverviewBrightfieldPerZ) {
@@ -2942,7 +2979,16 @@ void Brillouin::continueAfterSurfaceReview(bool fullGrid) {
 		filteredPositionsRelative.reserve(m_orderedPositionsRelative.size());
 		filteredIndices.reserve(m_orderedIndices.size());
 		filteredCalibrationAllowed.reserve(m_calibrationAllowed.size());
+		// m_calibrationAllowed has exactly one true per scan line, at that line's first index
+		// (see ScanPlanner::buildLegacyCartesianPlan()'s lineStarted). Used here as a line
+		// boundary marker rather than copied through as-is: if a line's own first point has no
+		// surface value and gets filtered out below, the next surviving point from that same
+		// line takes over its calibration-allowed flag, so the line isn't left with none.
+		auto lineHasSurvivingPoint = false;
 		for (size_t ll = 0; ll < m_orderedPositions.size(); ll++) {
+			if (m_calibrationAllowed[ll]) {
+				lineHasSurvivingPoint = false;
+			}
 			const auto key = std::make_pair(m_orderedIndices[ll].x, m_orderedIndices[ll].y);
 			if (m_surfaceFoundXYIndices.find(key) == m_surfaceFoundXYIndices.end()) {
 				continue;
@@ -2950,7 +2996,8 @@ void Brillouin::continueAfterSurfaceReview(bool fullGrid) {
 			filteredPositions.push_back(m_orderedPositions[ll]);
 			filteredPositionsRelative.push_back(m_orderedPositionsRelative[ll]);
 			filteredIndices.push_back(m_orderedIndices[ll]);
-			filteredCalibrationAllowed.push_back(m_calibrationAllowed[ll]);
+			filteredCalibrationAllowed.push_back(!lineHasSurvivingPoint);
+			lineHasSurvivingPoint = true;
 		}
 		m_orderedPositions = std::move(filteredPositions);
 		m_orderedPositionsRelative = std::move(filteredPositionsRelative);
@@ -2965,7 +3012,20 @@ void Brillouin::continueAfterSurfaceReview(bool fullGrid) {
 		m_scanControl->setRLShutterOpen(true);
 	}
 	setAcquisitionStatus(ACQUISITION_STATUS::STARTED);
-	runMeasurementPhase(m_acquisition->m_storage);
+	// See the matching try/catch in waitForNextRepetition() around its acquire() call.
+	try {
+		runMeasurementPhase(m_acquisition->m_storage);
+	} catch (const std::exception& e) {
+		qCritical(logCritical()) << "Brillouin::continueAfterSurfaceReview: uncaught exception in runMeasurementPhase():" << e.what();
+		m_abort = true;
+		abortMode(m_acquisition->m_storage);
+		return;
+	} catch (...) {
+		qCritical(logCritical()) << "Brillouin::continueAfterSurfaceReview: uncaught unknown exception in runMeasurementPhase().";
+		m_abort = true;
+		abortMode(m_acquisition->m_storage);
+		return;
+	}
 
 	// Mirrors waitForNextRepetition()'s own post-acquire() check: if the measurement
 	// itself aborted (hardware failure, user abort, ...), don't advance to the next
@@ -3308,6 +3368,34 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		storage->setPositions("roi-polygon-x-um", roiPolyX, 1, roiPolyDims);
 		storage->setPositions("roi-polygon-y-um", roiPolyY, 1, roiPolyDims);
 	}
+
+	// Background ROI polygon vertices (BrillouinAcquisition's second, independent ROI - see
+	// Brillouin::captureBackgroundPoints()/backgroundGridPoints() and settings.
+	// backgroundRoiPolygonUm's own comment). The captured points' own per-image positions
+	// already reveal roughly where this was drawn, but not its exact shape/extent - the same
+	// gap roi-polygon-x/y-um above closes for the main ROI. backgroundRoiPolygonUm lives in
+	// the same grid-plan frame as roiPolygonUm (backgroundGridPoints() tests it against that
+	// frame directly, the same way isPointInPolygonUm() callers test roiPolygonUm) -
+	// planPositionToGridFrame() converts it the same way, into the same frame positions-x/y/z
+	// and roi-polygon-x/y-um are saved in.
+	if (!m_settings.backgroundRoiPolygonUm.empty()) {
+		const hsize_t backgroundRoiPolyDims[1] = { (hsize_t)m_settings.backgroundRoiPolygonUm.size() };
+		std::vector<double> backgroundRoiPolyX(m_settings.backgroundRoiPolygonUm.size());
+		std::vector<double> backgroundRoiPolyY(m_settings.backgroundRoiPolygonUm.size());
+		for (size_t i = 0; i < m_settings.backgroundRoiPolygonUm.size(); i++) {
+			const auto stored = planPositionToGridFrame(
+				POINT3{ m_settings.backgroundRoiPolygonUm[i].x, m_settings.backgroundRoiPolygonUm[i].y, 0 });
+			backgroundRoiPolyX[i] = stored.x;
+			backgroundRoiPolyY[i] = stored.y;
+		}
+		storage->setPositions("background-roi-polygon-x-um", backgroundRoiPolyX, 1, backgroundRoiPolyDims);
+		storage->setPositions("background-roi-polygon-y-um", backgroundRoiPolyY, 1, backgroundRoiPolyDims);
+	}
+	// Whether the background ROI was even enabled - without this, an empty/missing
+	// background-roi-polygon-x/y-um is ambiguous between "feature off" and "on, but the
+	// polygon had fewer than 3 vertices" (backgroundGridPoints() also requires >= 3 - see its
+	// own guard). Same convention as roi-mask-used above.
+	storage->setPositions("background-roi-mask-used", std::vector<double>{ m_settings.useBackgroundRoiMask ? 1.0 : 0.0 }, 1, originDims);
 
 	// BF overview coverage settings actually used (their effect on shape is already visible
 	// in overview-brightfield-x/y/z + point-count/point-stack-counts, but the flags

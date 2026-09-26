@@ -331,6 +331,10 @@ bool ScanControl::isPresetActive(ScanPreset presetType) {
 void ScanControl::announcePosition() {
 	auto point = getPosition();
 	emit(currentPosition(point - m_homePosition));
+	// Reads m_positionStage directly (ScanControl:: qualifier bypasses any hardware-refreshing
+	// override) - getPosition() above already refreshed it from hardware for this same tick, so
+	// this is just a cached-member lookup, not a second live read.
+	emit(currentPositionStage(ScanControl::getPosition(PositionType::STAGE)));
 	announcePositions();
 }
 

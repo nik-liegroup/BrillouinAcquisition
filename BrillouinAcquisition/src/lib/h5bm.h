@@ -83,9 +83,11 @@ public:
 	FLUOIMAGE(int ind, int rank, hsize_t *dims, const std::string& date, const std::string& channel, const std::vector<T>& data,
 		double exposure = 0, double gain = 1, const CAMERA_ROI& roi = CAMERA_ROI{},
 		POINT3 targetPosition = POINT3{ 0, 0, 0 }, bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 },
-		bool compress = false) :
+		bool compress = false,
+		bool hasBrillouinRepetition = false, int brillouinRepetitionIndex = -1) :
 		ind(ind), rank(rank), dims(dims), date(date), channel(channel), data(data), exposure(exposure), gain(gain), roi(roi),
-		targetPosition(targetPosition), hasStagePosition(hasStagePosition), stagePosition(stagePosition), compress(compress) {};
+		targetPosition(targetPosition), hasStagePosition(hasStagePosition), stagePosition(stagePosition), compress(compress),
+		hasBrillouinRepetition(hasBrillouinRepetition), brillouinRepetitionIndex(brillouinRepetitionIndex) {};
 
 	const int ind;
 	const int rank;
@@ -112,6 +114,16 @@ public:
 	// finishPerPointBrightfieldDuring() set this true; the per-z overview does not, by request -
 	// see their own call sites).
 	const bool compress{ false };
+	// The Brillouin repetition (m_currentRepetition) this image was captured as part of - set
+	// only by the two capture paths that are genuinely part of a Brillouin measurement (the
+	// per-z overview and per-point brightfield, both via enqueueOverviewBrightfieldImage()),
+	// never by a standalone Fluorescence-tab "Acquire" capture (Fluorescence::__acquire()'s own
+	// FLUOIMAGE construction leaves this at its default, hasBrillouinRepetition = false) - there
+	// is no Brillouin repetition for an independent snapshot to belong to. Lets a reader
+	// (bmlab) name/group these images by their real, recorded owning repetition instead of
+	// guessing it from capture-time overlap.
+	const bool hasBrillouinRepetition{ false };
+	const int brillouinRepetitionIndex{ -1 };
 };
 
 struct ScaleCalibrationDataExtended : ScaleCalibrationData {
@@ -267,6 +279,10 @@ public:
 	ModeHandles* getModeHandle(ACQUISITION_MODE mode);
 	void newRepetition(ACQUISITION_MODE mode);
 
+	// True once the file is open/created for writing. False means every setData()/
+	// setPositions() call is a no-op.
+	bool isWritable() const { return m_fileWritable; };
+
 	// date
 	void setDate(const std::string& datestring);
 	std::string getDate();
@@ -333,6 +349,11 @@ public:
 	std::string getCalibrationSample(int index);
 	double getCalibrationShift(int index);
 
+signals:
+	// Emitted when an HDF5 dataset create/write call fails (e.g. disk full, permission denied,
+	// network share dropped).
+	void s_writeError(QString message);
+
 private:
 	bool m_fileWritable = false;
 	bool m_fileValid = false;
@@ -387,6 +408,8 @@ private:
 
 	void writePoint(hid_t group, const std::string& subGroupName, POINT2 point);
 
+	void reportWriteError(const QString& message);
+
 	// set/get attribute
 
 	template<typename T>
@@ -414,7 +437,8 @@ private:
 		std::string date, const std::string& sample = "", double shift = NULL, const std::string& channel = "",
 		double exposure = 0, double gain = 1, CAMERA_ROI roi = CAMERA_ROI{},
 		bool hasPosition = false, POINT3 position = POINT3{ 0, 0, 0 },
-		bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 }, bool compress = false);
+		bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 }, bool compress = false,
+		bool hasBrillouinRepetition = false, int brillouinRepetitionIndex = -1);
 
 	std::vector<double> getData(const std::string& name, hid_t parent);
 	std::string getDate(std::string name, hid_t parent);
@@ -451,7 +475,16 @@ hid_t H5BM::setDataset(hid_t parent, std::vector<T> data, std::string name, cons
 		}
 	}
 
-	H5Dwrite(dset_id, get_memtype<T>(), H5S_ALL, H5S_ALL, H5P_DEFAULT, data.data());
+	if (dset_id < 0) {
+		reportWriteError(QString("Failed to create/open HDF5 dataset \"%1\" - this data was NOT saved.")
+			.arg(QString::fromStdString(name)));
+	} else {
+		herr_t writeStatus = H5Dwrite(dset_id, get_memtype<T>(), H5S_ALL, H5S_ALL, H5P_DEFAULT, data.data());
+		if (writeStatus < 0) {
+			reportWriteError(QString("Failed to write HDF5 dataset \"%1\" - this data was NOT saved.")
+				.arg(QString::fromStdString(name)));
+		}
+	}
 
 	H5Sclose(space_id);
 	H5Tclose(type_id);
@@ -462,7 +495,8 @@ hid_t H5BM::setDataset(hid_t parent, std::vector<T> data, std::string name, cons
 template <typename T>
 void H5BM::setData(const std::vector<T>& data, const std::string& name, hid_t parent, const int rank, const hsize_t *dims,
 	std::string date, const std::string& sample, double shift, const std::string& channel, double exposure, double gain, CAMERA_ROI roi,
-	bool hasPosition, POINT3 position, bool hasStagePosition, POINT3 stagePosition, bool compress) {
+	bool hasPosition, POINT3 position, bool hasStagePosition, POINT3 stagePosition, bool compress,
+	bool hasBrillouinRepetition, int brillouinRepetitionIndex) {
 	if (!m_fileWritable) {
 		return;
 	}
@@ -509,6 +543,14 @@ void H5BM::setData(const std::vector<T>& data, const std::string& name, hid_t pa
 		setAttribute("stage_position_x_um", stagePosition.x, dset_id);
 		setAttribute("stage_position_y_um", stagePosition.y, dset_id);
 		setAttribute("stage_position_z_um", stagePosition.z, dset_id);
+	}
+
+	// The Brillouin repetition (m_currentRepetition) this image was captured as part of - see
+	// FLUOIMAGE::hasBrillouinRepetition's own comment. Absent entirely (not just left at -1) for
+	// a standalone Fluorescence-tab capture, so a reader can tell "not part of any Brillouin run"
+	// apart from "part of repetition 0" without relying on a sentinel value.
+	if (hasBrillouinRepetition) {
+		setAttribute("brillouin_repetition_index", brillouinRepetitionIndex, dset_id);
 	}
 
 	// set camera meta data
@@ -588,7 +630,8 @@ void H5BM::setPayloadData(FLUOIMAGE<T>* image) {
 
 	setData(image->data, name, m_Fluorescence.groups->payloadData, image->rank, image->dims, image->date, "", NULL, image->channel,
 		image->exposure, image->gain, image->roi,
-		true, image->targetPosition, image->hasStagePosition, image->stagePosition, image->compress);
+		true, image->targetPosition, image->hasStagePosition, image->stagePosition, image->compress,
+		image->hasBrillouinRepetition, image->brillouinRepetitionIndex);
 }
 
 template <typename T>

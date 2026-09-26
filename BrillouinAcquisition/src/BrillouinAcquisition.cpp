@@ -172,6 +172,39 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		[this](ACQUISITION_MODE modes) { showEnabledModes(modes); }
 	);
 
+	connection = QWidget::connect(
+		m_acquisition,
+		&Acquisition::s_openFileFailed,
+		this,
+		[this]() {
+			QMessageBox::critical(
+				this,
+				"Failed to open acquisition file",
+				"The acquisition file could not be opened or created. No data will be saved until "
+				"a new, valid file is opened."
+			);
+		}
+	);
+
+	connection = QWidget::connect(
+		m_acquisition,
+		&Acquisition::s_writeError,
+		this,
+		[this](QString message) {
+			if (m_writeErrorShown) {
+				return;
+			}
+			m_writeErrorShown = true;
+			QMessageBox::critical(
+				this,
+				"Data write error",
+				"Saving acquisition data failed: " + message +
+				"\nCheck available disk space and file permissions. Further write errors during "
+				"this acquisition will only be logged, not shown again."
+			);
+		}
+	);
+
 	// slot to show current acquisition position
 	connection = QWidget::connect(
 		m_Brillouin,
@@ -1088,10 +1121,12 @@ void BrillouinAcquisition::plotClick(QMouseEvent* event) {
 
 	// If we currently select the new focus, don't move there
 	if (m_locatePositionScanner) {
+		// Deliberately stays armed - restores the original click-to-place behavior (pre-dating
+		// the guarded relocate feature below, which introduced disarm-after-one-click for both
+		// branches here): the operator can click repeatedly to nudge the marker into place, then
+		// toggle the "Set" button off themselves (setLaserPositionLocationArmed(false), via
+		// on_..._clicked()) once satisfied, rather than the first click always ending placement.
 		m_scanControl->locatePositionScanner(positionInRawPix);
-		// Confirmed - disarm immediately so the button reverts to idle and the next click
-		// resumes normal click-to-move, instead of relocating the marker again.
-		setLaserPositionLocationArmed(false);
 	} else if (m_relocatePositionScanner) {
 		relocateBeamKeepingGridFixed(positionInRawPix);
 		setRelocateFocusMarkerArmed(false);
@@ -1243,14 +1278,23 @@ void BrillouinAcquisition::showAcqPosition(POINT3 position, int imageNr) {
 }
 
 void BrillouinAcquisition::updateEstimatedAcquisitionTime() {
+	const auto& settings = m_Brillouin->settings;
 	const auto pointCount = m_positionsComputed
 		? m_positionsMicrometer.size()
-		: (size_t)std::max(1, m_Brillouin->settings.xSteps)
-			* (size_t)std::max(1, m_Brillouin->settings.ySteps)
-			* (size_t)std::max(1, m_Brillouin->settings.zSteps);
-	const auto frameCount = std::max<int64_t>(1, m_Brillouin->settings.camera.frameCount);
-	const auto exposureSeconds = std::max(0.0, m_Brillouin->settings.camera.exposureTime);
-	const auto exposureOnlySeconds = exposureSeconds * frameCount * (double)pointCount;
+		: (size_t)std::max(1, settings.xSteps)
+			* (size_t)std::max(1, settings.ySteps)
+			* (size_t)std::max(1, settings.zSteps);
+	const auto frameCount = std::max<int64_t>(1, settings.camera.frameCount);
+	const auto exposureSeconds = std::max(0.0, settings.camera.exposureTime);
+
+	// Per-frame overhead beyond the raw exposure time: the camera trigger/readout/data-transfer
+	// time acquireAndorFrame() pays for every single frame, on top of the exposure itself. Like
+	// kAssumedStageSpeedUmPerS below, this is a rough approximation - no hardware-reported
+	// readout time exists anywhere to query instead. Adjust it here if the estimate is
+	// consistently off for your camera/settings.
+	constexpr double kFrameOverheadS = 0.3;
+	const auto perFrameSeconds = exposureSeconds + kFrameOverheadS;
+	const auto exposureOnlySeconds = perFrameSeconds * frameCount * (double)pointCount;
 
 	// Movement estimate: total travel distance along the actual planned path (only known
 	// once m_positionsMicrometer is populated - falls back to 0 extra time before that,
@@ -1270,22 +1314,76 @@ void BrillouinAcquisition::updateEstimatedAcquisitionTime() {
 	// changes (see Brillouin::approachGridPosition()/ScanControl::setPositionCompensated())
 	// - approximated here as a fixed overhead per move rather than tracking which moves
 	// actually change xy, since this is an estimate, not an exact replay of the scan.
-	if (m_Brillouin->settings.useGridHysteresisCompensation) {
+	if (settings.useGridHysteresisCompensation) {
 		moveSeconds += 0.1 * (double)moveCount;
 	}
 
 	// BF overview estimate: one exposure per captured image, plus a fixed per-image
 	// overhead for the preset switch/settle moves captureOverviewBrightfield() actually
 	// does (see its own 100 ms post-move sleep).
-	const auto overviewImageCount = m_Brillouin->overviewImageCountTotal();
-	const auto overviewExposureSeconds = 1e-3 * std::max(1, m_Brillouin->settings.overviewBrightfieldExposureMs);
 	constexpr double kOverviewPerImageOverheadS = 0.1;
+	const auto overviewImageCount = m_Brillouin->overviewImageCountTotal();
+	const auto overviewExposureSeconds = 1e-3 * std::max(1, settings.overviewBrightfieldExposureMs);
 	const double overviewSeconds = (double)overviewImageCount * (overviewExposureSeconds + kOverviewPerImageOverheadS);
 
-	const auto totalSeconds = (int)std::ceil(exposureOnlySeconds + moveSeconds + overviewSeconds);
+	// Surface pre-scan estimate: paid once, before the main grid, when surface-follow is on.
+	// The neighbor-seeded search in Brillouin::runSurfacePreScan() takes a data-dependent
+	// number of z-steps per column (see that function's own comments), so this approximates
+	// each column as one seed measurement, one rewind-or-forward step, and the configured
+	// verification steps (each averaged over surfaceVerificationFrameAverage frames) - a rough
+	// middle ground, not an exact replay of the adaptive search.
+	double surfaceScanSeconds = 0.0;
+	if (settings.useSurfaceFollow) {
+		const auto columnCount = (double)m_Brillouin->surfacePreScanGridXY().size();
+		const auto refFrames = std::max(1, settings.mediumReferenceFrameCount);
+		const auto stepsPerColumn = 2.0 + std::max(0, settings.surfaceVerificationSteps)
+			* (double)std::max(1, settings.surfaceVerificationFrameAverage);
+		surfaceScanSeconds = (double)refFrames * perFrameSeconds
+			+ columnCount * stepsPerColumn * perFrameSeconds;
+	}
+
+	// Background reference points: a separate pass over (backgroundGridPoints() x zSteps),
+	// after the main grid, at the same per-frame cost, plus the 100 ms settle
+	// captureBackgroundPoints() waits after each move.
+	const auto backgroundPointCount = (double)m_Brillouin->backgroundGridPoints().size()
+		* (double)std::max(1, settings.zSteps);
+	const double backgroundSeconds = backgroundPointCount * ((double)frameCount * perFrameSeconds + 0.1);
+
+	// Pre-/post-/continuous spectrometer calibration: a fixed 500 ms optics-settle
+	// (Brillouin::calibrate()'s own sleep) plus nrCalibrationImages frames each. Continuous
+	// calibration during the main grid is gated by elapsed wall time (conCalibrationInterval,
+	// in minutes); approximated here against the main exposure time alone, since that
+	// dominates the run and calibrationAllowed-gating on top of it is data-dependent.
+	const auto calibrationSeconds = 0.5 + (double)std::max(1, settings.nrCalibrationImages)
+		* (std::max(0.0, settings.calibrationExposureTime) + kFrameOverheadS);
+	double totalCalibrationSeconds = 0.0;
+	if (settings.preCalibration) {
+		totalCalibrationSeconds += calibrationSeconds;
+	}
+	if (settings.postCalibration) {
+		totalCalibrationSeconds += calibrationSeconds;
+	}
+	if (settings.conCalibration && settings.conCalibrationInterval > 0.0) {
+		const auto intervalSeconds = 60.0 * settings.conCalibrationInterval;
+		totalCalibrationSeconds += std::floor(exposureOnlySeconds / intervalSeconds) * calibrationSeconds;
+	}
+
+	// Per-point brightfield capture, "after" variant only (perPointBrightfieldDuringAcquisition
+	// == true runs it in parallel with the spectrum exposure, adding negligible extra time).
+	double perPointBrightfieldSeconds = 0.0;
+	if (settings.capturePerPointBrightfield && !settings.perPointBrightfieldDuringAcquisition) {
+		perPointBrightfieldSeconds = (double)pointCount * (overviewExposureSeconds + kOverviewPerImageOverheadS);
+	}
+
+	const auto totalSeconds = (int)std::ceil(
+		exposureOnlySeconds + moveSeconds + overviewSeconds + surfaceScanSeconds
+		+ backgroundSeconds + totalCalibrationSeconds + perPointBrightfieldSeconds
+	);
 	ui->estimatedAcquisitionTime->setText(formatSeconds(totalSeconds));
 	ui->estimatedAcquisitionTime->setToolTip(
-		QString("%1 points x %2 frames x %3 s exposure (%4) + ~%5 stage movement (assumes %6 um/s) + %7 BF overview images (%8).")
+		QString("%1 points x %2 frames x %3 s exposure (%4) + ~%5 stage movement (assumes %6 um/s) + %7 BF overview images (%8)"
+			" + surface scan (%9) + background points (%10) + calibration (%11) + per-point BF (%12)."
+			" Frame times include a %13 s/frame readout-overhead approximation.")
 		.arg((qulonglong)pointCount)
 		.arg((qlonglong)frameCount)
 		.arg(exposureSeconds, 0, 'g', 4)
@@ -1294,6 +1392,11 @@ void BrillouinAcquisition::updateEstimatedAcquisitionTime() {
 		.arg(kAssumedStageSpeedUmPerS, 0, 'g', 4)
 		.arg(overviewImageCount)
 		.arg(formatSeconds((int)std::ceil(overviewSeconds)))
+		.arg(formatSeconds((int)std::ceil(surfaceScanSeconds)))
+		.arg(formatSeconds((int)std::ceil(backgroundSeconds)))
+		.arg(formatSeconds((int)std::ceil(totalCalibrationSeconds)))
+		.arg(formatSeconds((int)std::ceil(perPointBrightfieldSeconds)))
+		.arg(kFrameOverheadS, 0, 'g', 2)
 	);
 }
 
@@ -1424,6 +1527,7 @@ void BrillouinAcquisition::updateBrillouinStartAvailability() {
 }
 
 void BrillouinAcquisition::showPosition(POINT3 position) {
+	m_currentPosition = position;
 	ui->positionX->setText(QString::number(position.x));
 	ui->positionY->setText(QString::number(position.y));
 	ui->positionZ->setText(QString::number(position.z));
@@ -1439,6 +1543,11 @@ void BrillouinAcquisition::showPosition(POINT3 position) {
 		const QSignalBlocker blocker(ui->setPositionZ);
 		ui->setPositionZ->setValue(position.z);
 	}
+	updateAbsoluteGridStatus();
+}
+
+void BrillouinAcquisition::showStagePosition(POINT3 position) {
+	m_currentStagePosition = position;
 	updateAbsoluteGridStatus();
 }
 
@@ -1567,6 +1676,16 @@ void BrillouinAcquisition::preservePhysicalGridForAbsoluteMode(bool enabled) {
 	for (auto& point : m_Brillouin->settings.roiPolygonUm) {
 		point = convertXY(point);
 	}
+	// The background ROI polygon (settings.backgroundRoiPolygonUm) is stored in the exact same
+	// grid-offset frame as roiPolygonUm above (see its own declaration comment) but was missing
+	// from this round-trip, so it silently kept the OLD mode's coordinates on a mode switch -
+	// same physical drift bug this whole function exists to prevent for the main ROI, just not
+	// caught here yet. Background reference points (Brillouin::backgroundGridPoints()) are
+	// resampled from this polygon at capture time, so leaving it stale here would silently
+	// capture from the wrong physical location too.
+	for (auto& point : m_Brillouin->settings.backgroundRoiPolygonUm) {
+		point = convertXY(point);
+	}
 }
 
 void BrillouinAcquisition::updateAbsoluteGridStatus() {
@@ -1576,8 +1695,14 @@ void BrillouinAcquisition::updateAbsoluteGridStatus() {
 	// Resolved (offset-applied), not the raw stored setting, so this status readout is
 	// directly comparable to the live Stage/Focus positions shown alongside it.
 	const auto origin = m_Brillouin->resolvedGridOriginUm();
-	const auto currentFocus = m_scanControl ? m_scanControl->getPosition() : POINT3{};
-	const auto currentStage = m_scanControl ? m_scanControl->getPosition(PositionType::STAGE) : POINT3{};
+	// m_scanControl lives on its own worker thread, so its position can't be read directly from
+	// here without a race. Rather than a live query (which used to mean a blocking round trip
+	// onto that thread on every call - including every 100 ms position tick - freezing the GUI
+	// for as long as that thread stayed busy, e.g. for the whole duration of an acquisition),
+	// this uses the values last pushed via the currentPosition/currentPositionStage signals -
+	// see showPosition()/showStagePosition().
+	const auto& currentFocus = m_currentPosition;
+	const auto& currentStage = m_currentStagePosition;
 	const auto mode = m_Brillouin->settings.gridCoordinatesAbsolute
 		? QString("absolute, grid relative to origin")
 		: QString("relative, grid relative to acquisition start");
@@ -2318,6 +2443,31 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 	ui->calibrationExposureTime->setDisabled(running);
 	ui->repetitionInterval->setDisabled(running);
 	ui->repetitionCount->setDisabled(running);
+
+	// exposureTime/frameCount/the camera readout controls below all write directly into
+	// m_Brillouin->settings.camera, which the acquisition worker thread reads per frame with
+	// no synchronization; the ROI mask controls write m_Brillouin->settings.roiPolygonUm/
+	// useRoiMask, which the worker thread iterates per point. None of these are safe to edit
+	// while running.
+	ui->exposureTime->setDisabled(running);
+	ui->frameCount->setDisabled(running);
+	ui->binning->setDisabled(running);
+	ui->pixelReadoutRate->setDisabled(running);
+	ui->preAmpGain->setDisabled(running);
+	ui->pixelEncoding->setDisabled(running);
+	ui->cycleMode->setDisabled(running);
+	if (m_useRoiMaskCheckbox) {
+		m_useRoiMaskCheckbox->setDisabled(running);
+	}
+	if (m_editRoiCheckbox) {
+		if (running && m_editRoiCheckbox->isChecked()) {
+			// Not signal-blocked: its own toggled handler restores the plot's drag/zoom
+			// interactions, which only happens on an unblocked transition to unchecked.
+			m_editRoiCheckbox->setChecked(false);
+		}
+		m_editRoiCheckbox->setDisabled(running);
+	}
+
 	updateBrillouinStartAvailability();
 }
 
@@ -5041,6 +5191,12 @@ void BrillouinAcquisition::initScanControl() {
 		[this](POINT3 position) { showPosition(position); }
 	);
 	connection = QWidget::connect(
+		m_scanControl,
+		&ScanControl::currentPositionStage,
+		this,
+		[this](POINT3 position) { showStagePosition(position); }
+	);
+	connection = QWidget::connect(
 		&buttonDelegate,
 		&ButtonDelegate::deletePosition,
 		this->m_scanControl,
@@ -5871,6 +6027,7 @@ void BrillouinAcquisition::on_fullGridButton_clicked() {
 
 void BrillouinAcquisition::updateFilename(const std::string& filename) {
 	m_storagePath.filename = filename;
+	m_writeErrorShown = false;
 	updateBrillouinSettings();
 }
 
@@ -6045,6 +6202,28 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 	ui->stepsX->setDisabled(gridLockedXY);
 	ui->stepsY->setDisabled(gridLockedXY);
 	ui->stepsZ->setDisabled(gridLockedZ);
+
+	// See the matching lock in showBrillouinStatus() - repeated here so a settings refresh
+	// triggered while an acquisition is running (e.g. an objective switch) doesn't re-enable
+	// these controls.
+	const auto acquisitionRunning = m_enabledModes != ACQUISITION_MODE::NONE;
+	ui->exposureTime->setDisabled(acquisitionRunning);
+	ui->frameCount->setDisabled(acquisitionRunning);
+	ui->binning->setDisabled(acquisitionRunning);
+	ui->pixelReadoutRate->setDisabled(acquisitionRunning);
+	ui->preAmpGain->setDisabled(acquisitionRunning);
+	ui->pixelEncoding->setDisabled(acquisitionRunning);
+	ui->cycleMode->setDisabled(acquisitionRunning);
+	if (m_useRoiMaskCheckbox) {
+		m_useRoiMaskCheckbox->setDisabled(acquisitionRunning);
+	}
+	if (m_editRoiCheckbox) {
+		if (acquisitionRunning && m_editRoiCheckbox->isChecked()) {
+			m_editRoiCheckbox->setChecked(false);
+		}
+		m_editRoiCheckbox->setDisabled(acquisitionRunning);
+	}
+
 	if (m_editSpectralProxyRoiCheckbox) {
 		m_editSpectralProxyRoiCheckbox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
 	}

@@ -438,6 +438,17 @@ private:
 	// is deliberately NOT persisted: a brand new acquisition always gets a fresh timestamped
 	// name (see on_actionNew_Acquisition_triggered()), never the last one reused.
 	StoragePath m_storagePath{ "", "." };
+	// Reset (to allow showing it again) whenever a new/different file is opened - see
+	// updateFilename() and the Acquisition::s_writeError connection in the constructor.
+	bool m_writeErrorShown{ false };
+	// Latest position pushed by ScanControl::currentPosition/currentPositionStage (see their
+	// connections and showPosition()/showStagePosition()) - used by updateAbsoluteGridStatus()
+	// instead of a live m_scanControl->getPosition() query, which used to mean a blocking,
+	// hardware-I/O round trip onto the (often busy, e.g. mid-acquisition) scan control thread
+	// on every 100 ms position tick, freezing the GUI thread for as long as that thread stayed
+	// busy.
+	POINT3 m_currentPosition{};
+	POINT3 m_currentStagePosition{};
 	// Persisted (readSettings()/writeSettings()) folder proposed for a brand new acquisition
 	// file (on_actionNew_Acquisition_triggered()) only when m_storagePath.folder is still the
 	// unconfigured "." default (i.e. nothing has ever been saved/opened) - set via the File
@@ -753,6 +764,7 @@ private slots:
 	void cameraODTOptionsChanged(const CAMERA_OPTIONS& options);
 	void showAcqPosition(POINT3, int);
 	void showPosition(POINT3);
+	void showStagePosition(POINT3);
 	void updateEstimatedAcquisitionTime();
 	void updateBrillouinStartAvailability();
 	void refreshSpectralProxyRoiRects();

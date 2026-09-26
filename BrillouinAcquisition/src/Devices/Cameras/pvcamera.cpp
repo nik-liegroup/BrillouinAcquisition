@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "pvcamera.h"
+#include "src/helper/logger.h"
 
 #include <chrono>
 #include <thread>
@@ -112,32 +113,45 @@ void PVCamera::stopAcquisition() {
 
 void PVCamera::getImageForAcquisition(std::byte* buffer, bool preview) {
 	std::lock_guard<std::mutex> lockGuard(m_mutex);
-	
+
 	// Only write to acquisition buffer if it is valid
+	auto started = PVCam::rs_bool{ false };
 	if (m_acquisitionBuffer) {
-		auto i_retCode = PVCam::pl_exp_start_seq(m_camera, m_acquisitionBuffer);
+		started = PVCam::pl_exp_start_seq(m_camera, m_acquisitionBuffer);
 	}
 
+	bool timedOut = false;
 	{
 		std::unique_lock<std::mutex> lock(g_EofMutex);
 		if (!g_EofFlag) {
 			auto waitTime = (int)(2 * m_settings.exposureTime);
 			waitTime = (waitTime < 5) ? 5 : waitTime;
-			g_EofCond.wait_for(lock, std::chrono::seconds(waitTime), [this]() {
+			timedOut = !g_EofCond.wait_for(lock, std::chrono::seconds(waitTime), [this]() {
 				return (g_EofFlag);
 			});
 		}
 		g_EofFlag = false; // Reset flag
 	}
-	
-	// Only read from acquisition buffer if it is valid
-	if (m_acquisitionBuffer) {
+
+	// A frame is only actually valid if the sequence was started and the wait for it
+	// completed before timing out - copying m_acquisitionBuffer in either failure case would
+	// return stale or uninitialized data as if it were the requested frame.
+	const bool frameValid = m_acquisitionBuffer && started && !timedOut;
+	if (frameValid) {
 		memcpy(buffer, m_acquisitionBuffer, m_settings.roi.bytesPerFrame);
+	} else if (buffer) {
+		memset(buffer, 0, m_settings.roi.bytesPerFrame);
+		const auto message = started
+			? QString("PVCamera: frame wait timed out, returned frame was zeroed.")
+			: QString("PVCamera: pl_exp_start_seq() failed, returned frame was zeroed.");
+		qWarning(logWarning()) << message;
+		emit(s_acquisitionError(message));
 	}
 	PVCam::pl_exp_finish_seq(m_camera, m_acquisitionBuffer, 0);
 
-	if (preview && m_acquisitionBuffer) {
+	if (preview && frameValid) {
 		// write image to preview buffer
+		std::lock_guard<std::mutex> previewLock(m_previewBuffer->m_mutex);
 		memcpy(m_previewBuffer->m_buffer->getWriteBuffer(), buffer, m_settings.roi.bytesPerFrame);
 		m_previewBuffer->m_buffer->m_usedBuffers->release();
 		emit(s_imageReady());
@@ -674,6 +688,10 @@ void PVCamera::getImageForPreview() {
 			stopPreview();
 			return;
 		}
+
+		// m_previewBuffer->m_mutex also guards initializeBuffer() replacing m_buffer with a
+		// new CircularBuffer (e.g. on an ROI/exposure change while the preview is running).
+		std::lock_guard<std::mutex> previewLock(m_previewBuffer->m_mutex);
 
 		// if no image is ready return immediately
 		if (!m_previewBuffer->m_buffer->m_freeBuffers->tryAcquire()) {

@@ -80,8 +80,9 @@ public:
 	void move2Work();
 
 private:
-	double m_umperinc{ 0.025 };		// [µm per increment] constant for converting µm to increments of focus z-position
+	double m_umperinc{ 0.025 };		// [ï¿½m per increment] constant for converting ï¿½m to increments of focus z-position
 	int m_rangeFocus{ 16777215 };	// number of focus increments
+	int m_lastRawPosition{ 0 };		// last successfully parsed raw position, in increments
 };
 
 class MCU : public Element {
@@ -107,8 +108,10 @@ private:
 
 	void setVelocity(const std::string& axis, int velocity);
 
-	double m_umperinc{ 0.25 };		// [µm per increment] constant for converting µm to increments of x- and y-position
+	double m_umperinc{ 0.25 };		// [ï¿½m per increment] constant for converting ï¿½m to increments of x- and y-position
 	int m_rangeFocus{ 16777215 };	// number of focus increments
+	int m_lastRawPositionX{ 0 };	// last successfully parsed raw X position, in increments
+	int m_lastRawPositionY{ 0 };	// last successfully parsed raw Y position, in increments
 };
 
 class ZeissECU: public ScanControl {

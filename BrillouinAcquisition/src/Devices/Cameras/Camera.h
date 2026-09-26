@@ -99,6 +99,7 @@ signals:
 	void noCameraFound();
 	void s_sensorTemperatureChanged(SensorTemperature);
 	void s_imageReady();
+	void s_acquisitionError(QString message);
 };
 
 #endif //CAMERA_H

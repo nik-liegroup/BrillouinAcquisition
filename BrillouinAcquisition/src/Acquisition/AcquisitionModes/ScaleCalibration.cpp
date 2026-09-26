@@ -301,6 +301,9 @@ void ScaleCalibration::writeCalibrationToSlot(int slot, std::string filepath, Ob
 void ScaleCalibration::abortMode(std::unique_ptr <StorageWrapper>& storage) {}
 
 void ScaleCalibration::abortMode() {
+	if (m_camera) {
+		m_camera->stopAcquisition();
+	}
 	m_acquisition->disableMode(ACQUISITION_MODE::SCALECALIBRATION);
 
 	m_scanControl->setPosition(m_startPosition);
