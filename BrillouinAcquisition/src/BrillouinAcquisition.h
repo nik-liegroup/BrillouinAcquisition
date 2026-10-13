@@ -166,6 +166,7 @@ private:
 	QDoubleSpinBox* m_surfaceDropSpinBox{ nullptr };
 	QSpinBox* m_mediumReferenceFrameCountSpinBox{ nullptr };
 	QDoubleSpinBox* m_surfaceMaxRewindSpinBox{ nullptr };
+	QDoubleSpinBox* m_surfaceSearchBelowZeroSpinBox{ nullptr };
 	QSpinBox* m_surfaceVerificationStepsSpinBox{ nullptr };
 	QSpinBox* m_surfaceVerificationFrameAverageSpinBox{ nullptr };
 	QDoubleSpinBox* m_surfaceVerificationToleranceSpinBox{ nullptr };

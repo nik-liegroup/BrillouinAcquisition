@@ -3243,6 +3243,32 @@ QTabBar::tab:!selected {
                       </property>
                      </widget>
                     </item>
+                    <item row="11" column="0">
+                     <widget class="QLabel" name="surfaceSearchBelowZeroLabel">
+                      <property name="text">
+                       <string>Search below 0 [um]</string>
+                      </property>
+                      <property name="toolTip">
+                       <string>How far below the grid's z origin (z = 0) the surface search may go, both when stepping back toward the medium and when seeded by a neighbor. 0 = never search below z = 0.</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item row="11" column="1">
+                     <widget class="QDoubleSpinBox" name="surfaceSearchBelowZeroSpinBox">
+                      <property name="toolTip">
+                       <string>How far below the grid's z origin (z = 0) the surface search may go, both when stepping back toward the medium and when seeded by a neighbor. 0 = never search below z = 0.</string>
+                      </property>
+                      <property name="decimals">
+                       <number>1</number>
+                      </property>
+                      <property name="minimum">
+                       <double>0.000000000000000</double>
+                      </property>
+                      <property name="maximum">
+                       <double>1000000.000000000000000</double>
+                      </property>
+                     </widget>
+                    </item>
                    </layout>
                   </widget>
                  </widget>

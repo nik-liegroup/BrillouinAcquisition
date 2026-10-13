@@ -733,6 +733,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_surfaceDropSpinBox = ui->surfaceDropSpinBox;
 			m_mediumReferenceFrameCountSpinBox = ui->mediumReferenceFrameCountSpinBox;
 			m_surfaceMaxRewindSpinBox = ui->surfaceMaxRewindSpinBox;
+			m_surfaceSearchBelowZeroSpinBox = ui->surfaceSearchBelowZeroSpinBox;
 			m_surfaceVerificationStepsSpinBox = ui->surfaceVerificationStepsSpinBox;
 			m_surfaceVerificationFrameAverageSpinBox = ui->surfaceVerificationFrameAverageSpinBox;
 			m_surfaceVerificationToleranceSpinBox = ui->surfaceVerificationToleranceSpinBox;
@@ -822,6 +823,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				if (m_surfaceDropSpinBox) m_surfaceDropSpinBox->setEnabled(enabled);
 				if (m_mediumReferenceFrameCountSpinBox) m_mediumReferenceFrameCountSpinBox->setEnabled(enabled);
 				if (m_surfaceMaxRewindSpinBox) m_surfaceMaxRewindSpinBox->setEnabled(enabled);
+				if (m_surfaceSearchBelowZeroSpinBox) m_surfaceSearchBelowZeroSpinBox->setEnabled(enabled);
 				if (m_surfaceVerificationStepsSpinBox) m_surfaceVerificationStepsSpinBox->setEnabled(enabled);
 				if (m_surfaceVerificationFrameAverageSpinBox) m_surfaceVerificationFrameAverageSpinBox->setEnabled(enabled);
 				if (m_surfaceVerificationToleranceSpinBox) m_surfaceVerificationToleranceSpinBox->setEnabled(enabled);
@@ -855,6 +857,10 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 
 			connect(m_surfaceMaxRewindSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
 				m_Brillouin->settings.surfaceMaxRewindUm = std::max(0.0, value);
+			});
+
+			connect(m_surfaceSearchBelowZeroSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+				m_Brillouin->settings.surfaceSearchBelowZeroUm = std::max(0.0, value);
 			});
 
 			connect(m_surfaceVerificationStepsSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
@@ -6205,6 +6211,11 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_surfaceMaxRewindSpinBox->setValue(std::max(0.0, m_Brillouin->settings.surfaceMaxRewindUm));
 		m_surfaceMaxRewindSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
 	}
+	if (m_surfaceSearchBelowZeroSpinBox) {
+		const QSignalBlocker blocker(*m_surfaceSearchBelowZeroSpinBox);
+		m_surfaceSearchBelowZeroSpinBox->setValue(std::max(0.0, m_Brillouin->settings.surfaceSearchBelowZeroUm));
+		m_surfaceSearchBelowZeroSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
+	}
 	if (m_surfaceVerificationStepsSpinBox) {
 		const QSignalBlocker blocker(*m_surfaceVerificationStepsSpinBox);
 		m_surfaceVerificationStepsSpinBox->setValue(std::max(0, m_Brillouin->settings.surfaceVerificationSteps));
@@ -7665,7 +7676,6 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-background-roi-polygon-um", serializeRoiPolygon(m_Brillouin->settings.backgroundRoiPolygonUm));
 	// useSurfaceFollow is deliberately not persisted - it should always start off,
 	// regardless of how the previous session ended.
-	settings.setValue("brillouin-surface-z-offset-um", m_Brillouin->settings.surfaceZOffsetUm);
 	settings.setValue("brillouin-surface-follow-half-range-um", m_Brillouin->settings.surfaceFollowHalfRangeUm);
 	settings.setValue("brillouin-pre-scan-xy-bin", m_Brillouin->settings.preScanXYBin);
 	settings.setValue("brillouin-additional-boundary-points", m_Brillouin->settings.additionalBoundaryPoints);
@@ -7677,11 +7687,11 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-pre-scan-z-min", m_Brillouin->settings.preScanZMin);
 	settings.setValue("brillouin-pre-scan-z-max", m_Brillouin->settings.preScanZMax);
 	settings.setValue("brillouin-surface-metric-threshold", m_Brillouin->settings.surfaceMetricThreshold);
-	settings.setValue("brillouin-surface-smooth-sigma-um", m_Brillouin->settings.surfaceSmoothSigmaUm);
 	settings.setValue("brillouin-surface-drop-fraction", m_Brillouin->settings.surfaceDropFraction);
 	settings.setValue("brillouin-medium-reference-value", m_Brillouin->settings.mediumReferenceValue);
 	settings.setValue("brillouin-medium-reference-frame-count", m_Brillouin->settings.mediumReferenceFrameCount);
 	settings.setValue("brillouin-surface-max-rewind-um", m_Brillouin->settings.surfaceMaxRewindUm);
+	settings.setValue("brillouin-surface-search-below-zero-um", m_Brillouin->settings.surfaceSearchBelowZeroUm);
 	settings.setValue("brillouin-surface-verification-steps", m_Brillouin->settings.surfaceVerificationSteps);
 	settings.setValue("brillouin-surface-verification-frame-average", m_Brillouin->settings.surfaceVerificationFrameAverage);
 	settings.setValue("brillouin-surface-verification-tolerance-fraction", m_Brillouin->settings.surfaceVerificationToleranceFraction);
@@ -7843,7 +7853,6 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.useBackgroundRoiMask = settings.value("brillouin-use-background-roi-mask", m_Brillouin->settings.useBackgroundRoiMask).toBool();
 	m_Brillouin->settings.backgroundRoiPolygonUm = deserializeRoiPolygon(settings.value("brillouin-background-roi-polygon-um", "").toString());
 	// useSurfaceFollow is deliberately not restored - always starts off (see saveSettings()).
-	m_Brillouin->settings.surfaceZOffsetUm = settings.value("brillouin-surface-z-offset-um", m_Brillouin->settings.surfaceZOffsetUm).toDouble();
 	m_Brillouin->settings.surfaceFollowHalfRangeUm = settings.value("brillouin-surface-follow-half-range-um", m_Brillouin->settings.surfaceFollowHalfRangeUm).toDouble();
 	m_Brillouin->settings.preScanXYBin = settings.value("brillouin-pre-scan-xy-bin", m_Brillouin->settings.preScanXYBin).toInt();
 	m_Brillouin->settings.additionalBoundaryPoints = settings.value("brillouin-additional-boundary-points", m_Brillouin->settings.additionalBoundaryPoints).toInt();
@@ -7855,11 +7864,11 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.preScanZMin = settings.value("brillouin-pre-scan-z-min", m_Brillouin->settings.preScanZMin).toDouble();
 	m_Brillouin->settings.preScanZMax = settings.value("brillouin-pre-scan-z-max", m_Brillouin->settings.preScanZMax).toDouble();
 	m_Brillouin->settings.surfaceMetricThreshold = settings.value("brillouin-surface-metric-threshold", m_Brillouin->settings.surfaceMetricThreshold).toDouble();
-	m_Brillouin->settings.surfaceSmoothSigmaUm = settings.value("brillouin-surface-smooth-sigma-um", m_Brillouin->settings.surfaceSmoothSigmaUm).toDouble();
 	m_Brillouin->settings.surfaceDropFraction = settings.value("brillouin-surface-drop-fraction", m_Brillouin->settings.surfaceDropFraction).toDouble();
 	m_Brillouin->settings.mediumReferenceValue = settings.value("brillouin-medium-reference-value", m_Brillouin->settings.mediumReferenceValue).toDouble();
 	m_Brillouin->settings.mediumReferenceFrameCount = settings.value("brillouin-medium-reference-frame-count", m_Brillouin->settings.mediumReferenceFrameCount).toInt();
 	m_Brillouin->settings.surfaceMaxRewindUm = settings.value("brillouin-surface-max-rewind-um", m_Brillouin->settings.surfaceMaxRewindUm).toDouble();
+	m_Brillouin->settings.surfaceSearchBelowZeroUm = settings.value("brillouin-surface-search-below-zero-um", m_Brillouin->settings.surfaceSearchBelowZeroUm).toDouble();
 	m_Brillouin->settings.surfaceVerificationSteps = settings.value("brillouin-surface-verification-steps", m_Brillouin->settings.surfaceVerificationSteps).toInt();
 	m_Brillouin->settings.surfaceVerificationFrameAverage = settings.value("brillouin-surface-verification-frame-average", m_Brillouin->settings.surfaceVerificationFrameAverage).toInt();
 	m_Brillouin->settings.surfaceVerificationToleranceFraction = settings.value("brillouin-surface-verification-tolerance-fraction", m_Brillouin->settings.surfaceVerificationToleranceFraction).toDouble();

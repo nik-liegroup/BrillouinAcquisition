@@ -1167,7 +1167,7 @@ std::optional<double> Brillouin::measureBoundarySurfaceZ(
 		return sum / frames;
 	};
 
-	auto zRel = std::clamp(seedZRel, 0.0, zTravel);
+	auto zRel = std::clamp(seedZRel, -std::max(0.0, m_settings.surfaceSearchBelowZeroUm), zTravel);
 	auto metric = measureHere(zRel, 1);
 	if (!metric) {
 		return std::nullopt;
@@ -1180,7 +1180,7 @@ std::optional<double> Brillouin::measureBoundarySurfaceZ(
 	while (std::isfinite(referenceThreshold) && *metric <= referenceThreshold) {
 		zRel -= zStep;
 		rewound += zStep;
-		if (rewound > m_settings.surfaceMaxRewindUm || zRel < 0.0) {
+		if (rewound > m_settings.surfaceMaxRewindUm || zRel < -std::max(0.0, m_settings.surfaceSearchBelowZeroUm)) {
 			return std::nullopt;
 		}
 		metric = measureHere(zRel, 1);
@@ -1387,33 +1387,20 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 
 	// Measure medium reference before scanning - this is the only threshold source for
 	// surface detection, so it always runs (not user-optional).
-	bool referencePositionFound = false;
-	POINT3 referencePosition{ 0.0, 0.0, 0.0 };
-	for (gsl::index yi{ 0 }; yi < (gsl::index)ySamples.size() && !referencePositionFound; yi++) {
-		for (gsl::index xi{ 0 }; xi < (gsl::index)xSamples.size(); xi++) {
-			const POINT2 coarsePoint{ xSamples[xi], ySamples[yi] };
-			if (m_settings.useRoiMask && !isPointInPolygonUm(coarsePoint, m_settings.roiPolygonUm)) {
-				continue;
-			}
-			const auto gridOrigin = resolvedGridOriginUm();
-			const auto zOrigin = m_settings.gridCoordinatesAbsolute
-				? gridOrigin.z
-				: m_startPosition.z;
-			referencePosition = m_settings.gridCoordinatesAbsolute
-				? POINT3{ xSamples[xi] + gridOrigin.x, ySamples[yi] + gridOrigin.y, zOrigin }
-				: POINT3{ m_startPosition.x + xSamples[xi], m_startPosition.y + ySamples[yi], zOrigin };
-			referencePositionFound = true;
-			break;
-		}
-	}
-	if (referencePositionFound) {
-		// Mirrors runMeasurementPhase()'s approach to its own first position exactly
-		// (Brillouin.cpp: "move stage to first position, wait 50 ms for it to finish") -
-		// this is the equivalent one-time first move here, before the per-column loop
-		// below settles into the same move-with-no-extra-wait pattern that loop uses too.
-		approachGridPosition(referencePosition);
-		std::this_thread::sleep_for(std::chrono::milliseconds(50));
-	}
+	// x/y: wherever the stage was when the acquisition started (not the first grid point, which
+	// may lie somewhere else entirely), so the reference is taken in the medium the operator
+	// positioned over. z: unchanged, the grid's z origin (home z in absolute mode, start z in
+	// relative mode).
+	const auto referenceZOrigin = m_settings.gridCoordinatesAbsolute
+		? resolvedGridOriginUm().z
+		: m_startPosition.z;
+	const POINT3 referencePosition{ m_startPosition.x, m_startPosition.y, referenceZOrigin };
+	// Mirrors runMeasurementPhase()'s approach to its own first position exactly
+	// (Brillouin.cpp: "move stage to first position, wait 50 ms for it to finish") -
+	// this is the equivalent one-time first move here, before the per-column loop
+	// below settles into the same move-with-no-extra-wait pattern that loop uses too.
+	approachGridPosition(referencePosition);
+	std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	const int refFrames = std::max(1, m_settings.mediumReferenceFrameCount);
 	double refSum = 0.0;
 	{
@@ -1578,7 +1565,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	auto searchColumn = [&](gsl::index xi, gsl::index yi) -> bool {
 		totalColumns++;
 		const auto seed = findSeedZRel(xi, yi).value_or(0.0);
-		auto zRel = std::clamp(seed, 0.0, zTravel);
+		auto zRel = std::clamp(seed, -std::max(0.0, m_settings.surfaceSearchBelowZeroUm), zTravel);
 
 		auto metric = measureAt(xi, yi, zRel, 1);
 		if (!metric) {
@@ -1594,7 +1581,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		while (std::isfinite(referenceThreshold) && *metric <= referenceThreshold) {
 			zRel -= zStep;
 			rewound += zStep;
-			if (rewound > m_settings.surfaceMaxRewindUm || zRel < 0.0) {
+			if (rewound > m_settings.surfaceMaxRewindUm || zRel < -std::max(0.0, m_settings.surfaceSearchBelowZeroUm)) {
 				emitSurfaceProgress(QString("No surface found: point %1/%2 (rewind limit reached)")
 					.arg(pointsMapped).arg(totalPointsExpected));
 				return true;
@@ -1717,40 +1704,6 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			// the "point N/M" progress.
 			pointsMapped++;
 		}
-	}
-
-	// Smooth coarse surface map with a small local mean filter. Only ever averages over
-	// zSurfaceValid neighbors - an invalid (never-found) cell defaults to 0.0, which
-	// otherwise silently pulled a genuine neighbor's smoothed value towards 0 rather than
-	// its actual measured height, exactly at grid edges/gaps where smoothing matters most.
-	// Invalid cells themselves are left untouched here (irrelevant until the gap-fill pass
-	// below, which reads only zSurfaceGenuine neighbors, never an unfound cell's z).
-	const auto smoothingPasses = std::max(0, (int)std::round(m_settings.surfaceSmoothSigmaUm / 5.0));
-	for (int pass = 0; pass < smoothingPasses; pass++) {
-		auto smoothed = zSurface;
-		for (gsl::index yi{ 0 }; yi < (gsl::index)zSurface.size(); yi++) {
-			for (gsl::index xi{ 0 }; xi < (gsl::index)zSurface[yi].size(); xi++) {
-				if (!zSurfaceValid[yi][xi]) {
-					continue;
-				}
-				double sum = 0.0;
-				int count = 0;
-				for (int dy = -1; dy <= 1; dy++) {
-					for (int dx = -1; dx <= 1; dx++) {
-						const auto ny = yi + dy;
-						const auto nx = xi + dx;
-						if (ny >= 0 && ny < (gsl::index)zSurface.size()
-							&& nx >= 0 && nx < (gsl::index)zSurface[yi].size()
-							&& zSurfaceValid[ny][nx]) {
-							sum += zSurface[ny][nx];
-							count++;
-						}
-					}
-				}
-				smoothed[yi][xi] = count > 0 ? sum / count : zSurface[yi][xi];
-			}
-		}
-		zSurface = std::move(smoothed);
 	}
 
 	// Gap-fill, done only now (at the very end): a coarse column with no found surface
@@ -2009,7 +1962,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			const auto zOrigin = m_settings.gridCoordinatesAbsolute
 				? resolvedGridOriginUm().z
 				: m_startPosition.z;
-			const auto centerZAbs = zOrigin + zInterp + m_settings.surfaceZOffsetUm;
+			const auto centerZAbs = zOrigin + zInterp;
 			zCenterByXYIndex[{ (int)xi, (int)yi }] = centerZAbs;
 			if (usedGapFilledContribution) {
 				interpolatedXYIndices.insert({ (int)xi, (int)yi });
@@ -2042,8 +1995,8 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		m_surfaceZMaxAbs = minMax.second->second;
 	}
 
-	// zOrigin here must match the one used above to compute centerZAbs (zOrigin + zInterp +
-	// surfaceZOffsetUm) - it's also exactly what m_orderedPositions[ll].z was built from
+	// zOrigin here must match the one used above to compute centerZAbs (zOrigin + zInterp) -
+	// it is also exactly what m_orderedPositions[ll].z was built from
 	// before this loop touches it (zOrigin + the grid's own zMin..zMax offset for this
 	// z-index), so subtracting it back out recovers that same, still user-configured,
 	// zMin..zMax-relative offset. Re-adding it onto the found surface below is what makes
@@ -3333,9 +3286,9 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	storage->setPositions("surface-follow-used", std::vector<double>{ m_settings.useSurfaceFollow ? 1.0 : 0.0 }, 1, originDims);
 	storage->setPositions("surface-drop-fraction-used", std::vector<double>{ m_settings.surfaceDropFraction }, 1, originDims);
 	storage->setPositions("surface-medium-reference-value-used", std::vector<double>{ m_settings.mediumReferenceValue }, 1, originDims);
-	storage->setPositions("surface-z-offset-um-used", std::vector<double>{ m_settings.surfaceZOffsetUm }, 1, originDims);
 	storage->setPositions("surface-follow-half-range-um-used", std::vector<double>{ m_settings.surfaceFollowHalfRangeUm }, 1, originDims);
 	storage->setPositions("surface-max-rewind-um-used", std::vector<double>{ m_settings.surfaceMaxRewindUm }, 1, originDims);
+	storage->setPositions("surface-search-below-zero-um-used", std::vector<double>{ m_settings.surfaceSearchBelowZeroUm }, 1, originDims);
 	storage->setPositions("surface-verification-steps-used", std::vector<double>{ (double)m_settings.surfaceVerificationSteps }, 1, originDims);
 	storage->setPositions("surface-verification-frame-average-used", std::vector<double>{ (double)m_settings.surfaceVerificationFrameAverage }, 1, originDims);
 	storage->setPositions("surface-verification-tolerance-fraction-used", std::vector<double>{ m_settings.surfaceVerificationToleranceFraction }, 1, originDims);
@@ -3344,7 +3297,6 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	storage->setPositions("surface-pre-scan-z-step-um-used", std::vector<double>{ m_settings.preScanZStepUm }, 1, originDims);
 	storage->setPositions("surface-pre-scan-z-travel-range-um-used", std::vector<double>{ m_settings.preScanZTravelRangeUm }, 1, originDims);
 	storage->setPositions("surface-metric-threshold-used", std::vector<double>{ m_settings.surfaceMetricThreshold }, 1, originDims);
-	storage->setPositions("surface-smooth-sigma-um-used", std::vector<double>{ m_settings.surfaceSmoothSigmaUm }, 1, originDims);
 	storage->setPositions("surface-scan-direction-used", std::vector<double>{ (double)m_settings.surfaceScanDirection }, 1, originDims);
 	storage->setPositions("surface-medium-reference-frame-count-used", std::vector<double>{ (double)m_settings.mediumReferenceFrameCount }, 1, originDims);
 	const hsize_t proxyRoiDims[1] = { 4 };
