@@ -76,9 +76,9 @@ struct BRILLOUIN_SETTINGS {
 			useBackgroundRoiMask = settings.useBackgroundRoiMask;
 			backgroundRoiPolygonUm = settings.backgroundRoiPolygonUm;
 			useSurfaceFollow = settings.useSurfaceFollow;
-			surfaceZOffsetUm = settings.surfaceZOffsetUm;
 			surfaceFollowHalfRangeUm = settings.surfaceFollowHalfRangeUm;
 			surfaceMaxRewindUm = settings.surfaceMaxRewindUm;
+			surfaceSearchBelowZeroUm = settings.surfaceSearchBelowZeroUm;
 			surfaceVerificationSteps = settings.surfaceVerificationSteps;
 			surfaceVerificationFrameAverage = settings.surfaceVerificationFrameAverage;
 			surfaceVerificationToleranceFraction = settings.surfaceVerificationToleranceFraction;
@@ -92,7 +92,6 @@ struct BRILLOUIN_SETTINGS {
 			preScanZMin = settings.preScanZMin;
 			preScanZMax = settings.preScanZMax;
 			surfaceMetricThreshold = settings.surfaceMetricThreshold;
-			surfaceSmoothSigmaUm = settings.surfaceSmoothSigmaUm;
 			surfaceDropFraction = settings.surfaceDropFraction;
 			surfaceScanDirection = settings.surfaceScanDirection;
 			surfaceProxyRoiLeft = settings.surfaceProxyRoiLeft;
@@ -161,11 +160,11 @@ struct BRILLOUIN_SETTINGS {
 		bool useBackgroundRoiMask{ false };
 		std::vector<POINT2> backgroundRoiPolygonUm;
 		bool useSurfaceFollow{ false };
-		double surfaceZOffsetUm{ 0.0 };
 		double surfaceFollowHalfRangeUm{ 10.0 };
 		// Neighbor-seeded surface search: each coarse column starts its search from the
 		// nearest already-found neighbor's z instead of a blind full-range sweep.
 		double surfaceMaxRewindUm{ 15.0 };			// max distance allowed stepping back towards water before giving up
+		double surfaceSearchBelowZeroUm{ 0.0 };		// how far below the grid z origin (z = 0) the surface search may go; 0 = never below 0
 		int surfaceVerificationSteps{ 3 };			// K: extra steps checked after a threshold crossing before accepting it
 		int surfaceVerificationFrameAverage{ 1 };	// M: frames averaged per point during verification (1 = off)
 		double surfaceVerificationToleranceFraction{ 0.05 }; // allowed relative rebound in the verification window
@@ -185,7 +184,6 @@ struct BRILLOUIN_SETTINGS {
 		double preScanZMin{ -30.0 };
 		double preScanZMax{ 30.0 };
 		double surfaceMetricThreshold{ 0.1 };
-		double surfaceSmoothSigmaUm{ 5.0 };
 		double surfaceDropFraction{ 0.6 };
 		int surfaceScanDirection{ 1 }; // +1 increasing z, -1 decreasing z
 		int surfaceProxyRoiLeft{ 0 };

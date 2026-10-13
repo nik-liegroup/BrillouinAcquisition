@@ -166,6 +166,7 @@ private:
 	QDoubleSpinBox* m_surfaceDropSpinBox{ nullptr };
 	QSpinBox* m_mediumReferenceFrameCountSpinBox{ nullptr };
 	QDoubleSpinBox* m_surfaceMaxRewindSpinBox{ nullptr };
+	QDoubleSpinBox* m_surfaceSearchBelowZeroSpinBox{ nullptr };
 	QSpinBox* m_surfaceVerificationStepsSpinBox{ nullptr };
 	QSpinBox* m_surfaceVerificationFrameAverageSpinBox{ nullptr };
 	QDoubleSpinBox* m_surfaceVerificationToleranceSpinBox{ nullptr };
@@ -254,6 +255,11 @@ private:
 	int m_brightfieldRawWidth{ 1 };
 	int m_brightfieldRawHeight{ 1 };
 
+	// First index of each distinct (x, y) column in m_positionsMicrometer / m_excludedPositionsMicrometer;
+	// m_positionsPixel is index-aligned with m_positionsUniqueIdx (one marker per column).
+	std::vector<size_t> m_positionsUniqueIdx;
+	std::vector<size_t> m_excludedUniqueIdx;
+	QCPLayer* m_brightfieldImageLayer{ nullptr };	// buffered layer holding only the live image
 	QCPCurve* m_positionsMarker{ nullptr };
 	QCPCurve* m_positionsMarkerSquare{ nullptr };
 	QCPCurve* m_positionsMarkerInsideRoi{ nullptr };

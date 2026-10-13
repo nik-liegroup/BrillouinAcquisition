@@ -26,6 +26,31 @@ namespace {
 	constexpr const char* kSettingsOrg = "Guck Lab";
 	constexpr const char* kSettingsApp = "Brillouin Acquisition Experimental";
 
+	// Indices of the first point of every distinct (x, y) column, in original order. Every z layer
+	// of a column is generated from the exact same x/y value, so exact equality is safe.
+	std::vector<size_t> uniqueXYIndices(const std::vector<POINT3>& positions) {
+		std::vector<size_t> indices;
+		std::set<std::pair<double, double>> seen;
+		for (size_t i = 0; i < positions.size(); i++) {
+			if (seen.insert(std::make_pair(positions[i].x, positions[i].y)).second) {
+				indices.push_back(i);
+			}
+		}
+		return indices;
+	}
+
+	template <typename T>
+	std::vector<T> selectByIndex(const std::vector<T>& values, const std::vector<size_t>& indices) {
+		std::vector<T> selected;
+		selected.reserve(indices.size());
+		for (const auto i : indices) {
+			if (i < values.size()) {
+				selected.push_back(values[i]);
+			}
+		}
+		return selected;
+	}
+
 	double orient2d(const POINT2& a, const POINT2& b, const POINT2& c) {
 		return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 	}
@@ -481,6 +506,17 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 	// this, a rectangular camera frame (e.g. 1024x1280) can visibly render as square.
 	m_ODTPlot.plotHandle->yAxis->setScaleRatio(m_ODTPlot.plotHandle->xAxis, 1.0);
 
+	// The live image gets its own buffered layer below everything else, so each incoming frame
+	// only repaints that layer (see plot()) instead of re-rendering every position marker, ROI
+	// outline etc. as well - which made live view cost scale with the number of grid points.
+	{
+		auto* plot = m_ODTPlot.plotHandle;
+		plot->addLayer("brightfieldImage", plot->layer("main"), QCustomPlot::limBelow);
+		m_brightfieldImageLayer = plot->layer("brightfieldImage");
+		m_brightfieldImageLayer->setMode(QCPLayer::lmBuffered);
+		m_ODTPlot.colorMap->setLayer(m_brightfieldImageLayer);
+	}
+
 	connection = QWidget::connect(
 		m_ODTPlot.plotHandle,
 		&QCustomPlot::mousePress,
@@ -697,6 +733,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 			m_surfaceDropSpinBox = ui->surfaceDropSpinBox;
 			m_mediumReferenceFrameCountSpinBox = ui->mediumReferenceFrameCountSpinBox;
 			m_surfaceMaxRewindSpinBox = ui->surfaceMaxRewindSpinBox;
+			m_surfaceSearchBelowZeroSpinBox = ui->surfaceSearchBelowZeroSpinBox;
 			m_surfaceVerificationStepsSpinBox = ui->surfaceVerificationStepsSpinBox;
 			m_surfaceVerificationFrameAverageSpinBox = ui->surfaceVerificationFrameAverageSpinBox;
 			m_surfaceVerificationToleranceSpinBox = ui->surfaceVerificationToleranceSpinBox;
@@ -786,6 +823,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				if (m_surfaceDropSpinBox) m_surfaceDropSpinBox->setEnabled(enabled);
 				if (m_mediumReferenceFrameCountSpinBox) m_mediumReferenceFrameCountSpinBox->setEnabled(enabled);
 				if (m_surfaceMaxRewindSpinBox) m_surfaceMaxRewindSpinBox->setEnabled(enabled);
+				if (m_surfaceSearchBelowZeroSpinBox) m_surfaceSearchBelowZeroSpinBox->setEnabled(enabled);
 				if (m_surfaceVerificationStepsSpinBox) m_surfaceVerificationStepsSpinBox->setEnabled(enabled);
 				if (m_surfaceVerificationFrameAverageSpinBox) m_surfaceVerificationFrameAverageSpinBox->setEnabled(enabled);
 				if (m_surfaceVerificationToleranceSpinBox) m_surfaceVerificationToleranceSpinBox->setEnabled(enabled);
@@ -819,6 +857,10 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 
 			connect(m_surfaceMaxRewindSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
 				m_Brillouin->settings.surfaceMaxRewindUm = std::max(0.0, value);
+			});
+
+			connect(m_surfaceSearchBelowZeroSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+				m_Brillouin->settings.surfaceSearchBelowZeroUm = std::max(0.0, value);
 			});
 
 			connect(m_surfaceVerificationStepsSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
@@ -1686,13 +1728,13 @@ void BrillouinAcquisition::preservePhysicalGridForAbsoluteMode(bool enabled) {
 		m_Brillouin->settings.absoluteGridOriginUm = m_scanControl->getHomePosition();
 	}
 
-	// X/Y only - "absolute grid coordinates" only ever meant x/y anchored to a fixed physical
-	// point, independent of wherever Start happens to be pressed. Z is deliberately NOT part of
-	// that split (see Brillouin::resolvedGridOriginUm()'s own comment): it always follows
-	// m_startPosition.z, refreshed at every Start or on demand via "Set plane"
-	// (setCurrentFocusAsZOrigin()), regardless of gridCoordinatesAbsolute. zMin/zMax are
-	// therefore left untouched by a mode toggle - the operator's configured z sweep survives
-	// switching to/from absolute mode instead of being silently reinterpreted.
+	// Only the stored x/y points are converted here. zMin/zMax are offsets from the z origin in
+	// both modes, so they are left untouched by a mode toggle - the operator's configured z sweep
+	// survives switching instead of being silently reinterpreted. The z origin itself differs by
+	// mode (see Brillouin::resolvedGridOriginUm()): relative mode uses m_startPosition.z,
+	// refreshed at every Start; absolute mode uses absoluteGridOriginUm.z, taken from the home
+	// position on switching (set just above) or from "Set plane" (setCurrentFocusAsZOrigin()), and
+	// it survives an intervening Start.
 	//
 	// Round-trip each stored x/y point through gridOffsetToImagePlaneUm()/
 	// imagePlaneUmToGridOffset() - the exact functions the grid and the ROI polygon are
@@ -3554,7 +3596,12 @@ void BrillouinAcquisition::plotting(PLOT_SETTINGS* plotSettings, long long dim_x
 	if (plotSettings == &m_BrillouinPlot) {
 		refreshSpectralProxyRoiRects();
 	}
-	plotSettings->plotHandle->replot();
+	if (plotSettings == &m_ODTPlot && m_brightfieldImageLayer) {
+		// Falls back to a full replot by itself if any other buffer is invalidated.
+		m_brightfieldImageLayer->replot();
+	} else {
+		plotSettings->plotHandle->replot();
+	}
 }
 
 void BrillouinAcquisition::on_actionConnect_Camera_triggered() {
@@ -6164,6 +6211,11 @@ void BrillouinAcquisition::updateBrillouinSettings() {
 		m_surfaceMaxRewindSpinBox->setValue(std::max(0.0, m_Brillouin->settings.surfaceMaxRewindUm));
 		m_surfaceMaxRewindSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
 	}
+	if (m_surfaceSearchBelowZeroSpinBox) {
+		const QSignalBlocker blocker(*m_surfaceSearchBelowZeroSpinBox);
+		m_surfaceSearchBelowZeroSpinBox->setValue(std::max(0.0, m_Brillouin->settings.surfaceSearchBelowZeroUm));
+		m_surfaceSearchBelowZeroSpinBox->setEnabled(m_Brillouin->settings.useSurfaceFollow);
+	}
 	if (m_surfaceVerificationStepsSpinBox) {
 		const QSignalBlocker blocker(*m_surfaceVerificationStepsSpinBox);
 		m_surfaceVerificationStepsSpinBox->setValue(std::max(0, m_Brillouin->settings.surfaceVerificationSteps));
@@ -6387,7 +6439,11 @@ void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositio
 		// m_Brillouin->settings.gridCoordinatesAbsolute's current, possibly-already-changed-
 		// again live value - using the live value here reintroduced exactly the race this
 		// parameter exists to avoid.
-		m_positionsPixel = m_scanControl->getPositionsPix(m_positionsMicrometer, isAbsolute);
+		// Only one marker per (x, y) column is ever drawn (z doesn't move a point on screen), so
+		// only project that subset - m_positionsPixel is index-aligned with m_positionsUniqueIdx,
+		// not with m_positionsMicrometer, which keeps its full length (time estimate, review mode).
+		m_positionsUniqueIdx = uniqueXYIndices(m_positionsMicrometer);
+		m_positionsPixel = m_scanControl->getPositionsPix(selectByIndex(m_positionsMicrometer, m_positionsUniqueIdx), isAbsolute);
 		std::transform(m_positionsPixel.begin(), m_positionsPixel.end(), m_positionsPixel.begin(),
 			[this](POINT2 point) { return brightfieldRawToDisplay(point); }
 		);
@@ -6411,6 +6467,7 @@ void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositio
  */
 void BrillouinAcquisition::excludedAOI_changed(const std::vector<POINT3>& excludedPositions) {
 	m_excludedPositionsMicrometer = excludedPositions;
+	m_excludedUniqueIdx = uniqueXYIndices(m_excludedPositionsMicrometer);
 	if (m_scanControl) {
 		update_AOI_preview();
 	}
@@ -6420,7 +6477,12 @@ void BrillouinAcquisition::excludedAOI_changed(const std::vector<POINT3>& exclud
  * React when the scancontrol settings have changed, e.g. the start position was adjusted
  */
 void BrillouinAcquisition::on_scaleCalibrationChanged(const std::vector<POINT2>& positions) {
-	m_positionsPixel = positions;
+	// ScanControl sends the full (all z layers) projection; keep only the drawn (x, y) subset.
+	if (positions.size() == m_positionsMicrometer.size()) {
+		m_positionsPixel = selectByIndex(positions, m_positionsUniqueIdx);
+	} else {
+		m_positionsPixel = positions;
+	}
 	std::transform(m_positionsPixel.begin(), m_positionsPixel.end(), m_positionsPixel.begin(),
 		[this](POINT2 point) { return brightfieldRawToDisplay(point); }
 	);
@@ -6447,33 +6509,10 @@ void BrillouinAcquisition::on_gridOffsetChanged(POINT2 offsetUm, bool positionIs
  * Update the plot showing the measurement positions as overlay in the brightfield preview
  */
 void BrillouinAcquisition::update_AOI_preview() {
-	// Collapses every z-layer of the same (x, y) column onto a single plotted marker: z has no
-	// effect on where a point projects on screen (ScanControl::convertPositionsToPix() only ever
-	// reads point.x/point.y - see its own comment), so a grid with many z steps was plotting
-	// zSteps visually-identical, exactly-overlapping markers per column for zero extra
-	// information, at real reprojection + QCustomPlot render cost that scaled with zSteps just
-	// like it scaled with xSteps/ySteps (which, unlike z, each really do add a new marker
-	// position). Dedup key is the source µm (x, y), not the projected pixel position - every
-	// z-layer of a column is generated from the exact same x/y grid value (not just numerically
-	// close), so exact equality here is safe, not an approximate/epsilon comparison.
-	// Only used for the two branches below that don't need index alignment with anything else
-	// (the plain marker line, and the ROI-colored inside/outside lines) - NOT for
-	// squarePositionsPixel/positionsPixelForRoi themselves, which the reviewMode branch below
-	// indexes in lockstep with getOrderedIndices() and would desync if shrunk.
-	auto dedupeByXY = [](const std::vector<POINT3>& positionsUm, const std::vector<POINT2>& positionsPix) {
-		std::vector<POINT2> unique;
-		std::set<std::pair<double, double>> seen;
-		unique.reserve(positionsPix.size());
-		const auto count = std::min(positionsUm.size(), positionsPix.size());
-		for (size_t i = 0; i < count; i++) {
-			if (!seen.insert(std::make_pair(positionsUm[i].x, positionsUm[i].y)).second) {
-				continue;
-			}
-			unique.push_back(positionsPix[i]);
-		}
-		return unique;
-	};
-
+	// All pixel position arrays used here hold one entry per (x, y) column, not per z layer: z
+	// has no effect on where a point projects on screen, so the z layers are collapsed once in
+	// AOI_changed()/excludedAOI_changed() (m_positionsUniqueIdx / m_excludedUniqueIdx) and every
+	// per-update cost here is independent of the number of z steps.
 	if (m_showPositions) {
 		// Paused for surface-scan review: show only the actual measurement-grid points
 		// that ended up with a surface z value (found or interpolated) as squares, with no
@@ -6509,13 +6548,15 @@ void BrillouinAcquisition::update_AOI_preview() {
 			const auto gridAbsolute = m_positionsMicrometerIsAbsolute;
 			const auto offset = currentGridOffset(gridAbsolute);
 			positionsPixelForRoi.clear();
-			positionsPixelForRoi.reserve(m_positionsMicrometer.size());
-			for (const auto& p : m_positionsMicrometer) {
+			positionsPixelForRoi.reserve(m_positionsUniqueIdx.size());
+			for (const auto i : m_positionsUniqueIdx) {
+				const auto& p = m_positionsMicrometer[i];
 				const auto pix = m_scanControl->microMeterToPix(POINT2{ p.x, p.y } + offset);
 				positionsPixelForRoi.push_back(brightfieldRawToDisplay(pix));
 			}
-			excludedPixelForRoi.reserve(m_excludedPositionsMicrometer.size());
-			for (const auto& p : m_excludedPositionsMicrometer) {
+			excludedPixelForRoi.reserve(m_excludedUniqueIdx.size());
+			for (const auto i : m_excludedUniqueIdx) {
+				const auto& p = m_excludedPositionsMicrometer[i];
 				const auto pix = m_scanControl->microMeterToPix(POINT2{ p.x, p.y } + offset);
 				excludedPixelForRoi.push_back(brightfieldRawToDisplay(pix));
 			}
@@ -6526,7 +6567,9 @@ void BrillouinAcquisition::update_AOI_preview() {
 		if (reviewMode && !squarePositionsPixel.empty()) {
 			// squarePositionsPixel is index-aligned with getOrderedIndices() - both are
 			// projections/copies of the same orderedPositions the surface scan produced.
-			const auto orderedIndices = m_Brillouin->getOrderedIndices();
+			// squarePositionsPixel holds one entry per (x, y) column (see m_positionsUniqueIdx),
+			// so pick the matching ordered indices - z layers share the same (x, y) key anyway.
+			const auto orderedIndices = selectByIndex(m_Brillouin->getOrderedIndices(), m_positionsUniqueIdx);
 			const auto foundXYIndices = m_Brillouin->getSurfaceFoundXYIndices();
 			const auto count = std::min(orderedIndices.size(), squarePositionsPixel.size());
 			squareX.reserve((int)count);
@@ -6577,8 +6620,8 @@ void BrillouinAcquisition::update_AOI_preview() {
 			// as squarePositionsPixel below, index-aligned with getOrderedIndices() in
 			// reviewMode) - only the cross-marker lines built here are deduped, since
 			// nothing else reads xInside/xOutside afterward.
-			const auto insideUnique = dedupeByXY(m_positionsMicrometer, positionsPixelForRoi);
-			const auto outsideUnique = dedupeByXY(m_excludedPositionsMicrometer, excludedPixelForRoi);
+			const auto& insideUnique = positionsPixelForRoi;
+			const auto& outsideUnique = excludedPixelForRoi;
 			QVector<double> xInside;
 			QVector<double> yInside;
 			QVector<double> xOutside;
@@ -6669,7 +6712,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 		} else {
 			// Deduped (see dedupeByXY() above) - m_positionsPixel itself stays full-length,
 			// nothing else reads xPos/yPos afterward so it's safe to shrink here.
-			const auto positionsUnique = dedupeByXY(m_positionsMicrometer, m_positionsPixel);
+			const auto& positionsUnique = m_positionsPixel;
 			QVector<double> xPos(positionsUnique.size());
 			QVector<double> yPos(positionsUnique.size());
 			int index{ 0 };
@@ -6731,7 +6774,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 				m_positionsMarkerSquare = nullptr;
 			}
 		}
-		ui->customplot_brightfield->replot();
+		ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 	} else if (m_positionsMarker || m_positionsMarkerSquare || m_positionsMarkerInsideRoi || m_positionsMarkerOutsideRoi || m_positionsMarkerSquareInsideRoi || m_positionsMarkerSquareOutsideRoi) {
 		if (ui->customplot_brightfield->removePlottable(m_positionsMarker)) {
 			m_positionsMarker = nullptr;
@@ -6751,7 +6794,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 		if (ui->customplot_brightfield->removePlottable(m_positionsMarkerSquareOutsideRoi)) {
 			m_positionsMarkerSquareOutsideRoi = nullptr;
 		}
-		ui->customplot_brightfield->replot();
+		ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 	}
 	updateRoiPolygonPreview();
 	updateBackgroundPositionsPreview();
@@ -6773,7 +6816,7 @@ void BrillouinAcquisition::updateBackgroundPositionsPreview() {
 	if (!show) {
 		if (m_backgroundPositionsMarker && ui->customplot_brightfield->removePlottable(m_backgroundPositionsMarker)) {
 			m_backgroundPositionsMarker = nullptr;
-			ui->customplot_brightfield->replot();
+			ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 		}
 		return;
 	}
@@ -6803,7 +6846,7 @@ void BrillouinAcquisition::updateBackgroundPositionsPreview() {
 		yPos[(int)i] = pix.y;
 	}
 	m_backgroundPositionsMarker->setData(xPos, yPos);
-	ui->customplot_brightfield->replot();
+	ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 }
 
 /*
@@ -6827,7 +6870,7 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 				ui->customplot_brightfield->removeItem(rect);
 			}
 			m_overviewTileRects.clear();
-			ui->customplot_brightfield->replot();
+			ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 		}
 	} else {
 		const auto outlines = m_Brillouin->overviewTileOutlinesUm();
@@ -6895,7 +6938,7 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 		m_overviewPointMarker->setData(xPix, yPix);
 	}
 
-	ui->customplot_brightfield->replot();
+	ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 }
 
 BrillouinAcquisition::RoiTarget BrillouinAcquisition::mainRoiTarget() {
@@ -6953,7 +6996,7 @@ void BrillouinAcquisition::updateRoiPolygonPreviewFor(const RoiTarget& target) {
 	auto removeMarker = [&]() {
 		if (*target.marker && ui->customplot_brightfield->removePlottable(*target.marker)) {
 			*target.marker = nullptr;
-			ui->customplot_brightfield->replot();
+			ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 		}
 	};
 	if (!show || polygon.empty()) {
@@ -6999,7 +7042,7 @@ void BrillouinAcquisition::updateRoiPolygonPreviewFor(const RoiTarget& target) {
 		yPos[(int)i] = polygonPix[i].y;
 	}
 	(*target.marker)->setData(xPos, yPos);
-	ui->customplot_brightfield->replot();
+	ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 	// Cheap (early-returns unless the background mask is actually on) and correct to call
 	// regardless of which target this was for - editing the background polygon directly needs
 	// this refreshed immediately (not just on the next update_AOI_preview(), which also calls it
@@ -7633,7 +7676,6 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-background-roi-polygon-um", serializeRoiPolygon(m_Brillouin->settings.backgroundRoiPolygonUm));
 	// useSurfaceFollow is deliberately not persisted - it should always start off,
 	// regardless of how the previous session ended.
-	settings.setValue("brillouin-surface-z-offset-um", m_Brillouin->settings.surfaceZOffsetUm);
 	settings.setValue("brillouin-surface-follow-half-range-um", m_Brillouin->settings.surfaceFollowHalfRangeUm);
 	settings.setValue("brillouin-pre-scan-xy-bin", m_Brillouin->settings.preScanXYBin);
 	settings.setValue("brillouin-additional-boundary-points", m_Brillouin->settings.additionalBoundaryPoints);
@@ -7645,11 +7687,11 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-pre-scan-z-min", m_Brillouin->settings.preScanZMin);
 	settings.setValue("brillouin-pre-scan-z-max", m_Brillouin->settings.preScanZMax);
 	settings.setValue("brillouin-surface-metric-threshold", m_Brillouin->settings.surfaceMetricThreshold);
-	settings.setValue("brillouin-surface-smooth-sigma-um", m_Brillouin->settings.surfaceSmoothSigmaUm);
 	settings.setValue("brillouin-surface-drop-fraction", m_Brillouin->settings.surfaceDropFraction);
 	settings.setValue("brillouin-medium-reference-value", m_Brillouin->settings.mediumReferenceValue);
 	settings.setValue("brillouin-medium-reference-frame-count", m_Brillouin->settings.mediumReferenceFrameCount);
 	settings.setValue("brillouin-surface-max-rewind-um", m_Brillouin->settings.surfaceMaxRewindUm);
+	settings.setValue("brillouin-surface-search-below-zero-um", m_Brillouin->settings.surfaceSearchBelowZeroUm);
 	settings.setValue("brillouin-surface-verification-steps", m_Brillouin->settings.surfaceVerificationSteps);
 	settings.setValue("brillouin-surface-verification-frame-average", m_Brillouin->settings.surfaceVerificationFrameAverage);
 	settings.setValue("brillouin-surface-verification-tolerance-fraction", m_Brillouin->settings.surfaceVerificationToleranceFraction);
@@ -7811,7 +7853,6 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.useBackgroundRoiMask = settings.value("brillouin-use-background-roi-mask", m_Brillouin->settings.useBackgroundRoiMask).toBool();
 	m_Brillouin->settings.backgroundRoiPolygonUm = deserializeRoiPolygon(settings.value("brillouin-background-roi-polygon-um", "").toString());
 	// useSurfaceFollow is deliberately not restored - always starts off (see saveSettings()).
-	m_Brillouin->settings.surfaceZOffsetUm = settings.value("brillouin-surface-z-offset-um", m_Brillouin->settings.surfaceZOffsetUm).toDouble();
 	m_Brillouin->settings.surfaceFollowHalfRangeUm = settings.value("brillouin-surface-follow-half-range-um", m_Brillouin->settings.surfaceFollowHalfRangeUm).toDouble();
 	m_Brillouin->settings.preScanXYBin = settings.value("brillouin-pre-scan-xy-bin", m_Brillouin->settings.preScanXYBin).toInt();
 	m_Brillouin->settings.additionalBoundaryPoints = settings.value("brillouin-additional-boundary-points", m_Brillouin->settings.additionalBoundaryPoints).toInt();
@@ -7823,11 +7864,11 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.preScanZMin = settings.value("brillouin-pre-scan-z-min", m_Brillouin->settings.preScanZMin).toDouble();
 	m_Brillouin->settings.preScanZMax = settings.value("brillouin-pre-scan-z-max", m_Brillouin->settings.preScanZMax).toDouble();
 	m_Brillouin->settings.surfaceMetricThreshold = settings.value("brillouin-surface-metric-threshold", m_Brillouin->settings.surfaceMetricThreshold).toDouble();
-	m_Brillouin->settings.surfaceSmoothSigmaUm = settings.value("brillouin-surface-smooth-sigma-um", m_Brillouin->settings.surfaceSmoothSigmaUm).toDouble();
 	m_Brillouin->settings.surfaceDropFraction = settings.value("brillouin-surface-drop-fraction", m_Brillouin->settings.surfaceDropFraction).toDouble();
 	m_Brillouin->settings.mediumReferenceValue = settings.value("brillouin-medium-reference-value", m_Brillouin->settings.mediumReferenceValue).toDouble();
 	m_Brillouin->settings.mediumReferenceFrameCount = settings.value("brillouin-medium-reference-frame-count", m_Brillouin->settings.mediumReferenceFrameCount).toInt();
 	m_Brillouin->settings.surfaceMaxRewindUm = settings.value("brillouin-surface-max-rewind-um", m_Brillouin->settings.surfaceMaxRewindUm).toDouble();
+	m_Brillouin->settings.surfaceSearchBelowZeroUm = settings.value("brillouin-surface-search-below-zero-um", m_Brillouin->settings.surfaceSearchBelowZeroUm).toDouble();
 	m_Brillouin->settings.surfaceVerificationSteps = settings.value("brillouin-surface-verification-steps", m_Brillouin->settings.surfaceVerificationSteps).toInt();
 	m_Brillouin->settings.surfaceVerificationFrameAverage = settings.value("brillouin-surface-verification-frame-average", m_Brillouin->settings.surfaceVerificationFrameAverage).toInt();
 	m_Brillouin->settings.surfaceVerificationToleranceFraction = settings.value("brillouin-surface-verification-tolerance-fraction", m_Brillouin->settings.surfaceVerificationToleranceFraction).toDouble();
