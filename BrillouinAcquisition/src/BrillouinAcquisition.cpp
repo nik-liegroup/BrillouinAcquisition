@@ -1728,13 +1728,13 @@ void BrillouinAcquisition::preservePhysicalGridForAbsoluteMode(bool enabled) {
 		m_Brillouin->settings.absoluteGridOriginUm = m_scanControl->getHomePosition();
 	}
 
-	// X/Y only - "absolute grid coordinates" only ever meant x/y anchored to a fixed physical
-	// point, independent of wherever Start happens to be pressed. Z is deliberately NOT part of
-	// that split (see Brillouin::resolvedGridOriginUm()'s own comment): it always follows
-	// m_startPosition.z, refreshed at every Start or on demand via "Set plane"
-	// (setCurrentFocusAsZOrigin()), regardless of gridCoordinatesAbsolute. zMin/zMax are
-	// therefore left untouched by a mode toggle - the operator's configured z sweep survives
-	// switching to/from absolute mode instead of being silently reinterpreted.
+	// Only the stored x/y points are converted here. zMin/zMax are offsets from the z origin in
+	// both modes, so they are left untouched by a mode toggle - the operator's configured z sweep
+	// survives switching instead of being silently reinterpreted. The z origin itself differs by
+	// mode (see Brillouin::resolvedGridOriginUm()): relative mode uses m_startPosition.z,
+	// refreshed at every Start; absolute mode uses absoluteGridOriginUm.z, taken from the home
+	// position on switching (set just above) or from "Set plane" (setCurrentFocusAsZOrigin()), and
+	// it survives an intervening Start.
 	//
 	// Round-trip each stored x/y point through gridOffsetToImagePlaneUm()/
 	// imagePlaneUmToGridOffset() - the exact functions the grid and the ROI polygon are
