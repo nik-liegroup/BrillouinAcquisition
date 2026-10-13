@@ -26,6 +26,31 @@ namespace {
 	constexpr const char* kSettingsOrg = "Guck Lab";
 	constexpr const char* kSettingsApp = "Brillouin Acquisition Experimental";
 
+	// Indices of the first point of every distinct (x, y) column, in original order. Every z layer
+	// of a column is generated from the exact same x/y value, so exact equality is safe.
+	std::vector<size_t> uniqueXYIndices(const std::vector<POINT3>& positions) {
+		std::vector<size_t> indices;
+		std::set<std::pair<double, double>> seen;
+		for (size_t i = 0; i < positions.size(); i++) {
+			if (seen.insert(std::make_pair(positions[i].x, positions[i].y)).second) {
+				indices.push_back(i);
+			}
+		}
+		return indices;
+	}
+
+	template <typename T>
+	std::vector<T> selectByIndex(const std::vector<T>& values, const std::vector<size_t>& indices) {
+		std::vector<T> selected;
+		selected.reserve(indices.size());
+		for (const auto i : indices) {
+			if (i < values.size()) {
+				selected.push_back(values[i]);
+			}
+		}
+		return selected;
+	}
+
 	double orient2d(const POINT2& a, const POINT2& b, const POINT2& c) {
 		return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 	}
@@ -480,6 +505,17 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 	// widget (e.g. when other panels show/hide and the horizontal split changes) - without
 	// this, a rectangular camera frame (e.g. 1024x1280) can visibly render as square.
 	m_ODTPlot.plotHandle->yAxis->setScaleRatio(m_ODTPlot.plotHandle->xAxis, 1.0);
+
+	// The live image gets its own buffered layer below everything else, so each incoming frame
+	// only repaints that layer (see plot()) instead of re-rendering every position marker, ROI
+	// outline etc. as well - which made live view cost scale with the number of grid points.
+	{
+		auto* plot = m_ODTPlot.plotHandle;
+		plot->addLayer("brightfieldImage", plot->layer("main"), QCustomPlot::limBelow);
+		m_brightfieldImageLayer = plot->layer("brightfieldImage");
+		m_brightfieldImageLayer->setMode(QCPLayer::lmBuffered);
+		m_ODTPlot.colorMap->setLayer(m_brightfieldImageLayer);
+	}
 
 	connection = QWidget::connect(
 		m_ODTPlot.plotHandle,
@@ -3554,7 +3590,12 @@ void BrillouinAcquisition::plotting(PLOT_SETTINGS* plotSettings, long long dim_x
 	if (plotSettings == &m_BrillouinPlot) {
 		refreshSpectralProxyRoiRects();
 	}
-	plotSettings->plotHandle->replot();
+	if (plotSettings == &m_ODTPlot && m_brightfieldImageLayer) {
+		// Falls back to a full replot by itself if any other buffer is invalidated.
+		m_brightfieldImageLayer->replot();
+	} else {
+		plotSettings->plotHandle->replot();
+	}
 }
 
 void BrillouinAcquisition::on_actionConnect_Camera_triggered() {
@@ -6387,7 +6428,11 @@ void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositio
 		// m_Brillouin->settings.gridCoordinatesAbsolute's current, possibly-already-changed-
 		// again live value - using the live value here reintroduced exactly the race this
 		// parameter exists to avoid.
-		m_positionsPixel = m_scanControl->getPositionsPix(m_positionsMicrometer, isAbsolute);
+		// Only one marker per (x, y) column is ever drawn (z doesn't move a point on screen), so
+		// only project that subset - m_positionsPixel is index-aligned with m_positionsUniqueIdx,
+		// not with m_positionsMicrometer, which keeps its full length (time estimate, review mode).
+		m_positionsUniqueIdx = uniqueXYIndices(m_positionsMicrometer);
+		m_positionsPixel = m_scanControl->getPositionsPix(selectByIndex(m_positionsMicrometer, m_positionsUniqueIdx), isAbsolute);
 		std::transform(m_positionsPixel.begin(), m_positionsPixel.end(), m_positionsPixel.begin(),
 			[this](POINT2 point) { return brightfieldRawToDisplay(point); }
 		);
@@ -6411,6 +6456,7 @@ void BrillouinAcquisition::AOI_changed(const std::vector<POINT3>& orderedPositio
  */
 void BrillouinAcquisition::excludedAOI_changed(const std::vector<POINT3>& excludedPositions) {
 	m_excludedPositionsMicrometer = excludedPositions;
+	m_excludedUniqueIdx = uniqueXYIndices(m_excludedPositionsMicrometer);
 	if (m_scanControl) {
 		update_AOI_preview();
 	}
@@ -6420,7 +6466,12 @@ void BrillouinAcquisition::excludedAOI_changed(const std::vector<POINT3>& exclud
  * React when the scancontrol settings have changed, e.g. the start position was adjusted
  */
 void BrillouinAcquisition::on_scaleCalibrationChanged(const std::vector<POINT2>& positions) {
-	m_positionsPixel = positions;
+	// ScanControl sends the full (all z layers) projection; keep only the drawn (x, y) subset.
+	if (positions.size() == m_positionsMicrometer.size()) {
+		m_positionsPixel = selectByIndex(positions, m_positionsUniqueIdx);
+	} else {
+		m_positionsPixel = positions;
+	}
 	std::transform(m_positionsPixel.begin(), m_positionsPixel.end(), m_positionsPixel.begin(),
 		[this](POINT2 point) { return brightfieldRawToDisplay(point); }
 	);
@@ -6447,33 +6498,10 @@ void BrillouinAcquisition::on_gridOffsetChanged(POINT2 offsetUm, bool positionIs
  * Update the plot showing the measurement positions as overlay in the brightfield preview
  */
 void BrillouinAcquisition::update_AOI_preview() {
-	// Collapses every z-layer of the same (x, y) column onto a single plotted marker: z has no
-	// effect on where a point projects on screen (ScanControl::convertPositionsToPix() only ever
-	// reads point.x/point.y - see its own comment), so a grid with many z steps was plotting
-	// zSteps visually-identical, exactly-overlapping markers per column for zero extra
-	// information, at real reprojection + QCustomPlot render cost that scaled with zSteps just
-	// like it scaled with xSteps/ySteps (which, unlike z, each really do add a new marker
-	// position). Dedup key is the source µm (x, y), not the projected pixel position - every
-	// z-layer of a column is generated from the exact same x/y grid value (not just numerically
-	// close), so exact equality here is safe, not an approximate/epsilon comparison.
-	// Only used for the two branches below that don't need index alignment with anything else
-	// (the plain marker line, and the ROI-colored inside/outside lines) - NOT for
-	// squarePositionsPixel/positionsPixelForRoi themselves, which the reviewMode branch below
-	// indexes in lockstep with getOrderedIndices() and would desync if shrunk.
-	auto dedupeByXY = [](const std::vector<POINT3>& positionsUm, const std::vector<POINT2>& positionsPix) {
-		std::vector<POINT2> unique;
-		std::set<std::pair<double, double>> seen;
-		unique.reserve(positionsPix.size());
-		const auto count = std::min(positionsUm.size(), positionsPix.size());
-		for (size_t i = 0; i < count; i++) {
-			if (!seen.insert(std::make_pair(positionsUm[i].x, positionsUm[i].y)).second) {
-				continue;
-			}
-			unique.push_back(positionsPix[i]);
-		}
-		return unique;
-	};
-
+	// All pixel position arrays used here hold one entry per (x, y) column, not per z layer: z
+	// has no effect on where a point projects on screen, so the z layers are collapsed once in
+	// AOI_changed()/excludedAOI_changed() (m_positionsUniqueIdx / m_excludedUniqueIdx) and every
+	// per-update cost here is independent of the number of z steps.
 	if (m_showPositions) {
 		// Paused for surface-scan review: show only the actual measurement-grid points
 		// that ended up with a surface z value (found or interpolated) as squares, with no
@@ -6509,13 +6537,15 @@ void BrillouinAcquisition::update_AOI_preview() {
 			const auto gridAbsolute = m_positionsMicrometerIsAbsolute;
 			const auto offset = currentGridOffset(gridAbsolute);
 			positionsPixelForRoi.clear();
-			positionsPixelForRoi.reserve(m_positionsMicrometer.size());
-			for (const auto& p : m_positionsMicrometer) {
+			positionsPixelForRoi.reserve(m_positionsUniqueIdx.size());
+			for (const auto i : m_positionsUniqueIdx) {
+				const auto& p = m_positionsMicrometer[i];
 				const auto pix = m_scanControl->microMeterToPix(POINT2{ p.x, p.y } + offset);
 				positionsPixelForRoi.push_back(brightfieldRawToDisplay(pix));
 			}
-			excludedPixelForRoi.reserve(m_excludedPositionsMicrometer.size());
-			for (const auto& p : m_excludedPositionsMicrometer) {
+			excludedPixelForRoi.reserve(m_excludedUniqueIdx.size());
+			for (const auto i : m_excludedUniqueIdx) {
+				const auto& p = m_excludedPositionsMicrometer[i];
 				const auto pix = m_scanControl->microMeterToPix(POINT2{ p.x, p.y } + offset);
 				excludedPixelForRoi.push_back(brightfieldRawToDisplay(pix));
 			}
@@ -6526,7 +6556,9 @@ void BrillouinAcquisition::update_AOI_preview() {
 		if (reviewMode && !squarePositionsPixel.empty()) {
 			// squarePositionsPixel is index-aligned with getOrderedIndices() - both are
 			// projections/copies of the same orderedPositions the surface scan produced.
-			const auto orderedIndices = m_Brillouin->getOrderedIndices();
+			// squarePositionsPixel holds one entry per (x, y) column (see m_positionsUniqueIdx),
+			// so pick the matching ordered indices - z layers share the same (x, y) key anyway.
+			const auto orderedIndices = selectByIndex(m_Brillouin->getOrderedIndices(), m_positionsUniqueIdx);
 			const auto foundXYIndices = m_Brillouin->getSurfaceFoundXYIndices();
 			const auto count = std::min(orderedIndices.size(), squarePositionsPixel.size());
 			squareX.reserve((int)count);
@@ -6577,8 +6609,8 @@ void BrillouinAcquisition::update_AOI_preview() {
 			// as squarePositionsPixel below, index-aligned with getOrderedIndices() in
 			// reviewMode) - only the cross-marker lines built here are deduped, since
 			// nothing else reads xInside/xOutside afterward.
-			const auto insideUnique = dedupeByXY(m_positionsMicrometer, positionsPixelForRoi);
-			const auto outsideUnique = dedupeByXY(m_excludedPositionsMicrometer, excludedPixelForRoi);
+			const auto& insideUnique = positionsPixelForRoi;
+			const auto& outsideUnique = excludedPixelForRoi;
 			QVector<double> xInside;
 			QVector<double> yInside;
 			QVector<double> xOutside;
@@ -6669,7 +6701,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 		} else {
 			// Deduped (see dedupeByXY() above) - m_positionsPixel itself stays full-length,
 			// nothing else reads xPos/yPos afterward so it's safe to shrink here.
-			const auto positionsUnique = dedupeByXY(m_positionsMicrometer, m_positionsPixel);
+			const auto& positionsUnique = m_positionsPixel;
 			QVector<double> xPos(positionsUnique.size());
 			QVector<double> yPos(positionsUnique.size());
 			int index{ 0 };
@@ -6731,7 +6763,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 				m_positionsMarkerSquare = nullptr;
 			}
 		}
-		ui->customplot_brightfield->replot();
+		ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 	} else if (m_positionsMarker || m_positionsMarkerSquare || m_positionsMarkerInsideRoi || m_positionsMarkerOutsideRoi || m_positionsMarkerSquareInsideRoi || m_positionsMarkerSquareOutsideRoi) {
 		if (ui->customplot_brightfield->removePlottable(m_positionsMarker)) {
 			m_positionsMarker = nullptr;
@@ -6751,7 +6783,7 @@ void BrillouinAcquisition::update_AOI_preview() {
 		if (ui->customplot_brightfield->removePlottable(m_positionsMarkerSquareOutsideRoi)) {
 			m_positionsMarkerSquareOutsideRoi = nullptr;
 		}
-		ui->customplot_brightfield->replot();
+		ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 	}
 	updateRoiPolygonPreview();
 	updateBackgroundPositionsPreview();
@@ -6773,7 +6805,7 @@ void BrillouinAcquisition::updateBackgroundPositionsPreview() {
 	if (!show) {
 		if (m_backgroundPositionsMarker && ui->customplot_brightfield->removePlottable(m_backgroundPositionsMarker)) {
 			m_backgroundPositionsMarker = nullptr;
-			ui->customplot_brightfield->replot();
+			ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 		}
 		return;
 	}
@@ -6803,7 +6835,7 @@ void BrillouinAcquisition::updateBackgroundPositionsPreview() {
 		yPos[(int)i] = pix.y;
 	}
 	m_backgroundPositionsMarker->setData(xPos, yPos);
-	ui->customplot_brightfield->replot();
+	ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 }
 
 /*
@@ -6827,7 +6859,7 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 				ui->customplot_brightfield->removeItem(rect);
 			}
 			m_overviewTileRects.clear();
-			ui->customplot_brightfield->replot();
+			ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 		}
 	} else {
 		const auto outlines = m_Brillouin->overviewTileOutlinesUm();
@@ -6895,7 +6927,7 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 		m_overviewPointMarker->setData(xPix, yPix);
 	}
 
-	ui->customplot_brightfield->replot();
+	ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 }
 
 BrillouinAcquisition::RoiTarget BrillouinAcquisition::mainRoiTarget() {
@@ -6953,7 +6985,7 @@ void BrillouinAcquisition::updateRoiPolygonPreviewFor(const RoiTarget& target) {
 	auto removeMarker = [&]() {
 		if (*target.marker && ui->customplot_brightfield->removePlottable(*target.marker)) {
 			*target.marker = nullptr;
-			ui->customplot_brightfield->replot();
+			ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 		}
 	};
 	if (!show || polygon.empty()) {
@@ -6999,7 +7031,7 @@ void BrillouinAcquisition::updateRoiPolygonPreviewFor(const RoiTarget& target) {
 		yPos[(int)i] = polygonPix[i].y;
 	}
 	(*target.marker)->setData(xPos, yPos);
-	ui->customplot_brightfield->replot();
+	ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 	// Cheap (early-returns unless the background mask is actually on) and correct to call
 	// regardless of which target this was for - editing the background polygon directly needs
 	// this refreshed immediately (not just on the next update_AOI_preview(), which also calls it
