@@ -195,20 +195,6 @@ public slots:
 	// instead of relying on whatever a preset's table happens to say. No-op if this
 	// backend has no element named "RL Shutter".
 	void setRLShutterOpen(bool open);
-	// Same idea as setRLShutterOpen(), for the "Beam Block" device element (the excitation
-	// laser's own shutter, not a camera/exposure gate - see each backend's Beam Block
-	// implementation) - drives it directly through the same generic setElement() path the
-	// manual beampath button uses, using the same "Close"=1/"Open"=2 convention every
-	// backend that has this element shares. No-op if this backend has no element named
-	// "Beam Block" (e.g. ZeissMTB_Erlangen2, which has no such element wired up) - returns
-	// false in that case so a caller (e.g. Brillouin::acquireAndorFrame()'s dose protection)
-	// can fall back to setRLShutterOpen() instead.
-	bool setBeamBlockOpen(bool open);
-	// Side-effect-free check for the same element setBeamBlockOpen() looks for - lets a caller
-	// (e.g. Brillouin::acquire(), deciding whether to hold RL Shutter open for the whole run)
-	// know in advance whether setBeamBlockOpen() will actually do anything, without needing to
-	// call it just to probe.
-	bool hasBeamBlockElement() const;
 	void announcePosition();
 	void startAnnouncing();
 	void stopAnnouncing();
