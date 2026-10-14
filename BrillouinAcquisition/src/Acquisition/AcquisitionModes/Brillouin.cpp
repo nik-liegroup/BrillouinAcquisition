@@ -322,6 +322,9 @@ void Brillouin::waitForNextRepetition() {
 		}
 
 		m_acquisition->newRepetition(ACQUISITION_MODE::BRILLOUIN);
+		// newRepetition() above blocks until the storage thread has created the group, which
+		// leaves its key in repetitionCount (see H5BM::getRepetitionHandle()).
+		m_fileRepetition = m_acquisition->m_storage->getModeHandle(ACQUISITION_MODE::BRILLOUIN)->repetitionCount;
 		if (m_settings.saveOverviewBrightfieldPerZ) {
 			m_acquisition->newRepetition(ACQUISITION_MODE::FLUORESCENCE);
 		}
@@ -559,13 +562,6 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 		m_scanControl->setPreset(ScanPreset::SCAN_LASEROFF);
 		// Acquisition is aborting - don't leave the RL shutter forced open.
 		m_scanControl->setRLShutterOpen(false);
-		// Dose protection can leave the Beam Block open if the abort landed between
-		// acquireAndorFrame()'s per-exposure open and close (e.g. mid-frameCount loop) - nothing
-		// else in this class ever closes it again, so it must happen here too, not just at
-		// normal end-of-run (see runMeasurementPhase()'s matching teardown).
-		if (m_settings.useDoseProtection) {
-			m_scanControl->setBeamBlockOpen(false);
-		}
 		// Always back to m_startPosition ("wherever the stage physically was right before
 		// Start" - see acquire()), in both modes - the operator wants to end up back where they
 		// started measuring from, not at the grid's mathematical origin, unconditionally
@@ -623,7 +619,7 @@ void Brillouin::calibrate(std::unique_ptr <StorageWrapper>& storage) {
 		m_scanControl->setPreset(ScanPreset::SCAN_CALIBRATION);
 		// Calibration is part of the acquisition, same as the actual measurement - keep
 		// the RL shutter open for it too.
-		m_scanControl->setRLShutterOpen(true);
+		setRLShutterRestingState();
 	}
 	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
@@ -646,7 +642,7 @@ void Brillouin::calibrate(std::unique_ptr <StorageWrapper>& storage) {
 			// silently affecting every measurement after this one.
 			if (m_scanControl) {
 				m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
-				m_scanControl->setRLShutterOpen(true);
+				setRLShutterRestingState();
 			}
 			if (m_andor) {
 				m_andor->setCalibrationExposureTime(originalExposureTime);
@@ -738,7 +734,7 @@ void Brillouin::calibrate(std::unique_ptr <StorageWrapper>& storage) {
 	// revert optical elements to position for brightfield/Brillouin imaging
 	if (m_scanControl) {
 		m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
-		m_scanControl->setRLShutterOpen(true);
+		setRLShutterRestingState();
 	}
 
 	// reset exposure time
@@ -1148,7 +1144,7 @@ std::optional<double> Brillouin::measureBoundarySurfaceZ(
 		double sum = 0.0;
 		{
 			// RAII: see runMeasurementPhase()'s identical guard for why - an abort partway
-			// through this loop (f >= 1, after the beam block has already been opened by
+			// through this loop (f >= 1, after the RL shutter has already been opened by
 			// f == 0) previously returned without ever closing it.
 			struct ShutterCloseGuard {
 				Brillouin* self;
@@ -1405,7 +1401,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	double refSum = 0.0;
 	{
 		// RAII: see runMeasurementPhase()'s identical guard for why - an abort partway
-		// through this loop (i >= 1, after the beam block has already been opened by i == 0)
+		// through this loop (i >= 1, after the RL shutter has already been opened by i == 0)
 		// previously returned without ever closing it.
 		struct ShutterCloseGuard {
 			Brillouin* self;
@@ -1473,7 +1469,7 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		double sum = 0.0;
 		{
 			// RAII: see runMeasurementPhase()'s identical guard for why - an abort partway
-			// through this loop (f >= 1, after the beam block has already been opened by
+			// through this loop (f >= 1, after the RL shutter has already been opened by
 			// f == 0) previously returned without ever closing it.
 			struct ShutterCloseGuard {
 				Brillouin* self;
@@ -2466,8 +2462,8 @@ void enqueueOverviewBrightfieldImage(
 	const std::vector<std::byte>& image,
 	const POINT3& targetPosition,
 	const POINT3& stagePosition,
-	// The Brillouin repetition (Brillouin::m_currentRepetition) this image was captured as
-	// part of - see FLUOIMAGE::hasBrillouinRepetition's own comment. Every caller of this
+	// The Brillouin repetition (the key of its group in the file, Brillouin::m_fileRepetition)
+	// this image was captured as part of - see FLUOIMAGE::hasBrillouinRepetition's own comment. Every caller of this
 	// function is itself part of a Brillouin measurement (the per-z overview and per-point
 	// brightfield below), never a standalone Fluorescence-tab capture (that path builds its
 	// own FLUOIMAGE directly, see Fluorescence::__acquire()), so this is always known and
@@ -2664,7 +2660,7 @@ void Brillouin::captureBackgroundPoints(std::unique_ptr<StorageWrapper>& storage
 			auto images = std::vector<std::byte>((int64_t)m_settings.camera.roi.bytesPerFrame * m_settings.camera.frameCount);
 			{
 				// RAII: see runMeasurementPhase()'s identical guard for why - an abort partway
-				// through this loop (mm >= 1, after the beam block has already been opened by
+				// through this loop (mm >= 1, after the RL shutter has already been opened by
 				// mm == 0) previously returned without ever closing it.
 				struct ShutterCloseGuard {
 					Brillouin* self;
@@ -2750,10 +2746,10 @@ void Brillouin::captureOverviewBrightfield(
 
 	auto queuedImage = false;
 	if (brightfieldSettings.readout.dataType == "unsigned short") {
-		enqueueOverviewBrightfieldImage<unsigned short>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition);
+		enqueueOverviewBrightfieldImage<unsigned short>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_fileRepetition);
 		queuedImage = true;
 	} else if (brightfieldSettings.readout.dataType == "unsigned char") {
-		enqueueOverviewBrightfieldImage<unsigned char>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition);
+		enqueueOverviewBrightfieldImage<unsigned char>(storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_fileRepetition);
 		queuedImage = true;
 	}
 
@@ -2822,17 +2818,17 @@ void Brillouin::capturePerPointBrightfieldImage(
 		// per-z overview's comparatively few images).
 		if (brightfieldSettings.readout.dataType == "unsigned short") {
 			enqueueOverviewBrightfieldImage<unsigned short>(
-				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition, "Brightfield per-point", true);
+				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_fileRepetition, "Brightfield per-point", true);
 		} else if (brightfieldSettings.readout.dataType == "unsigned char") {
 			enqueueOverviewBrightfieldImage<unsigned char>(
-				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition, "Brightfield per-point", true);
+				storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_fileRepetition, "Brightfield per-point", true);
 		}
 	} else {
 		m_brightfieldCamera->stopAcquisition();
 	}
 
 	m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
-	m_scanControl->setRLShutterOpen(true);
+	setRLShutterRestingState();
 }
 
 // "During" per-point capture, part 1/2 (perPointBrightfieldDuringAcquisition == true): starts
@@ -2894,10 +2890,10 @@ void Brillouin::finishPerPointBrightfieldDuring(
 	// per-point captures opt into this.
 	if (brightfieldSettings.readout.dataType == "unsigned short") {
 		enqueueOverviewBrightfieldImage<unsigned short>(
-			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition, "Brightfield per-point", true);
+			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_fileRepetition, "Brightfield per-point", true);
 	} else if (brightfieldSettings.readout.dataType == "unsigned char") {
 		enqueueOverviewBrightfieldImage<unsigned char>(
-			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_currentRepetition, "Brightfield per-point", true);
+			storage, imageNumber, brightfieldSettings, image, targetPosition, stagePosition, m_fileRepetition, "Brightfield per-point", true);
 	}
 }
 
@@ -2941,17 +2937,12 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		);
 		// set optical elements for brightfield/Brillouin imaging
 		m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
-		// Force the RL shutter open for the whole acquisition, regardless of whatever manual
-		// state the user left it in beforehand - see ScanControl::setPreset()'s comment on why
-		// this isn't handled by the preset table itself. Skipped when dose protection is on and
-		// this backend has no "Beam Block" element: acquireAndorFrame() then falls back to
-		// driving RL Shutter itself, per-exposure - forcing it open here for the whole run would
-		// immediately undo that per-exposure gating. Its resting state instead starts "closed"
-		// just below, matching the Beam Block case.
-		const auto doseProtectViaRLShutter = m_settings.useDoseProtection && !m_scanControl->hasBeamBlockElement();
-		if (!doseProtectViaRLShutter) {
-			m_scanControl->setRLShutterOpen(true);
-		}
+		// Force the RL shutter to its resting state for the whole acquisition, regardless of
+		// whatever manual state the user left it in beforehand - see
+		// ScanControl::setPreset()'s comment on why this isn't handled by the preset table
+		// itself. Open normally; closed with dose protection on (acquireAndorFrame() then opens
+		// it only around each exposure).
+		setRLShutterRestingState();
 	} else {
 		m_abort = true;
 		return;
@@ -2967,17 +2958,6 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		// Enable measurement mode (so the AOI display is correct) - reuse the position just
 		// read above instead of letting this re-query hardware.
 		m_scanControl->enableMeasurementMode(true, m_startPosition);
-		// Dose protection's resting state is "closed" - acquireAndorFrame() is solely
-		// responsible for opening it, right around each actual exposure, for the rest of
-		// this acquisition. This one-time close only matters for whatever state the beam
-		// happened to be left in before "Start" (e.g. open from live preview) - after the
-		// first frame, it would already be closed anyway. Same fallback to RL Shutter as
-		// acquireAndorFrame() itself, on a backend with no Beam Block element.
-		if (m_settings.useDoseProtection) {
-			if (!m_scanControl->setBeamBlockOpen(false)) {
-				m_scanControl->setRLShutterOpen(false);
-			}
-		}
 	} else {
 		m_abort = true;
 		return;
@@ -3099,7 +3079,7 @@ void Brillouin::continueAfterSurfaceReview(bool fullGrid) {
 		m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
 		// Resuming actual measurement after the surface-review pause - shutter must be
 		// open again.
-		m_scanControl->setRLShutterOpen(true);
+		setRLShutterRestingState();
 	}
 	setAcquisitionStatus(ACQUISITION_STATUS::STARTED);
 	// See the matching try/catch in waitForNextRepetition() around its acquire() call.
@@ -3127,16 +3107,26 @@ void Brillouin::continueAfterSurfaceReview(bool fullGrid) {
 	finishRepetition();
 }
 
-// Grabs one Andor frame, with dose protection folded in: opens the beam block a short, fixed
-// margin before this call actually needs it (kDoseProtectionOpenMarginMs - a DAQ TTL line is
-// essentially instant, but a mechanical Beam Block on some backends may not be; tune this if
-// you find it's cutting exposures short or wastefully long on yours) and closes it again right
-// after - so the excitation laser is only ever on for the narrow window right around an actual
-// exposure, not for the whole acquisition. Deliberately NOT hooked into approachGridPosition()
-// or any other single call site - every m_andor->getImageForAcquisition() call in this class
-// (calibration, surface pre-scan, the main measurement loop) goes through this instead, so
-// "closed" is the default resting state everywhere else (a move, a per-point brightfield
-// capture, a live calibration switch, ...) without needing to special-case any of them.
+// Resting state of the RL Shutter (the laser's shutter) outside an exposure, for everything an
+// acquisition does after switching back to the Brillouin/calibration optics: open for the whole
+// run normally, closed with dose protection on (acquireAndorFrame() then opens it only around
+// each exposure).
+void Brillouin::setRLShutterRestingState() {
+	if (!m_scanControl) {
+		return;
+	}
+	m_scanControl->setRLShutterOpen(!m_settings.useDoseProtection);
+}
+
+// Grabs one Andor frame, with dose protection folded in: opens the RL Shutter (the laser's
+// shutter) a short, fixed margin before the exposure (kDoseProtectionOpenMarginMs - tune it if
+// you find it's cutting exposures short or wastefully long) and closes it again right after,
+// so the laser is only ever on for the narrow window right around an actual exposure, not for
+// the whole acquisition. Deliberately NOT hooked into approachGridPosition() or any other single
+// call site - every m_andor->getImageForAcquisition() call in this class (calibration, surface
+// pre-scan, the main measurement loop) goes through this instead, so "closed" is the default
+// resting state everywhere else (a move, a per-point brightfield capture, a live calibration
+// switch, ...) without needing to special-case any of them.
 //
 // openBeam/closeBeam let a caller grabbing several frames back-to-back at the same position
 // (frame averaging, camera.frameCount > 1, ...) open once before the first frame and close
@@ -3148,12 +3138,6 @@ void Brillouin::continueAfterSurfaceReview(bool fullGrid) {
 //
 // No-op wrapper (just calls getImageForAcquisition() directly, no margin added, openBeam/
 // closeBeam ignored) if dose protection is off.
-//
-// setBeamBlockOpen() itself is a no-op (returns false) on any backend with no "Beam Block"
-// element (e.g. ZeissMTB_Erlangen2) - falls back to setRLShutterOpen() there, so dose protection
-// still actually gates the beam per-exposure on that class of rig instead of doing nothing at
-// all. See Brillouin::acquire()'s own comment for the matching change that keeps this fallback's
-// closes from being immediately undone by the "hold RL Shutter open for the whole run" call.
 void Brillouin::acquireAndorFrame(std::byte* buffer, bool openBeam, bool closeBeam) {
 	if (!m_andor) {
 		return;
@@ -3161,12 +3145,8 @@ void Brillouin::acquireAndorFrame(std::byte* buffer, bool openBeam, bool closeBe
 	const auto doseProtect = m_settings.useDoseProtection && m_scanControl;
 	if (doseProtect && openBeam) {
 		constexpr auto kDoseProtectionOpenMarginMs = 20;
-		if (m_scanControl->setBeamBlockOpen(true)) {
-			std::this_thread::sleep_for(std::chrono::milliseconds(kDoseProtectionOpenMarginMs));
-		} else {
-			m_scanControl->setRLShutterOpen(true);
-			std::this_thread::sleep_for(std::chrono::milliseconds(kDoseProtectionOpenMarginMs));
-		}
+		m_scanControl->setRLShutterOpen(true);
+		std::this_thread::sleep_for(std::chrono::milliseconds(kDoseProtectionOpenMarginMs));
 	}
 	m_andor->getImageForAcquisition(buffer);
 	if (closeBeam) {
@@ -3178,16 +3158,14 @@ void Brillouin::closeDoseProtectionShutter() {
 	if (!(m_settings.useDoseProtection && m_scanControl)) {
 		return;
 	}
-	if (!m_scanControl->setBeamBlockOpen(false)) {
-		m_scanControl->setRLShutterOpen(false);
-	}
+	m_scanControl->setRLShutterOpen(false);
 }
 
 void Brillouin::approachGridPosition(const POINT3& position) {
 	if (!m_scanControl) {
 		return;
 	}
-	// Dose protection does NOT hook in here - closing the beam block only around a move would
+	// Dose protection does NOT hook in here - closing the RL shutter only around a move would
 	// protect against travel time but not every other non-integrating moment (between two
 	// frames at the same point, per-point brightfield capture, a live calibration switch, ...).
 	// See acquireAndorFrame() for the current approach: the beam is closed by default and only
@@ -3774,11 +3752,11 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 			// RAII: guarantees closeDoseProtectionShutter() runs on every exit from this
 			// nested block - normal completion, at the closing brace below (the same point the
 			// explicit call used to sit) - OR an early "m_abort = true; return;"/lost-camera
-			// return from either loop below, every one of which previously left the beam block
+			// return from either loop below, every one of which previously left the RL shutter
 			// open, since those returns skip past any code that would otherwise have closed
 			// it. Calling closeDoseProtectionShutter() when the shutter is already closed (the
 			// normal-completion case, where the last real acquireAndorFrame() call already
-			// closed it) is a harmless no-op - setBeamBlockOpen(false)/setRLShutterOpen(false)
+			// closed it) is a harmless no-op - setRLShutterOpen(false)
 			// on an already-closed shutter, not a hardware round-trip with side effects. Scoped
 			// tightly to this block (not the whole per-point iteration) so the shutter closes
 			// here, before per-point brightfield capture/HDF5 writing below - not after them.
@@ -3800,7 +3778,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				auto pointerPos = (int64_t)m_settings.camera.roi.bytesPerFrame * mm;
 
 				if (m_andor) {
-					// Back-to-back frames at the same point - open the beam block once before
+					// Back-to-back frames at the same point - open the RL shutter once before
 					// the first, close once after the last, not between every one (see
 					// acquireAndorFrame()'s own comment). If adaptive frame extension is
 					// enabled for this run, closing after the last "normal" frame is deferred -
@@ -3891,7 +3869,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				}
 				// Whichever frame ended up being the truly last one taken at this point (a
 				// normal frame if the metric already passed after the first attempt, or the
-				// final extra frame otherwise) - shutterCloseGuard above closes the beam block
+				// final extra frame otherwise) - shutterCloseGuard above closes the RL shutter
 				// now, exactly once, whether this loop ran zero or more iterations.
 			}
 		}
@@ -4034,7 +4012,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 				}
 			}
 			m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
-			m_scanControl->setRLShutterOpen(true);
+			setRLShutterRestingState();
 			if (m_scanControl) {
 				// The overview brightfield capture moves the stage away from the grid point,
 				// so approach it again from a consistent direction to avoid hysteresis error.
@@ -4094,11 +4072,6 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		m_scanControl->setPreset(ScanPreset::SCAN_LASEROFF);
 		// Acquisition has finished - don't leave the RL shutter forced open.
 		m_scanControl->setRLShutterOpen(false);
-		// See abortMode()'s identical call for why this is needed alongside the RL Shutter
-		// close above, not covered by it.
-		if (m_settings.useDoseProtection) {
-			m_scanControl->setBeamBlockOpen(false);
-		}
 
 		// Always back to m_startPosition, both modes - see abortMode()'s identical branch for
 		// why (by request: return to where the operator started measuring from, not the grid's

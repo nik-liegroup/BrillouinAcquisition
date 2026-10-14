@@ -281,16 +281,13 @@ struct BRILLOUIN_SETTINGS {
 		// approachGridPosition(), which is what actually reads this flag; there is no
 		// separate "surface pre-scan always compensates" carve-out any more.
 		bool useGridHysteresisCompensation{ true };
-		// Closed is the default resting state for the scan controller's "Beam Block" element
-		// (the excitation laser's own shutter - see ScanControl::setBeamBlockOpen()) for the
-		// whole acquisition; it is only opened for a short, fixed margin immediately around
-		// each actual camera exposure (see Brillouin::acquireAndorFrame(), the one place
-		// every m_andor frame grab in this class goes through) and closed again right after -
-		// not just during stage travel between points, but between the two frames of a
-		// single point too, during a per-point brightfield capture, during a live
-		// calibration switch, and everywhere else nothing is actually integrating. No-op,
-		// and adds no delay, if the active scan controller has no Beam Block element
-		// (setBeamBlockOpen() itself checks this).
+		// With this on, the RL Shutter (the laser's shutter) is closed by default for the whole
+		// acquisition and only opened for a short, fixed margin immediately around each actual
+		// camera exposure (see Brillouin::acquireAndorFrame(), the one place every m_andor frame
+		// grab in this class goes through) and closed again right after - not just during stage
+		// travel between points, but between the two frames of a single point too, during a
+		// per-point brightfield capture, during a live calibration switch, and everywhere else
+		// nothing is actually integrating.
 		bool useDoseProtection{ false };
 
 		// Adaptive frame extension: independent of, and unaffected by, surfaceScanningGroupBox/
@@ -699,11 +696,14 @@ private:
 	// shutter between them).
 	void acquireAndorFrame(std::byte* buffer, bool openBeam = true, bool closeBeam = true);
 	// Factored out of acquireAndorFrame()'s own closeBeam handling so runMeasurementPhase()'s
-	// adaptive frame extension can close the beam block explicitly, exactly once, after
+	// adaptive frame extension can close the RL shutter explicitly, exactly once, after
 	// whichever frame ends up being the truly last one taken at a point (a normal frame if
 	// extension didn't trigger or is disabled, or the final extra frame otherwise) - without
-	// duplicating the useDoseProtection/setBeamBlockOpen/setRLShutterOpen fallback logic.
+	// duplicating the useDoseProtection/setRLShutterOpen logic.
 	void closeDoseProtectionShutter();
+	// Resting state of the RL Shutter outside an exposure: open for the whole run, or closed
+	// with dose protection on. Call after any preset switch back to the Brillouin optics.
+	void setRLShutterRestingState();
 	// Moves to a grid point during runMeasurementPhase(), honoring
 	// useGridHysteresisCompensation (compensated approach vs. a direct move).
 	void approachGridPosition(const POINT3& position);
@@ -792,6 +792,12 @@ private:
 	QTimer* m_repetitionTimer{ nullptr };
 	QElapsedTimer m_startOfLastRepetition;
 	int m_currentRepetition{ 0 };
+	// The key of the repetition group the current repetition is written to in the file
+	// ('Brillouin/<key>'). m_currentRepetition restarts at 0 on every Start, while the key keeps
+	// counting across Starts that write to the same file (aborted/restarted measurements), so the
+	// two differ from the second Start on. Images record this one as brillouin_repetition_index,
+	// which is what readers (bmlab) match against the repetition group names.
+	int m_fileRepetition{ 0 };
 
 	int nrCalibrations{ 1 };
 

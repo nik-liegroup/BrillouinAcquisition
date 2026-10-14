@@ -2492,7 +2492,7 @@ QTabBar::tab:!selected {
                          <item row="6" column="0" colspan="2">
                           <widget class="QCheckBox" name="doseProtectionCheckbox">
                            <property name="toolTip">
-                            <string>Keep the beam block closed except briefly around each camera exposure, to limit sample light dose. Has no effect if this scan controller has no Beam Block element.</string>
+                            <string>Keep the RL Shutter (the laser shutter) closed except briefly around each camera exposure, to limit sample light dose.</string>
                            </property>
                            <property name="text">
                             <string>Dose protection</string>
