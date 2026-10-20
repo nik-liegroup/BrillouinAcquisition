@@ -514,6 +514,30 @@ bool Brillouin::captureObjectiveOverview(
 		log->skippedReason = "no tiles";
 		return true;
 	}
+	// A target position puts the LASER on that point (the stage goes to target - scanner), and the laser is wherever the marker was set in the
+	// image - not in the middle of it; with the calibration's origin at pixel (0,0) a pixel p shows the stage position
+	// (target - scanner + A * (p - origin) - FOV offset). To have the planned point in the middle of the image, the target is moved by
+	// scanner - A * (centre - origin).
+	POINT2 centreShift{ 0.0, 0.0 };
+	if (m_brightfieldCamera) {
+		const auto roi = m_brightfieldCamera->getSettings().roi;
+		const auto scanner = m_scanControl->getPosition(PositionType::SCANNER);
+		const auto dx = 0.5 * (double)roi.width_binned - scale.originPix.x;
+		const auto dy = 0.5 * (double)roi.height_binned - scale.originPix.y;
+		centreShift = POINT2{
+			scanner.x - (dx * scale.pixToMicrometerX.x + dy * scale.pixToMicrometerY.x),
+			scanner.y - (dx * scale.pixToMicrometerX.y + dy * scale.pixToMicrometerY.y)
+		};
+		if (!std::isfinite(centreShift.x) || !std::isfinite(centreShift.y)) {
+			centreShift = POINT2{ 0.0, 0.0 };
+		}
+		for (auto& stack : tiles) {
+			for (auto& target : stack) {
+				target.x += centreShift.x;
+				target.y += centreShift.y;
+			}
+		}
+	}
 	log->tiles = (int)tiles.size();
 	log->stackDepth = (int)tiles.front().size();
 	log->fovCompensationUm = fovCompensation;
@@ -610,6 +634,7 @@ bool Brillouin::captureObjectiveOverview(
 				{ "overview_seconds_since_start", steadySeconds() - m_seriesStartSeconds },
 				{ "grid_offset_x_um", offset.x }, { "grid_offset_y_um", offset.y },
 				{ "fov_compensation_x_um", fovCompensation.x }, { "fov_compensation_y_um", fovCompensation.y },
+				{ "image_centre_shift_x_um", centreShift.x }, { "image_centre_shift_y_um", centreShift.y },
 				{ "focus_delta_um", focusDelta }, { "objective_magnification", calibration.magnification },
 				{ "stage_position_raw_x_um", stageRaw.x }, { "stage_position_raw_y_um", stageRaw.y }, { "stage_position_raw_z_um", stageRaw.z },
 				{ "scale_micrometer_to_pix_x_col", scale.micrometerToPixX.x }, { "scale_micrometer_to_pix_x_row", scale.micrometerToPixX.y },
@@ -643,7 +668,7 @@ bool Brillouin::captureObjectiveOverview(
 					tile.positionUm = POINT2{ stageRaw.x, stageRaw.y };
 						// the planned position of the tile without the drift offset and (other objective) FOV compensation: the same for
 						// the same tile of every overview, however far the grid has moved since
-						tile.anchorUm = POINT2{ target.x - offset.x - fovCompensation.x, target.y - offset.y - fovCompensation.y };
+						tile.anchorUm = POINT2{ target.x - offset.x - fovCompensation.x - centreShift.x, target.y - offset.y - fovCompensation.y - centreShift.y };
 					tile.image = registration::prepare(pixels, width, height, registration::automaticFactor(width, height));
 					if (tile.image.isValid()) {
 						driftTiles->push_back(std::move(tile));
