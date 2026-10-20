@@ -922,6 +922,18 @@ private:
 	void setStorageState(const std::string& state);
 	bool m_resuming{ false };
 	bool m_carryDriftOnStart{ false };
+	// What the running repetition uses of the drift correction, the overviews and the surface following. `settings` (what the GUI edits) is the
+	// same object as m_settings, so a change made while a repetition runs - typically to prepare the next one - would reach it at once: it is
+	// taken when the overview series of the repetition begins and used from then on (m_seriesActive), not what the GUI holds now.
+	bool m_seriesActive{ false };
+	bool m_runDriftCorrection{ false };
+	int m_runDriftObjectiveSlot{ -1 };
+	double m_runRetractUm{ 0.0 };
+	bool m_runUseSurfaceFollow{ false };
+	bool driftCorrectionActive() const { return m_seriesActive ? m_runDriftCorrection : m_settings.driftCorrectionEnabled; }
+	int driftObjectiveSlotActive() const { return m_seriesActive ? m_runDriftObjectiveSlot : m_settings.driftObjectiveSlot; }
+	double overviewRetractUmActive() const { return m_seriesActive ? m_runRetractUm : m_settings.overviewObjectiveRetractUm; }
+	bool useSurfaceFollowActive() const { return m_seriesActive ? m_runUseSurfaceFollow : m_settings.useSurfaceFollow; }
 	// true while a measurement is in its measuring phase: what is written to the file as its state, see setStorageState()
 	bool m_measuringState{ false };
 	// true from the surface scan on until the measuring phase starts: the surface scan writes what a continue needs (checkpoint per column)

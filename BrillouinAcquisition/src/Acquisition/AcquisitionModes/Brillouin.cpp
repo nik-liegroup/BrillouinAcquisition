@@ -404,6 +404,7 @@ void Brillouin::waitForNextRepetition() {
 }
 
 void Brillouin::finishRepetition() {
+	m_seriesActive = false;
 	m_currentRepetition++;
 	// Check if this was the last repetition
 	if (m_currentRepetition < m_settings.repetitions.count) {
@@ -595,6 +596,7 @@ std::set<std::pair<int, int>> Brillouin::getSurfaceInterpolatedXYIndices() const
  */
 
 void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
+	m_seriesActive = false;
 	m_repetitionTimer->stop();
 	m_startOfLastRepetition.invalidate();
 	if (m_andor) {
@@ -2214,7 +2216,7 @@ void Brillouin::applySurfaceFollowPlan() {
 double Brillouin::overviewFlatZAbs(int zIndex, const std::vector<double>& directionsZ) const {
 	const auto clampedZIndex = std::clamp(zIndex, 0, (int)directionsZ.size() - 1);
 	// with the surface scan: starting at the median z of the found surface, the planes spaced as the grid has them
-	if (m_settings.useSurfaceFollow && m_surfaceZRangeValid) {
+	if (useSurfaceFollowActive() && m_surfaceZRangeValid) {
 		return m_surfaceZMedianAbs + (directionsZ[clampedZIndex] - directionsZ.front());
 	}
 	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
@@ -2263,7 +2265,7 @@ std::vector<double> Brillouin::overviewStackZAbsFor(bool fullStackActive, int zI
 	}
 
 	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
-	if (m_settings.useSurfaceFollow && m_surfaceZRangeValid) {
+	if (useSurfaceFollowActive() && m_surfaceZRangeValid) {
 		return simplemath::linspace(
 			m_surfaceZMedianAbs,
 			m_surfaceZMedianAbs + (m_settings.zMax - m_settings.zMin),
@@ -3130,6 +3132,7 @@ std::string Brillouin::getRepetitionFilename() {
  */
 
 void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
+	m_seriesActive = false;
 	setAcquisitionStatus(ACQUISITION_STATUS::STARTED);
 	// prepare camera for image acquisition
 
@@ -3418,7 +3421,7 @@ void Brillouin::approachGridPosition(const POINT3& positionPlanned, bool applyGr
 	}
 	// The drift measured from the overviews moves every target with the sample (0 unless drift correction is on).
 	auto position = positionPlanned;
-	if (applyGridOffset && m_settings.driftCorrectionEnabled) {
+	if (applyGridOffset && driftCorrectionActive()) {
 		refreshGridOffset();
 		position.x += m_gridOffset.x;
 		position.y += m_gridOffset.y;

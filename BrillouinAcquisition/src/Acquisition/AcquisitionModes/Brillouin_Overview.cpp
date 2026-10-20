@@ -284,6 +284,11 @@ bool Brillouin::canCarryDriftToNextStart(bool* sameStart) {
 }
 
 void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
+	m_runDriftCorrection = m_settings.driftCorrectionEnabled;
+	m_runDriftObjectiveSlot = m_settings.driftObjectiveSlot;
+	m_runRetractUm = m_settings.overviewObjectiveRetractUm;
+	m_runUseSurfaceFollow = m_settings.useSurfaceFollow;
+	m_seriesActive = true;
 	m_overviewPlans = planOverviewObjectives();
 	m_overviewEventCount = 0;
 	m_surfaceRescanCount = 0;
@@ -411,7 +416,7 @@ bool Brillouin::liveOverviewCamera(int slot, int* exposureMs, double* gain) cons
 }
 
 void Brillouin::refreshGridOffset() {
-	m_gridOffset = m_settings.driftCorrectionEnabled ? m_driftController.offsetAt(steadySeconds()) : POINT2{ 0.0, 0.0 };
+	m_gridOffset = driftCorrectionActive() ? m_driftController.offsetAt(steadySeconds()) : POINT2{ 0.0, 0.0 };
 }
 
 bool Brillouin::grabBrightfieldFrame(int exposureMs, double gain, std::vector<std::byte>* image, CAMERA_SETTINGS* usedSettings) {
@@ -445,7 +450,7 @@ void Brillouin::returnToMeasurementObjective(int measurementSlot, const POINT3& 
 	closeDoseProtectionShutter();
 	if (m_scanControl->getActiveObjectiveSlot() != measurementSlot) {
 		// away from the sample before the nosepiece turns, as on the way there
-		m_scanControl->movePosition(POINT3{ 0.0, 0.0, m_settings.overviewObjectiveRetractUm });
+		m_scanControl->movePosition(POINT3{ 0.0, 0.0, overviewRetractUmActive() });
 		std::string error;
 		if (!m_scanControl->switchObjectiveSlot(measurementSlot, &error)) {
 			qCritical(logCritical()) << "Brillouin: could not turn back to the measuring objective:" << error.c_str();
@@ -563,7 +568,7 @@ bool Brillouin::captureObjectiveOverview(
 	log->stackDepth = (int)tiles.front().size();
 	log->fovCompensationUm = fovCompensation;
 	log->focusDeltaUm = focusDelta;
-	log->retractUm = plan.isMeasurementObjective ? 0.0 : m_settings.overviewObjectiveRetractUm;
+	log->retractUm = plan.isMeasurementObjective ? 0.0 : overviewRetractUmActive();
 
 	// The cycle with another objective. The guard turns the nosepiece back to the measuring objective on every way out (also an abort).
 	struct ObjectiveCycleGuard {
@@ -584,7 +589,7 @@ bool Brillouin::captureObjectiveOverview(
 	if (!plan.isMeasurementObjective) {
 		closeDoseProtectionShutter();
 		const auto t0 = steadySeconds();
-		m_scanControl->movePosition(POINT3{ 0.0, 0.0, m_settings.overviewObjectiveRetractUm });
+		m_scanControl->movePosition(POINT3{ 0.0, 0.0, overviewRetractUmActive() });
 		std::string error;
 		if (!m_scanControl->switchObjectiveSlot(plan.slot, &error)) {
 			qCritical(logCritical()) << "Brillouin: could not turn to objective" << plan.slot << ":" << error.c_str();
@@ -787,7 +792,7 @@ bool Brillouin::runOverviewEvent(
 	auto objectiveOrder = 0;
 	for (const auto& plan : m_overviewPlans) {
 		OverviewCaptureLog captureLog;
-		const auto isDriftObjective = m_settings.driftCorrectionEnabled && plan.slot == m_settings.driftObjectiveSlot;
+		const auto isDriftObjective = driftCorrectionActive() && plan.slot == driftObjectiveSlotActive();
 		std::vector<drift::TileFrame> tiles;
 		const auto ok = captureObjectiveOverview(
 			storage, plan, moment, directionsZ, eventIndex, objectiveOrder, pointIndex, isDriftObjective ? &tiles : nullptr, &captureLog);
@@ -804,7 +809,7 @@ bool Brillouin::runOverviewEvent(
 	m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
 	setRLShutterRestingState();
 
-	if (m_settings.driftCorrectionEnabled) {
+	if (driftCorrectionActive()) {
 		if (!driftTiles.empty()) {
 			processDriftOverview(driftTiles, driftSlot, eventSeconds, &driftLog);
 		} else {
@@ -1063,7 +1068,7 @@ void Brillouin::writePointGridOffsets(std::unique_ptr<StorageWrapper>& storage) 
 }
 
 void Brillouin::repeatSurfaceScan(std::unique_ptr<StorageWrapper>& storage, gsl::index pointIndex, const std::vector<double>& directionsZ) {
-	if (!m_scanControl || !m_settings.useSurfaceFollow || m_abort || directionsZ.empty()) {
+	if (!m_scanControl || !useSurfaceFollowActive() || m_abort || directionsZ.empty()) {
 		return;
 	}
 	const auto t0 = steadySeconds();

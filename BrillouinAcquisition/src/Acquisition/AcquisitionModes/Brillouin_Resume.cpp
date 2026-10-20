@@ -83,6 +83,7 @@ void Brillouin::writeSurfaceCheckpointColumn(gsl::index xi, gsl::index yi, bool 
 }
 
 void Brillouin::continueRepetition() {
+	m_seriesActive = false;
 	auto* storagePtr = m_acquisition ? m_acquisition->m_storage.get() : nullptr;
 	if (!storagePtr) {
 		return;

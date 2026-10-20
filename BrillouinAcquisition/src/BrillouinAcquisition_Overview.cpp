@@ -614,7 +614,14 @@ void BrillouinAcquisition::updateOverviewTab() {
 		}
 		const auto driftPossible = overviewPossible && !choices.empty();
 		if (!driftPossible && settings.driftCorrectionEnabled) {
-			settings.driftCorrectionEnabled = false;
+			// never while a measurement runs (it works with what it started with); and always said, so a switch that happens by itself is seen
+			if (m_enabledModes == ACQUISITION_MODE::NONE) {
+				qWarning(logWarning()) << "Overview tab: drift correction switched off - no objective takes overviews (overview possible:"
+					<< overviewPossible << ", choices:" << (int)choices.size() << ").";
+				settings.driftCorrectionEnabled = false;
+			} else {
+				qWarning(logWarning()) << "Overview tab: no objective takes overviews at the moment, drift correction stays on while the measurement runs.";
+			}
 		}
 		m_driftEnabledCheckbox->setChecked(settings.driftCorrectionEnabled);
 		m_driftEnabledCheckbox->setEnabled(driftPossible);
