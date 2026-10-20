@@ -517,16 +517,20 @@ bool Brillouin::captureObjectiveOverview(
 	// A target position puts the LASER on that point (the stage goes to target - scanner), and the laser is wherever the marker was set in the
 	// image - not in the middle of it; with the calibration's origin at pixel (0,0) a pixel p shows the stage position
 	// (target - scanner + A * (p - origin) - FOV offset). To have the planned point in the middle of the image, the target is moved by
-	// scanner - A * (centre - origin).
+	// scanner - A * (centre - origin) + the FOV offset of the objective in the beam. The grid targets carry no FOV offset (it is only added when
+	// a target is projected into the image), so the offset of the measuring objective is added here and, for another objective, the
+	// difference to it is already in fovCompensation: together the absolute offset of the objective that takes the image.
 	POINT2 centreShift{ 0.0, 0.0 };
 	if (m_brightfieldCamera) {
 		const auto roi = m_brightfieldCamera->getSettings().roi;
 		const auto scanner = m_scanControl->getPosition(PositionType::SCANNER);
+		const auto homeCalibration = m_scanControl->getObjectiveCalibration(m_measurementObjectiveSlot);
+		const auto fovHome = homeCalibration.isReferenceObjective || !homeCalibration.hasFovOffset ? POINT2{ 0.0, 0.0 } : homeCalibration.fovOffsetUm;
 		const auto dx = 0.5 * (double)roi.width_binned - scale.originPix.x;
 		const auto dy = 0.5 * (double)roi.height_binned - scale.originPix.y;
 		centreShift = POINT2{
-			scanner.x - (dx * scale.pixToMicrometerX.x + dy * scale.pixToMicrometerY.x),
-			scanner.y - (dx * scale.pixToMicrometerX.y + dy * scale.pixToMicrometerY.y)
+			scanner.x - (dx * scale.pixToMicrometerX.x + dy * scale.pixToMicrometerY.x) + fovHome.x,
+			scanner.y - (dx * scale.pixToMicrometerX.y + dy * scale.pixToMicrometerY.y) + fovHome.y
 		};
 		if (!std::isfinite(centreShift.x) || !std::isfinite(centreShift.y)) {
 			centreShift = POINT2{ 0.0, 0.0 };
