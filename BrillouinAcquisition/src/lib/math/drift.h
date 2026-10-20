@@ -80,14 +80,13 @@ namespace drift {
 	// maxTileDistanceUm.
 	StepMeasurement measureStep(
 		const std::vector<TileFrame>& reference, const std::vector<TileFrame>& moved, const StageMap& map,
-		double minNcc = 0.3, double maxShiftUm = 250.0, double maxTileDistanceUm = 60.0, double outlierUm = 3.0
+		double minNcc = 0.6, double maxShiftUm = 250.0, double maxTileDistanceUm = 60.0, double outlierUm = 3.0
 	);
 
 	struct DriftSettings {
 		bool enabled{ false };
-		double minNcc{ 0.3 };					// lowest mean correlation of an overview step that is applied
+		double minNcc{ 0.6 };					// lowest mean correlation of an overview step that is applied
 		double maxStepUm{ 150.0 };				// [um] larger steps are not believed
-		double maxSpeedUmPerMin{ 30.0 };		// [um/min] faster drift than this is not believed
 		bool extrapolate{ false };				// continue with the last measured drift speed until the next overview
 	};
 
@@ -96,7 +95,7 @@ namespace drift {
 		APPLIED = 1,
 		REJECTED_NO_MATCH = 2,			// no tile could be registered
 		REJECTED_LOW_CONFIDENCE = 3,	// correlation below the limit
-		REJECTED_IMPLAUSIBLE = 4		// step larger or faster than the limits
+		REJECTED_IMPLAUSIBLE = 4		// step larger than the limit
 	};
 
 	struct DriftUpdate {

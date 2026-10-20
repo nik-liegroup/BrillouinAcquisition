@@ -172,9 +172,7 @@ namespace drift {
 			return update;
 		}
 		const auto stepLength = std::hypot(measurement.driftUm.x, measurement.driftUm.y);
-		// speed is only meaningful over a reasonable interval; two overviews seconds apart say nothing about the drift speed
-		const auto tooFast = seconds > 10.0 && stepLength / (seconds / 60.0) > m_settings.maxSpeedUmPerMin;
-		if (!std::isfinite(stepLength) || stepLength > m_settings.maxStepUm || tooFast) {
+		if (!std::isfinite(stepLength) || stepLength > m_settings.maxStepUm) {
 			update.decision = DriftDecision::REJECTED_IMPLAUSIBLE;
 			return update;
 		}

@@ -156,7 +156,6 @@ struct BRILLOUIN_SETTINGS {
 			driftObjectiveSlot = settings.driftObjectiveSlot;
 			driftMinNcc = settings.driftMinNcc;
 			driftMaxStepUm = settings.driftMaxStepUm;
-			driftMaxSpeedUmPerMin = settings.driftMaxSpeedUmPerMin;
 			driftExtrapolate = settings.driftExtrapolate;
 			surfaceRescan = settings.surfaceRescan;
 			livePreviews = settings.livePreviews;
@@ -294,12 +293,11 @@ struct BRILLOUIN_SETTINGS {
 		// Drift correction: the overviews of the objective in driftObjectiveSlot (one of the objectives that take overviews) are
 		// registered against the previous accepted overview, and the grid, the overviews and everything else that targets the sample
 		// follow it by the measured drift (x and y only; the centre slice of a z stack is used). A step that is not believed (correlation
-		// below driftMinNcc, larger than driftMaxStepUm, faster than driftMaxSpeedUmPerMin) leaves the positions where they are.
+		// below driftMinNcc, larger than driftMaxStepUm) leaves the positions where they are.
 		bool driftCorrectionEnabled{ false };
 		int driftObjectiveSlot{ -1 };
-		double driftMinNcc{ 0.3 };
+		double driftMinNcc{ 0.6 };
 		double driftMaxStepUm{ 150.0 };
-		double driftMaxSpeedUmPerMin{ 30.0 };
 		// continue with the last measured drift speed between two overviews
 		bool driftExtrapolate{ false };
 		// Whether the surface scan is repeated during the measurement (surface follow must be on): with every overview, or after every

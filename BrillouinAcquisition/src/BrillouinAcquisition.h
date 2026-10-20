@@ -504,7 +504,6 @@ private:
 	QComboBox* m_driftObjectiveCombo{ nullptr };
 	QDoubleSpinBox* m_driftMinNccSpinBox{ nullptr };
 	QDoubleSpinBox* m_driftMaxStepSpinBox{ nullptr };
-	QDoubleSpinBox* m_driftMaxSpeedSpinBox{ nullptr };
 	QCheckBox* m_driftExtrapolateCheckbox{ nullptr };
 	QLabel* m_driftStatusLabel{ nullptr };
 	QCheckBox* m_overviewPerPointCheckbox{ nullptr };

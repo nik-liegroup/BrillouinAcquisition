@@ -194,7 +194,6 @@ namespace resume {
 	FIELD(driftObjectiveSlot);
 	FIELD(driftMinNcc);
 	FIELD(driftMaxStepUm);
-	FIELD(driftMaxSpeedUmPerMin);
 	FIELD(driftExtrapolate);
 	FIELD(surfaceRescan);
 	FIELD(capturePerPointBrightfield);

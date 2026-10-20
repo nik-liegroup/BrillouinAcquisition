@@ -223,16 +223,9 @@ void BrillouinAcquisition::setupOverviewTab() {
 	m_driftMaxStepSpinBox->setDecimals(0);
 	m_driftMaxStepSpinBox->setToolTip("A shift larger than this between two overviews is not believed (a wrong match, not drift).");
 	advancedGrid->addWidget(m_driftMaxStepSpinBox, 1, 1);
-	advancedGrid->addWidget(new QLabel("Max. speed", driftAdvanced), 2, 0);
-	m_driftMaxSpeedSpinBox = new QDoubleSpinBox(driftAdvanced);
-	m_driftMaxSpeedSpinBox->setSuffix(" µm/min");
-	m_driftMaxSpeedSpinBox->setRange(1.0, 1000.0);
-	m_driftMaxSpeedSpinBox->setDecimals(0);
-	m_driftMaxSpeedSpinBox->setToolTip("A shift that would mean drifting faster than this (shift divided by the time since the last accepted overview) is not believed.");
-	advancedGrid->addWidget(m_driftMaxSpeedSpinBox, 2, 1);
-	m_driftExtrapolateCheckbox = new QCheckBox("Keep last drift speed", driftAdvanced);
-	m_driftExtrapolateCheckbox->setToolTip("Between two overviews the grid keeps moving at the speed of the last accepted step (limited to twice the interval).");
-	advancedGrid->addWidget(m_driftExtrapolateCheckbox, 3, 0, 1, 2);
+	m_driftExtrapolateCheckbox = new QCheckBox("Extrapolate drift between overviews", driftAdvanced);
+	m_driftExtrapolateCheckbox->setToolTip("Between two overviews the grid keeps moving at the drift speed of the last accepted step (extrapolated for at most twice that interval). Off: the last measured offset is used unchanged until the next overview.");
+	advancedGrid->addWidget(m_driftExtrapolateCheckbox, 2, 0, 1, 2);
 	m_driftStatusLabel = new QLabel(driftGroup);
 	m_driftStatusLabel->setWordWrap(true);
 	driftGrid->addWidget(m_driftStatusLabel, 4, 0, 1, 2);
@@ -436,11 +429,6 @@ void BrillouinAcquisition::setupOverviewTab() {
 	connect(m_driftMaxStepSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
 		if (!m_updatingOverviewTab) {
 			m_Brillouin->settings.driftMaxStepUm = value;
-		}
-	});
-	connect(m_driftMaxSpeedSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-		if (!m_updatingOverviewTab) {
-			m_Brillouin->settings.driftMaxSpeedUmPerMin = value;
 		}
 	});
 	connect(m_livePreviewsCheckbox, &QCheckBox::toggled, this, [this](bool checked) {
@@ -667,9 +655,8 @@ void BrillouinAcquisition::updateOverviewTab() {
 		m_driftObjectiveCombo->setEnabled(driftPossible && settings.driftCorrectionEnabled);
 		m_driftMinNccSpinBox->setValue(settings.driftMinNcc);
 		m_driftMaxStepSpinBox->setValue(settings.driftMaxStepUm);
-		m_driftMaxSpeedSpinBox->setValue(settings.driftMaxSpeedUmPerMin);
 		m_driftExtrapolateCheckbox->setChecked(settings.driftExtrapolate);
-		for (QWidget* widget : std::initializer_list<QWidget*>{ m_driftMinNccSpinBox, m_driftMaxStepSpinBox, m_driftMaxSpeedSpinBox, m_driftExtrapolateCheckbox }) {
+		for (QWidget* widget : std::initializer_list<QWidget*>{ m_driftMinNccSpinBox, m_driftMaxStepSpinBox, m_driftExtrapolateCheckbox }) {
 			widget->setEnabled(driftPossible && settings.driftCorrectionEnabled);
 		}
 		m_driftStatusLabel->setText(choices.empty()
@@ -787,7 +774,6 @@ void BrillouinAcquisition::writeOverviewSettings(QSettings& settings) {
 	settings.setValue("brillouin-drift-objective-slot", s.driftObjectiveSlot);
 	settings.setValue("brillouin-drift-min-ncc", s.driftMinNcc);
 	settings.setValue("brillouin-drift-max-step-um", s.driftMaxStepUm);
-	settings.setValue("brillouin-drift-max-speed-um-per-min", s.driftMaxSpeedUmPerMin);
 	settings.setValue("brillouin-drift-extrapolate", s.driftExtrapolate);
 	settings.setValue("brillouin-surface-rescan", (int)s.surfaceRescan);
 	settings.setValue("brillouin-live-previews", s.livePreviews);
@@ -821,7 +807,6 @@ void BrillouinAcquisition::readOverviewSettings(QSettings& settings) {
 	s.driftObjectiveSlot = settings.value("brillouin-drift-objective-slot", s.driftObjectiveSlot).toInt();
 	s.driftMinNcc = settings.value("brillouin-drift-min-ncc", s.driftMinNcc).toDouble();
 	s.driftMaxStepUm = settings.value("brillouin-drift-max-step-um", s.driftMaxStepUm).toDouble();
-	s.driftMaxSpeedUmPerMin = settings.value("brillouin-drift-max-speed-um-per-min", s.driftMaxSpeedUmPerMin).toDouble();
 	s.driftExtrapolate = settings.value("brillouin-drift-extrapolate", s.driftExtrapolate).toBool();
 	s.surfaceRescan = (SURFACE_RESCAN)std::clamp(settings.value("brillouin-surface-rescan", (int)s.surfaceRescan).toInt(), 0, 2);
 	s.livePreviews = settings.value("brillouin-live-previews", s.livePreviews).toBool();

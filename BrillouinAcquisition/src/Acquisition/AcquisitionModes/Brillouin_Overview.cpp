@@ -283,7 +283,6 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	driftSettings.enabled = m_settings.driftCorrectionEnabled;
 	driftSettings.minNcc = m_settings.driftMinNcc;
 	driftSettings.maxStepUm = m_settings.driftMaxStepUm;
-	driftSettings.maxSpeedUmPerMin = m_settings.driftMaxSpeedUmPerMin;
 	driftSettings.extrapolate = m_settings.driftExtrapolate;
 	m_driftController.setSettings(driftSettings);
 
@@ -335,7 +334,6 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	scalar("drift-objective-slot-used", (double)m_settings.driftObjectiveSlot);
 	scalar("drift-min-ncc-used", m_settings.driftMinNcc);
 	scalar("drift-max-step-um-used", m_settings.driftMaxStepUm);
-	scalar("drift-max-speed-um-per-min-used", m_settings.driftMaxSpeedUmPerMin);
 	scalar("drift-extrapolate-used", m_settings.driftExtrapolate ? 1.0 : 0.0);
 	scalar("drift-carried-over-x-um", m_gridOffset.x);
 	scalar("drift-carried-over-y-um", m_gridOffset.y);
