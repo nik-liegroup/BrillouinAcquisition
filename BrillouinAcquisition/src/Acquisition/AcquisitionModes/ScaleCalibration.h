@@ -378,6 +378,16 @@ private:
 	int m_fovOffsetTargetSlot{ -1 };
 	std::vector<POINT2> m_fovOffsetSamplesUm;
 
+	// Focus offset (z of the target objective's focus minus the reference objective's), accumulated over the cycles of an
+	// automated run in step with m_fovOffsetSamplesUm: m_cycleReferenceFocusZ is the z at the end of the operator's refocus at
+	// the reference objective in the current cycle, the samples are the per-cycle differences to the target's refocus z.
+	std::vector<double> m_focusOffsetSamplesUm;
+	double m_cycleReferenceFocusZ{ 0.0 };
+
+	// Adds the focus-offset sample of the current cycle (call after the target refocus), recomputes mean and sigma, composes
+	// through the reference objective's stored focus offset and writes the result into m_scaleCalibration.
+	void recordFocusOffsetSample();
+
 	// ObjectiveCalibrationData IS-A ScaleCalibrationData, so every existing use of
 	// m_scaleCalibration.<scale calibration field> is unaffected by this - only the objective-
 	// identity/FOV-offset fields declared on top of it are new.

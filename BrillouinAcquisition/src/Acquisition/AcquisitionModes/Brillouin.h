@@ -5,7 +5,11 @@
 #include "../../Devices/Cameras/Camera.h"
 #include "../../helper/thread.h"
 #include "src/lib/buffer_circular.h"
+#include "src/lib/math/drift.h"
+#include "src/Acquisition/Planning/OverviewSchedule.h"
+#include "ResumeRecord.h"
 #include <functional>
+#include <map>
 #include <limits>
 #include <optional>
 #include <set>
@@ -23,6 +27,19 @@ struct SCAN_ORDER {
 	int x{ 0 };	// first scan in x-direction
 	int y{ 1 };	// then in y-direction
 	int z{ 2 };	// scan in z-direction last
+};
+
+// What an overview with one objective looks like (the settings of the objective that measures are the BF overview settings of
+// BRILLOUIN_SETTINGS below; this is for the others, see Brillouin_Overview.cpp). Each objective has its own, independent of the others.
+struct OVERVIEW_OBJECTIVE_SETTINGS {
+	int slot{ -1 };					// nosepiece slot of the objective
+	bool active{ false };			// take overviews with this objective
+	int exposureMs{ 4 };			// [ms]	brightfield exposure
+	double gain{ 0.0 };				// camera gain
+	bool fullGrid{ false };			// tile the whole grid (mosaic of camera-sized images, 20 % overlap) instead of one image at the grid centre
+	bool fullStack{ false };		// a z stack instead of one image (the centre slice is used for drift correction)
+	int stackSteps{ 5 };			// [1]	images of the stack
+	double stackRangeUm{ 20.0 };	// [um]	z range of the stack, centred on the objective's focus
 };
 
 struct BRILLOUIN_SETTINGS {
@@ -124,6 +141,19 @@ struct BRILLOUIN_SETTINGS {
 			overviewBrightfieldFullGrid = settings.overviewBrightfieldFullGrid;
 			overviewBrightfieldFullStackSingle = settings.overviewBrightfieldFullStackSingle;
 			overviewBrightfieldFullStackMosaic = settings.overviewBrightfieldFullStackMosaic;
+			overviewTrigger = settings.overviewTrigger;
+			overviewBeforeMeasurement = settings.overviewBeforeMeasurement;
+			overviewAfterMeasurement = settings.overviewAfterMeasurement;
+			overviewObjectives = settings.overviewObjectives;
+			overviewObjectiveRetractUm = settings.overviewObjectiveRetractUm;
+			driftCorrectionEnabled = settings.driftCorrectionEnabled;
+			driftObjectiveSlot = settings.driftObjectiveSlot;
+			driftMinNcc = settings.driftMinNcc;
+			driftMaxStepUm = settings.driftMaxStepUm;
+			driftMaxSpeedUmPerMin = settings.driftMaxSpeedUmPerMin;
+			driftExtrapolate = settings.driftExtrapolate;
+			surfaceRescan = settings.surfaceRescan;
+			livePreviews = settings.livePreviews;
 			capturePerPointBrightfield = settings.capturePerPointBrightfield;
 			perPointBrightfieldEveryN = settings.perPointBrightfieldEveryN;
 			perPointBrightfieldDuringAcquisition = settings.perPointBrightfieldDuringAcquisition;
@@ -242,6 +272,37 @@ struct BRILLOUIN_SETTINGS {
 		// zMin/zMax (surface-follow on), always sampled at zSteps points.
 		bool overviewBrightfieldFullStackSingle{ false };
 		bool overviewBrightfieldFullStackMosaic{ false };
+		// When overviews are taken during a measurement (Brillouin_Overview.cpp). PER_PLANE (default) is the behaviour of every version so
+		// far: one overview after each finished z plane. The two flags add an overview before the first point (after the surface scan) and
+		// after the last one (before the background spectra); they are additional to the trigger and never double an overview that is
+		// already due at that moment. Everything is off or at its default unless it is changed, and then nothing differs from before.
+		OVERVIEW_TRIGGER overviewTrigger{ OVERVIEW_TRIGGER::PER_PLANE };
+		bool overviewBeforeMeasurement{ false };
+		bool overviewAfterMeasurement{ false };
+		// Overviews with objectives other than the one that measures: one entry per objective that was configured, each with its own
+		// settings. (The measuring objective's overview is the one described by the settings above.)
+		std::vector<OVERVIEW_OBJECTIVE_SETTINGS> overviewObjectives;
+		// [um] relative z move (sign as entered, like the retract of the automated objective calibration) that takes the objective away
+		// from the sample before the nosepiece turns. Must not be 0 when another objective takes overviews.
+		double overviewObjectiveRetractUm{ 0.0 };
+		// Drift correction: the overviews of the objective in driftObjectiveSlot (one of the objectives that take overviews) are
+		// registered against the previous accepted overview, and the grid, the overviews and everything else that targets the sample
+		// follow it by the measured drift (x and y only; the centre slice of a z stack is used). A step that is not believed (correlation
+		// below driftMinNcc, larger than driftMaxStepUm, faster than driftMaxSpeedUmPerMin) leaves the positions where they are.
+		bool driftCorrectionEnabled{ false };
+		int driftObjectiveSlot{ -1 };
+		double driftMinNcc{ 0.3 };
+		double driftMaxStepUm{ 150.0 };
+		double driftMaxSpeedUmPerMin{ 30.0 };
+		// continue with the last measured drift speed between two overviews
+		bool driftExtrapolate{ false };
+		// Whether the surface scan is repeated during the measurement (surface follow must be on): with every overview, or after every
+		// z plane. A repeated scan measures a new medium reference and threshold at the same start position and moves the remaining
+		// points to the new surface.
+		SURFACE_RESCAN surfaceRescan{ SURFACE_RESCAN::NEVER };
+		// Overview images are also saved as PNG previews (the centre slice of every stack) in a folder next to the file, with a log of
+		// the overview events (events.csv), so a running measurement can be looked at without opening the file
+		bool livePreviews{ true };
 		// Captures a brightfield image at every perPointBrightfieldEveryN-th *measured* grid
 		// point during the main acquisition loop (runMeasurementPhase()) - independent of,
 		// and additive with, saveOverviewBrightfieldPerZ above (which only ever captures at
@@ -451,8 +512,73 @@ public:
 		int& outLeft, int& outTop, int& outWidth, int& outHeight
 	);
 
+	// Whether the overview/drift/rescan settings can run as set (calibrations, retract, camera...). The GUI asks before starting so the operator
+	// gets a message and can change the settings; nothing is created or saved then. Uses the settings last given to setSettings().
+	bool validateOverviewSetup(std::string* problem) const { return checkOverviewSetup(problem); }
+
+	// Everything a continue of an interrupted measurement (crash, cancel, pause) needs, read from the file (Brillouin_Resume.cpp)
+	struct ResumeInfo {
+		int repetition{ -1 };				// the Brillouin repetition in the file
+		int fluorescenceRepetition{ -1 };	// the one holding its overview images, -1 if none
+		std::string state;					// "measuring" or "stopped"
+		resume::Record settings;			// the settings the measurement was started with
+		POINT3 startPosition{ 0.0, 0.0, 0.0 };
+		int objectiveSlot{ -1 };
+		bool gridAbsolute{ false };
+		int seriesRepetition{ 0 };			// which repetition of the series this was
+		std::vector<POINT3> positions;		// the plan: stage positions (z as the surface scan left them), in measurement order
+		std::vector<POINT3> positionsRelative;
+		std::vector<INDEX3> indices;
+		std::vector<bool> calibrationAllowed;
+		int pointsTotal{ 0 };
+		int pointsDone{ 0 };				// planned points that are complete in the file (the first ones of the plan)
+		bool orderedPrefix{ true };			// false: the complete points are not the first ones of the plan
+		std::vector<int> incompletePoints;	// created but not complete (the write was cut short): removed on continue
+		std::string lastDataDate;
+		int calibrations{ 0 };
+		int backgrounds{ 0 };
+		int overviewEvents{ 0 };
+		int surfaceRescans{ 0 };
+		int resumeEvents{ 0 };				// how often this measurement was continued before
+		POINT2 carriedOffset{ 0.0, 0.0 };	// grid offset the repetition started with
+		std::vector<int> eventPointIndex;	// per overview event: the point it came after, and the grid offset from then on
+		std::vector<POINT2> eventOffsetAfter;
+		// A measurement that stopped during its surface scan ("surface-scan"): the medium reference and every column that was finished
+		struct SurfaceColumn {
+			int xi{ 0 };
+			int yi{ 0 };
+			bool valid{ false };
+			double z{ 0.0 };
+			int order{ -1 };
+			double metric{ 0.0 };
+			std::vector<double> curveZ;
+			std::vector<double> curveMetric;
+		};
+		bool surfaceScanPhase{ false };
+		double surfaceReference{ std::numeric_limits<double>::quiet_NaN() };
+		std::vector<SurfaceColumn> surfaceColumns;
+		std::vector<double> prescanZ;		// the surface of the last surface scan (flat like m_surfacePreScanZUm)
+		std::vector<double> prescanFound;
+		double referenceThreshold{ std::numeric_limits<double>::quiet_NaN() };
+	};
+	// Reads it from the file; `storage` must be used on its own thread (call from there). False with the reason if the file holds nothing
+	// that can be continued. Opens the repetition it found (no data is changed).
+	static bool readResumeInfo(StorageWrapper* storage, ResumeInfo* info, std::string* problem);
+
 public slots:
 	void startRepetitions() override;
+	// Continues the last measurement of the open file where it stopped: same file, same repetition, the settings of the file. The GUI has
+	// checked readResumeInfo() and moved the stage to the start position (relative mode) before.
+	void continueRepetition();
+	// The operator's answer to the question about the surface scan of an earlier repetition (see s_askSurfacePrior()):
+	// 0 new scan from scratch (as always), 1 new scan that starts from the earlier one, 2 no new scan, the earlier surface is used
+	void setSurfacePriorAnswer(int choice);
+	// What the operator allowed for the next continueRepetition(): move the stage to the saved start position (relative mode), turn the
+	// nosepiece back to the objective of the measurement (after retracting z) if another one is in the beam
+	void setResumeOptions(bool moveToStart, bool switchObjective) {
+		m_resumeMoveToStart = moveToStart;
+		m_resumeSwitchObjective = switchObjective;
+	}
 
 	void waitForNextRepetition();
 	void finaliseRepetitions();
@@ -706,9 +832,173 @@ private:
 	void setRLShutterRestingState();
 	// Moves to a grid point during runMeasurementPhase(), honoring
 	// useGridHysteresisCompensation (compensated approach vs. a direct move).
-	void approachGridPosition(const POINT3& position);
+	// With the drift offset (see gridOffset()) added to x and y, unless applyGridOffset is false (the medium reference of the surface
+	// scan is always taken at the same stage position).
+	void approachGridPosition(const POINT3& position, bool applyGridOffset = true);
 
 	std::string getRepetitionFilename();
+
+	/*
+	 * Overviews with other objectives, the overview schedule, drift correction and repeated surface scans (Brillouin_Overview.cpp).
+	 * Nothing here runs unless one of those settings differs from its default: then the measurement loop is exactly the one that has
+	 * always run (see useOverviewEngine()).
+	 */
+
+	// The footprint of one camera frame in stage um for the given objective's scale calibration (overviewTileFootprintUm() is the one of the
+	// active objective), and the tile centres that cover the grid with frames of that footprint.
+	POINT2 overviewTileFootprintUmFor(const ScaleCalibrationData& scaleCalibration) const;
+	std::vector<POINT2> overviewTileCentersXYForFootprint(POINT2 footprintUm) const;
+	// Whether overview images (of any objective) are expected in this run, i.e. the Fluorescence part of the file is needed.
+	bool overviewImagesExpected() const;
+
+	// One objective that takes overviews in this repetition
+	struct OverviewObjectivePlan {
+		int slot{ -1 };
+		bool isMeasurementObjective{ false };
+		OVERVIEW_OBJECTIVE_SETTINGS settings;
+	};
+
+	// What one objective's part of an overview event did (written to the file and logged)
+	struct OverviewCaptureLog {
+		int slot{ -1 };
+		bool isMeasurementObjective{ false };
+		bool captured{ false };
+		std::string skippedReason;
+		int firstImageNumber{ 0 };
+		int tiles{ 0 };
+		int stackDepth{ 0 };
+		int imagesSaved{ 0 };
+		double retractUm{ 0.0 };
+		double switchToSeconds{ 0.0 };
+		double captureSeconds{ 0.0 };
+		double switchBackSeconds{ 0.0 };
+		POINT2 fovCompensationUm{ 0.0, 0.0 };
+		double focusDeltaUm{ 0.0 };
+		POINT3 positionBeforeUm{ 0.0, 0.0, 0.0 };
+	};
+
+	// Result of the drift measurement of one overview event
+	struct OverviewDriftLog {
+		bool evaluated{ false };
+		drift::DriftDecision decision{ drift::DriftDecision::REJECTED_NO_MATCH };
+		POINT2 stepUm{ 0.0, 0.0 };
+		POINT2 totalUm{ 0.0, 0.0 };
+		POINT2 gridOffsetUm{ 0.0, 0.0 };
+		double meanNcc{ 0.0 };
+		int tilesCompared{ 0 };
+		int tilesUsed{ 0 };
+		double secondsSinceReference{ 0.0 };
+		double registrationSeconds{ 0.0 };
+	};
+
+	// True if any setting that needs the overview engine is on; false: the measurement loop is the original one.
+	bool useOverviewEngine() const;
+	// The objectives that take overviews in this repetition (measuring objective first), from the settings.
+	std::vector<OverviewObjectivePlan> planOverviewObjectives() const;
+	// Whether the overview/drift/rescan settings can be run: other objectives need calibrations (scale, FOV offset, focus offset), a z
+	// retract, brightfield camera; the drift objective must take overviews. `problem` says what is missing.
+	bool checkOverviewSetup(std::string* problem) const;
+	// Start of a repetition's measurement phase: plans the objectives, carries the drift over from the previous repetition (or starts
+	// from none), writes the settings used and the calibrations of the overview objectives to the file.
+	void beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage);
+	// Moments due before the first point / after point ll: one overview event for each (all objectives that take overviews, then the drift
+	// update). Returns false if the acquisition was aborted.
+	bool runOverviewMoments(
+		std::unique_ptr<StorageWrapper>& storage, const std::vector<OverviewMoment>& moments, const std::vector<double>& directionsZ,
+		gsl::index pointIndex
+	);
+	bool runOverviewEvent(
+		std::unique_ptr<StorageWrapper>& storage, const OverviewMoment& moment, const std::vector<double>& directionsZ, gsl::index pointIndex
+	);
+	// One objective's overview of one event: for another objective the whole cycle (retract, switch, focus, capture, switch back, restore).
+	// The centre slices of its tiles go to `driftTiles` if given.
+	bool captureObjectiveOverview(
+		std::unique_ptr<StorageWrapper>& storage, const OverviewObjectivePlan& plan, const OverviewMoment& moment,
+		const std::vector<double>& directionsZ, int eventIndex, int objectiveOrder, gsl::index pointIndex,
+		std::vector<drift::TileFrame>* driftTiles, OverviewCaptureLog* log
+	);
+	// Retract z, turn the nosepiece back to the measuring objective and put the stage back where it was (or leave it retracted).
+	void returnToMeasurementObjective(int measurementSlot, const POINT3& restorePosition, bool restorePositionToo);
+	// One frame of the brightfield camera with the given exposure/gain.
+	bool grabBrightfieldFrame(int exposureMs, double gain, std::vector<std::byte>* image, CAMERA_SETTINGS* usedSettings);
+	// Registers the tiles of an overview of the drift objective against the reference, updates the controller and the grid offset.
+	void processDriftOverview(const std::vector<drift::TileFrame>& tiles, int slot, double timeSeconds, OverviewDriftLog* log);
+	// The offset that every stage target of the grid and the overviews carries (the drift, 0 if drift correction is off).
+	POINT2 gridOffset() const { return m_gridOffset; }
+	void refreshGridOffset();
+	// Repeats the surface scan after point ll and moves the remaining points to the new surface (everything of it is saved).
+	void repeatSurfaceScan(std::unique_ptr<StorageWrapper>& storage, gsl::index pointIndex, const std::vector<double>& directionsZ);
+	// Writes an event's record to the file, and the offset every measured point carried.
+	void writeOverviewEvent(
+		std::unique_ptr<StorageWrapper>& storage, int eventIndex, const OverviewMoment& moment, gsl::index pointIndex, double timeSeconds,
+		const std::vector<OverviewCaptureLog>& captures, const OverviewDriftLog& driftLog
+	);
+	void writePointGridOffsets(std::unique_ptr<StorageWrapper>& storage);
+	// Seconds on a steady clock
+	static double steadySeconds();
+
+	// ---- continue of an interrupted measurement (Brillouin_Resume.cpp)
+	// Writes what a continue needs (settings, plan, start position, state) to the file; before the queues are started (direct) or later
+	void writeResumeRecord(std::unique_ptr<StorageWrapper>& storage);
+	void writeResumePlan(std::unique_ptr<StorageWrapper>& storage, bool direct);
+	void setStorageState(const std::string& state);
+	bool m_resuming{ false };
+	// true while a measurement is in its measuring phase: what is written to the file as its state, see setStorageState()
+	bool m_measuringState{ false };
+	// true from the surface scan on until the measuring phase starts: the surface scan writes what a continue needs (checkpoint per column)
+	bool m_surfacePhaseState{ false };
+	bool m_checkpointSurface{ false };
+	// a continue of a measurement that stopped during its surface scan: the scan starts from the checkpoint in m_resumeInfo
+	bool m_resumeSurface{ false };
+	bool m_resumeMoveToStart{ true };
+	bool m_resumeSwitchObjective{ false };
+	void writeResumeBasics(std::unique_ptr<StorageWrapper>& storage);
+
+	// ---- live check (Brillouin_Overview.cpp): PNG previews and a log next to the file
+	std::string livePreviewFolder() const;
+	void writeLivePreview(const std::string& name, const std::vector<std::byte>& image, const CAMERA_SETTINGS& settings);
+	void appendLiveLog(const std::string& line);
+	bool m_livePreviewFailed{ false };
+	void writeSurfaceCheckpointReference(double mediumReference, size_t columnsX, size_t columnsY);
+	void writeSurfaceCheckpointColumn(gsl::index xi, gsl::index yi, bool valid, double z, int order, double metric,
+		const std::vector<double>& curveZ, const std::vector<double>& curveMetric);
+	// Back to the normal writing of the file after a continue has put its repetition in place
+	void endResumeMode(std::unique_ptr<StorageWrapper>& storage);
+	int m_resumeStartIndex{ 0 };			// first point of the plan that is measured (0 for a new measurement)
+	ResumeInfo m_resumeInfo;
+
+	// ---- the surface scan of an earlier repetition of the file (Brillouin_Resume.cpp)
+	enum class SURFACE_STRATEGY { NEW_SCAN = 0, PRIOR = 1, REUSE = 2 };
+	struct PreviousSurface {
+		int repetition{ -1 };
+		std::vector<double> z;				// coarse surface of that scan (flat like m_surfacePreScanZUm) and where it was found
+		std::vector<double> found;
+		bool hasPlan{ false };				// the plan of that repetition is in the file: its surface can be used without a new scan
+		std::vector<INDEX3> planIndices;
+		std::vector<double> planZ;			// z of its points (stage frame)
+		POINT3 startPosition{ 0.0, 0.0, 0.0 };
+		std::map<std::string, double> settings;		// grid and surface scan settings of that repetition
+	};
+	static bool readPreviousSurface(StorageWrapper* storage, int beforeRepetition, PreviousSurface* previous);
+	// Asks the operator (popup with a timer, default: new scan) if the file holds a surface scan of an earlier repetition
+	SURFACE_STRATEGY chooseSurfaceStrategy(std::unique_ptr<StorageWrapper>& storage, PreviousSurface* previous);
+	void applyPreviousSurface(const PreviousSurface& previous);
+	int m_surfacePriorAnswer{ -1 };
+	POINT2 m_resumeCarry{ 0.0, 0.0 };		// grid offset a continued measurement starts with (becomes the carried offset of the drift reference)
+
+	std::vector<OverviewObjectivePlan> m_overviewPlans;
+	drift::DriftController m_driftController;
+	std::vector<drift::TileFrame> m_driftReferenceTiles;	// the last accepted overview of the drift objective
+	int m_driftReferenceSlot{ -1 };
+	POINT3 m_driftSeriesStart{ 0.0, 0.0, 0.0 };				// start position of the repetition the reference belongs to
+	POINT2 m_gridOffset{ 0.0, 0.0 };						// [um] drift applied to every stage target
+	double m_seriesStartSeconds{ 0.0 };						// steady clock at the start of the measurement phase
+	int m_overviewEventCount{ 0 };
+	int m_surfaceRescanCount{ 0 };
+	int m_measurementObjectiveSlot{ -1 };
+	// per measured point (planned order): the offset it was measured with, NaN for points not measured
+	std::vector<double> m_pointOffsetX;
+	std::vector<double> m_pointOffsetY;
 
 	// Populated at the end of runSurfacePreScan() - see getSurfaceFoundXYIndices().
 	std::set<std::pair<int, int>> m_surfaceFoundXYIndices;
@@ -781,6 +1071,15 @@ private:
 	// separate, currently-unused settings.surfaceMetricThreshold UI preference saved
 	// elsewhere, which this scan never actually reads.
 	double m_surfaceReferenceThreshold{ std::numeric_limits<double>::quiet_NaN() };
+	// A repeated surface scan (repeatSurfaceScan()) starts from the previous one: the coarse surface z of every column of the last scan
+	// (flat-indexed like m_surfacePreScanZUm, valid where > 0 in m_surfacePriorValid) seeds the search. The first column found gives the
+	// general offset between the two scans (new minus old surface), the median of all offsets found so far is added to the old surface
+	// of every later column. Empty (the first scan of a measurement, and every legacy run): the neighbour-seeded search as always.
+	std::vector<double> m_surfacePriorZUm;
+	std::vector<double> m_surfacePriorValid;
+	// Output of the last runSurfacePreScan(): median offset to the prior scan (NaN without prior) and how many columns gave an offset
+	double m_surfacePriorOffsetUm{ std::numeric_limits<double>::quiet_NaN() };
+	int m_surfacePriorOffsetCount{ 0 };
 
 	BRILLOUIN_SETTINGS m_settings;
 	SCAN_ORDER m_scanOrder;
@@ -842,6 +1141,9 @@ signals:
 	void s_orderedPositionsChanged(std::vector<POINT3>, bool isAbsolute);
 	void s_excludedPositionsChanged(std::vector<POINT3>);
 	void s_surfaceScanProgress(double progress, QString message);
+	// A surface scan of an earlier repetition is in the file: ask the operator how to use it. The answer comes back through
+	// setSurfacePriorAnswer(); without one after timeoutSeconds the GUI answers 0 (new scan from scratch).
+	void s_askSurfacePrior(QString text, bool offerReuse, int timeoutSeconds);
 	// elapsed wall-clock time since the main measurement grid started, in seconds - drives the
 	// live elapsed-time display that replaces the static pre-run estimate in estimatedAcquisitionTime
 	// once a measurement is actually running (see BrillouinAcquisition::showMeasurementElapsedTime()).

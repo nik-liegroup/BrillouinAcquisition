@@ -183,6 +183,22 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		[this](QCPRange newRange) { yAxisRangeChangedODT(newRange); }
 	);
 
+	// the file is open: is there a measurement in it that can be continued?
+	connection = QWidget::connect(
+		m_acquisition,
+		&Acquisition::s_fileOpened,
+		this,
+		[this]() { updateContinueAvailability(); }
+	);
+
+	// a surface scan of an earlier repetition is in the file: ask how to use it
+	connection = QWidget::connect(
+		m_Brillouin,
+		&Brillouin::s_askSurfacePrior,
+		this,
+		[this](QString text, bool offerReuse, int timeoutSeconds) { showSurfacePriorQuestion(text, offerReuse, timeoutSeconds); }
+	);
+
 	// slot to update filename
 	connection = QWidget::connect(
 		m_acquisition,
@@ -703,6 +719,8 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 	ui->relocateFocusMarker_brightfield->setText("");
 	initializeLaserPositionLocation();
 
+	setupOverviewTab();
+	setupContinueButton();
 	updateBrillouinSettings();
 	initSettingsDialog();
 
@@ -971,6 +989,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 				} else {
 					m_Brillouin->settings.overviewBrightfieldFullStackSingle = enabled;
 				}
+				updateOverviewTab();
 				updateEstimatedAcquisitionTime();
 			});
 
@@ -2455,6 +2474,7 @@ void BrillouinAcquisition::showBrillouinStatus(ACQUISITION_STATUS status) {
 	}
 	ui->fullGridButton->setEnabled(status == ACQUISITION_STATUS::WAITFORSURFACEREVIEW);
 	ui->progressBar->setFormat(string);
+	updateContinueAvailability();
 
 	// estimatedAcquisitionTime doubles as a live elapsed-time display while running (see
 	// showMeasurementElapsedTime(), driven by Brillouin::s_measurementElapsed) - swap its
@@ -4777,6 +4797,9 @@ void BrillouinAcquisition::objectiveSetupReferenceToggled(int slotIndex, bool ch
 		data.hasFovOffset = false;
 		data.fovOffsetUm = POINT2{ 0, 0 };
 		data.fovOffsetSigmaUm = 0.0;
+		data.hasFocusOffset = false;
+		data.focusOffsetUm = 0.0;
+		data.focusOffsetSigmaUm = 0.0;
 		data.referenceObjectiveName = "";
 		auto path = m_objectiveSlotCalibrationPaths[slotIndex];
 		QMetaObject::invokeMethod(
@@ -4813,6 +4836,9 @@ void BrillouinAcquisition::objectiveSetupReferenceToggled(int slotIndex, bool ch
 		otherData.hasFovOffset = false;
 		otherData.fovOffsetUm = POINT2{ 0, 0 };
 		otherData.fovOffsetSigmaUm = 0.0;
+		otherData.hasFocusOffset = false;
+		otherData.focusOffsetUm = 0.0;
+		otherData.focusOffsetSigmaUm = 0.0;
 		otherData.referenceObjectiveName = "";
 		auto otherPath = m_objectiveSlotCalibrationPaths[ii];
 		QMetaObject::invokeMethod(
@@ -4831,6 +4857,9 @@ void BrillouinAcquisition::objectiveSetupReferenceToggled(int slotIndex, bool ch
 	data.hasFovOffset = true;
 	data.fovOffsetUm = POINT2{ 0, 0 };
 	data.fovOffsetSigmaUm = 0.0;
+	data.hasFocusOffset = true;
+	data.focusOffsetUm = 0.0;
+	data.focusOffsetSigmaUm = 0.0;
 	// The reference IS the baseline everything else is measured relative to - it has no
 	// reference of its own.
 	data.referenceObjectiveName = "";
@@ -5838,6 +5867,10 @@ void BrillouinAcquisition::objectiveSwitched(int previousSlot, int newSlot, bool
 	// one of the warnings below (a no-op if the Scale Calibration dialog is not currently open).
 	refreshScaleCalibrationObjectiveDisplay();
 
+	// Manual switches only (the software's own switches during a measurement are silent, see ScanControl::switchObjectiveSlot()): the
+	// BF overview settings follow the objective that measures.
+	syncOverviewObjectiveSettingsOnSwitch(previousSlot, newSlot);
+
 	if (!hasCalibration) {
 		// Suppressed during an automated multi-cycle run (see
 		// ScaleCalibration::startObjectiveCycleCalibration()) - a blocking popup on every
@@ -6110,6 +6143,21 @@ void BrillouinAcquisition::on_BrillouinStart_clicked() {
 		// one crop silently misalign against the signal once a measurement actually started.
 		m_Brillouin->settings.camera.roi = m_deviceSettings.camera.roi;
 		m_Brillouin->setSettings(m_Brillouin->settings);
+		{
+			// Before anything is created: an unusable overview/drift/rescan configuration (e.g. no z calibration for an automatic switch)
+			// is reported here so it can be changed, then Start pressed again.
+			std::string problem;
+			if (!m_Brillouin->validateOverviewSetup(&problem)) {
+				QMessageBox::warning(
+					this,
+					"Cannot start the measurement",
+					QString("The overview / drift correction / surface rescan settings cannot be run:\n\n%1\n\n"
+						"Nothing was started or saved. Change the settings (Overview tab) or the calibration and press Start again.")
+						.arg(QString::fromStdString(problem))
+				);
+				return;
+			}
+		}
 		QMetaObject::invokeMethod(
 			m_Brillouin,
 			[&m_Brillouin = m_Brillouin]() {
@@ -6142,6 +6190,7 @@ void BrillouinAcquisition::updateFilename(const std::string& filename) {
 }
 
 void BrillouinAcquisition::updateBrillouinSettings() {
+	updateOverviewTab();
 	ui->acquisitionFilename->setText(QString::fromStdString(m_storagePath.filename));
 
 	// AOI settings
@@ -7741,6 +7790,7 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-camera-roi-height-physical", m_deviceSettings.camera.roi.height_physical);
 	settings.setValue("brillouin-camera-exposure-time", m_Brillouin->settings.camera.exposureTime);
 	settings.setValue("brillouin-camera-frame-count", m_Brillouin->settings.camera.frameCount);
+	writeOverviewSettings(settings);
 	settings.endGroup();
 }
 
@@ -7910,5 +7960,6 @@ void BrillouinAcquisition::readSettings() {
 	m_Brillouin->settings.surfaceProxyRoi2FrameOriginBottom = settings.value("brillouin-surface-proxy-roi-2-frame-origin-bottom", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameOriginBottom).toLongLong();
 	m_Brillouin->settings.surfaceProxyRoi2FrameWidthPhysical = settings.value("brillouin-surface-proxy-roi-2-frame-width-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameWidthPhysical).toLongLong();
 	m_Brillouin->settings.surfaceProxyRoi2FrameHeightPhysical = settings.value("brillouin-surface-proxy-roi-2-frame-height-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameHeightPhysical).toLongLong();
+	readOverviewSettings(settings);
 	settings.endGroup();
 }

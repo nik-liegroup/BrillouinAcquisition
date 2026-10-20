@@ -467,6 +467,92 @@ ObjectiveCalibrationData ScanControl::getObjectiveCalibration(int slot) const {
 	return it->second;
 }
 
+bool ScanControl::getValidFocusOffset(int slot, double* offsetUm) const {
+	auto calibration = getObjectiveCalibration(slot);
+	if (calibration.isReferenceObjective) {
+		*offsetUm = 0.0;
+		return true;
+	}
+	if (calibration.hasFocusOffset) {
+		*offsetUm = calibration.focusOffsetUm;
+		return true;
+	}
+	return false;
+}
+
+bool ScanControl::getFocusOffsetBetweenSlots(int fromSlot, int toSlot, double* deltaUm) const {
+	auto from = 0.0;
+	auto to = 0.0;
+	if (!getValidFocusOffset(fromSlot, &from) || !getValidFocusOffset(toSlot, &to)) {
+		return false;
+	}
+	*deltaUm = to - from;
+	return true;
+}
+
+bool ScanControl::canSwitchObjectiveAutomatically(int fromSlot, int toSlot, std::string* reason) const {
+	if (fromSlot == toSlot) {
+		return true;
+	}
+	for (auto slot : { fromSlot, toSlot }) {
+		auto calibration = getObjectiveCalibration(slot);
+		auto missing = std::string{};
+		if (!hasObjectiveCalibration(slot)) {
+			missing = "no scale calibration";
+		} else if (!calibration.isReferenceObjective && !calibration.hasFovOffset) {
+			missing = "no FOV-center offset";
+		} else {
+			auto offsetUm = 0.0;
+			if (!getValidFocusOffset(slot, &offsetUm)) {
+				missing = "no z (focus) offset";
+			}
+		}
+		if (!missing.empty()) {
+			if (reason) {
+				*reason = "Objective slot " + std::to_string(slot) + " has " + missing + " - run the automated objective calibration first. "
+					"Switching objectives automatically is blocked until then.";
+			}
+			return false;
+		}
+	}
+	return true;
+}
+
+bool ScanControl::hasObjectiveChanger() const {
+	for (const auto& element : m_deviceElements) {
+		if (element.name == "Objective") {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ScanControl::switchObjectiveSlot(int slot, std::string* error) {
+	for (const auto& element : m_deviceElements) {
+		if (element.name != "Objective") {
+			continue;
+		}
+		// Same call and same check as ScaleCalibration::switchToObjectiveSlotAndVerify(): setElement() blocks until the switch is done and
+		// the changer's own report has updated m_activeObjectiveSlot by the time it returns.
+		// A switch the software makes itself (during a measurement) must not raise the operator warnings of s_objectiveSwitched() or
+		// swap the overview settings of the GUI; the caller has checked the calibrations and handles the consequences.
+		m_quietObjectiveSwitch = true;
+		setElement(element, (double)slot);
+		m_quietObjectiveSwitch = false;
+		if (m_activeObjectiveSlot != slot) {
+			if (error) {
+				*error = "Expected objective slot " + std::to_string(slot) + " but the changer reports slot " + std::to_string(m_activeObjectiveSlot) + ".";
+			}
+			return false;
+		}
+		return true;
+	}
+	if (error) {
+		*error = "This device has no motorized \"Objective\" element.";
+	}
+	return false;
+}
+
 int ScanControl::getActiveObjectiveSlot() const {
 	return m_activeObjectiveSlot;
 }
@@ -579,7 +665,7 @@ void ScanControl::handleObjectiveSlotObserved(int newSlot) {
 	// previousSlot == -1 is the initial hardware read at startup/connect, not an
 	// operator-driven switch - do not warn about it (there is nothing to have translated
 	// grids/ROIs relative to yet).
-	if (previousSlot >= 0) {
+	if (previousSlot >= 0 && !m_quietObjectiveSwitch) {
 		emit(s_objectiveSwitched(previousSlot, newSlot, hasCalibration, hasFovOffset, offsetUm, offsetSigmaUm));
 	}
 

@@ -87,6 +87,12 @@
     <ClCompile Include="src\BrillouinAcquisition.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\BrillouinAcquisition_Overview.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\BrillouinAcquisition_Resume.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -119,6 +125,18 @@
     </ClCompile>
     <ClCompile Include="src\Acquisition\AcquisitionModes\Brillouin.cpp">
       <Filter>Source Files\Acquisition\AcquisitionModes</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Acquisition\AcquisitionModes\Brillouin_Overview.cpp">
+      <Filter>Source Files\Acquisition\AcquisitionModes</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Acquisition\AcquisitionModes\Brillouin_Resume.cpp">
+      <Filter>Source Files\Acquisition\AcquisitionModes</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Acquisition\AcquisitionModes\BrillouinResume.cpp">
+      <Filter>Source Files\Acquisition\AcquisitionModes</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Acquisition\Planning\OverviewSchedule.cpp">
+      <Filter>Source Files\Acquisition</Filter>
     </ClCompile>
     <ClCompile Include="src\Acquisition\AcquisitionModes\ODT.cpp">
       <Filter>Source Files\Acquisition\AcquisitionModes</Filter>
@@ -166,6 +184,12 @@
       <Filter>Source Files\lib</Filter>
     </ClCompile>
     <ClCompile Include="src\lib\math\xsample.cpp">
+      <Filter>Source Files\lib\math</Filter>
+    </ClCompile>
+    <ClCompile Include="src\lib\math\registration.cpp">
+      <Filter>Source Files\lib\math</Filter>
+    </ClCompile>
+    <ClCompile Include="src\lib\math\drift.cpp">
       <Filter>Source Files\lib\math</Filter>
     </ClCompile>
     <ClCompile Include="src\helper\logger.cpp">
@@ -229,6 +253,21 @@
     </ClInclude>
     <ClInclude Include="src\lib\math\xsample.h">
       <Filter>Header Files\lib\math</Filter>
+    </ClInclude>
+    <ClInclude Include="src\lib\math\registration.h">
+      <Filter>Header Files\lib\math</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Acquisition\AcquisitionModes\BrillouinResume.h">
+      <Filter>Header Files\Acquisition</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Acquisition\AcquisitionModes\ResumeRecord.h">
+      <Filter>Header Files\Acquisition</Filter>
+    </ClInclude>
+    <ClInclude Include="src\lib\math\drift.h">
+      <Filter>Header Files\lib\math</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Acquisition\Planning\OverviewSchedule.h">
+      <Filter>Header Files\Acquisition</Filter>
     </ClInclude>
     <ClInclude Include="src\helper\h5_helper.h">
       <Filter>Header Files\helper</Filter>

@@ -96,10 +96,13 @@ public:
 		double exposure = 0, double gain = 1, const CAMERA_ROI& roi = CAMERA_ROI{},
 		POINT3 targetPosition = POINT3{ 0, 0, 0 }, bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 },
 		bool compress = false,
-		bool hasBrillouinRepetition = false, int brillouinRepetitionIndex = -1) :
+		bool hasBrillouinRepetition = false, int brillouinRepetitionIndex = -1,
+		const std::vector<std::pair<std::string, double>>& extraNumbers = {},
+		const std::vector<std::pair<std::string, std::string>>& extraStrings = {}) :
 		ind(ind), rank(rank), dims(dims), date(date), channel(channel), data(data), exposure(exposure), gain(gain), roi(roi),
 		targetPosition(targetPosition), hasStagePosition(hasStagePosition), stagePosition(stagePosition), compress(compress),
-		hasBrillouinRepetition(hasBrillouinRepetition), brillouinRepetitionIndex(brillouinRepetitionIndex) {};
+		hasBrillouinRepetition(hasBrillouinRepetition), brillouinRepetitionIndex(brillouinRepetitionIndex),
+		extraNumbers(extraNumbers), extraStrings(extraStrings) {};
 
 	const int ind;
 	const int rank;
@@ -136,6 +139,11 @@ public:
 	// guessing it from capture-time overlap.
 	const bool hasBrillouinRepetition{ false };
 	const int brillouinRepetitionIndex{ -1 };
+	// Further attributes written on the image's dataset as they are (name, value): what an image needs to be interpreted later that the
+	// fixed fields above do not carry - e.g. which objective an overview was taken with, its place in an overview series and the
+	// calibration offsets that were applied. Empty for every image that has no such need, so nothing changes for them.
+	const std::vector<std::pair<std::string, double>> extraNumbers;
+	const std::vector<std::pair<std::string, std::string>> extraStrings;
 };
 
 struct ScaleCalibrationDataExtended : ScaleCalibrationData {
@@ -291,6 +299,40 @@ public:
 	ModeHandles* getModeHandle(ACQUISITION_MODE mode);
 	void newRepetition(ACQUISITION_MODE mode);
 
+	/*
+	 * Continue of an interrupted measurement: opens an existing repetition (nothing is created or changed) so that points can be added to it,
+	 * and answers what a continue needs to know about the file. All of it runs on the thread of this object, like every other call.
+	 */
+	// Highest existing repetition of the mode, -1 if there is none
+	int lastRepetition(ACQUISITION_MODE mode);
+	bool openRepetition(ACQUISITION_MODE mode, int repetition);
+	// "surface-scan", "measuring", "stopped" or "finished" (empty if the repetition has none: file of another version)
+	void setRepetitionState(ACQUISITION_MODE mode, const std::string& state);
+	std::string getRepetitionState(ACQUISITION_MODE mode, int repetition);
+	// While on, a dataset that exists already is left as it is when the same data is written again (a continued measurement writes its
+	// plan and settings again without touching what is in the file)
+	void setSkipExistingDatasets(bool skip) { m_skipExistingDatasets = skip; }
+	// Everything written so far is handed to the operating system (a checkpoint)
+	void flushFile();
+	// The resume record of the current Brillouin repetition: numbers as datasets, text as attributes of the payload group
+	void setResumeNumbers(const std::string& name, const std::vector<double>& values);
+	bool getResumeNumbers(const std::string& name, std::vector<double>* values);
+	void setResumeText(const std::string& name, const std::string& value);
+	bool getResumeText(const std::string& name, std::string* value);
+	// Points of the current Brillouin repetition that are in the file: the linear indices of complete ones, and of ones that were created but
+	// never got their attributes (the write was cut short)
+	void listPayloadPoints(std::vector<int>* complete, std::vector<int>* incomplete);
+	bool deletePayloadPoint(int index);
+	std::string getPayloadDateByIndex(int index);
+	// number of members of calibration/data and background/data of the current Brillouin repetition
+	int countCalibrationData();
+	int countBackgroundData();
+	int payloadIndex(int indX, int indY, int indZ);
+	// Any dataset of the current Brillouin repetition's payload written with setPositions() (name without the "positions-" prefix)
+	bool readPositions(const std::string& name, std::vector<double>* values);
+	// The same for any repetition of the mode (nothing is opened or changed): what an earlier repetition of the file holds
+	bool readPositionsOfRepetition(ACQUISITION_MODE mode, int repetition, const std::string& name, std::vector<double>* values);
+
 	// True once the file is open/created for writing. False means every setData()/
 	// setPositions() call is a no-op.
 	bool isWritable() const { return m_fileWritable; };
@@ -368,6 +410,7 @@ signals:
 
 private:
 	bool m_fileWritable = false;
+	bool m_skipExistingDatasets{ false };
 	bool m_fileValid = false;
 
 	const std::string m_versionstring = "H5BM-v0.0.4";
@@ -451,7 +494,9 @@ private:
 		bool hasPosition = false, POINT3 position = POINT3{ 0, 0, 0 },
 		bool hasStagePosition = false, POINT3 stagePosition = POINT3{ 0, 0, 0 }, bool compress = false,
 		bool hasBrillouinRepetition = false, int brillouinRepetitionIndex = -1,
-		bool hasFramesActual = false, int framesActual = -1);
+		bool hasFramesActual = false, int framesActual = -1,
+		const std::vector<std::pair<std::string, double>>* extraNumbers = nullptr,
+		const std::vector<std::pair<std::string, std::string>>* extraStrings = nullptr);
 
 	std::vector<double> getData(const std::string& name, hid_t parent);
 	std::string getDate(std::string name, hid_t parent);
@@ -469,6 +514,7 @@ hid_t H5BM::setDataset(hid_t parent, std::vector<T> data, std::string name, cons
 
 	hid_t dset_id;
 	dset_id = H5Dopen2(parent, name.c_str(), H5P_DEFAULT);
+	const auto datasetExisted = dset_id >= 0;
 	if (dset_id < 0) {
 		// compress: chunked (one chunk = the whole dataset - these are single standalone
 		// images, never accessed by a sub-region, so there is no benefit to splitting
@@ -491,6 +537,8 @@ hid_t H5BM::setDataset(hid_t parent, std::vector<T> data, std::string name, cons
 	if (dset_id < 0) {
 		reportWriteError(QString("Failed to create/open HDF5 dataset \"%1\" - this data was NOT saved.")
 			.arg(QString::fromStdString(name)));
+	} else if (datasetExisted && m_skipExistingDatasets) {
+		// continued measurement: what is in the file stays
 	} else {
 		herr_t writeStatus = H5Dwrite(dset_id, get_memtype<T>(), H5S_ALL, H5S_ALL, H5P_DEFAULT, data.data());
 		if (writeStatus < 0) {
@@ -510,7 +558,9 @@ void H5BM::setData(const std::vector<T>& data, const std::string& name, hid_t pa
 	std::string date, const std::string& sample, double shift, const std::string& channel, double exposure, double gain, CAMERA_ROI roi,
 	bool hasPosition, POINT3 position, bool hasStagePosition, POINT3 stagePosition, bool compress,
 	bool hasBrillouinRepetition, int brillouinRepetitionIndex,
-	bool hasFramesActual, int framesActual) {
+	bool hasFramesActual, int framesActual,
+	const std::vector<std::pair<std::string, double>>* extraNumbers,
+	const std::vector<std::pair<std::string, std::string>>* extraStrings) {
 	if (!m_fileWritable) {
 		return;
 	}
@@ -575,6 +625,18 @@ void H5BM::setData(const std::vector<T>& data, const std::string& name, hid_t pa
 	// the brillouin_repetition_index convention just above.
 	if (hasFramesActual) {
 		setAttribute("frames_actual", framesActual, dset_id);
+	}
+
+	// Free-form extra attributes of this image (FLUOIMAGE::extraNumbers/extraStrings)
+	if (extraNumbers) {
+		for (const auto& entry : *extraNumbers) {
+			setAttribute(entry.first, entry.second, dset_id);
+		}
+	}
+	if (extraStrings) {
+		for (const auto& entry : *extraStrings) {
+			setAttribute(entry.first, entry.second, dset_id);
+		}
 	}
 
 	// set camera meta data
@@ -657,7 +719,8 @@ void H5BM::setPayloadData(FLUOIMAGE<T>* image) {
 	setData(image->data, name, m_Fluorescence.groups->payloadData, image->rank, image->dims, image->date, "", NULL, image->channel,
 		image->exposure, image->gain, image->roi,
 		true, image->targetPosition, image->hasStagePosition, image->stagePosition, image->compress,
-		image->hasBrillouinRepetition, image->brillouinRepetitionIndex);
+		image->hasBrillouinRepetition, image->brillouinRepetitionIndex,
+		false, -1, &image->extraNumbers, &image->extraStrings);
 }
 
 template <typename T>

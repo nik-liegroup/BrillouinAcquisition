@@ -37,6 +37,16 @@ struct ObjectiveCalibrationData : public ScaleCalibrationData {
 	std::string referenceObjectiveName{ "" };
 	std::string calibrationDate{ "" };
 
+	// This objective's focal plane z relative to the reference objective's, measured in the same switch-and-refocus
+	// round trips as the FOV offset above (the operator refocuses at each objective anyway; the z at the end of each refocus
+	// is recorded). Convention: focusOffsetUm = z(this objective in focus on the sample) - z(reference objective in focus on
+	// the same sample plane), in the z axis of ScanControl::getPosition(). To move from a focus found with objective A to the
+	// focus of objective B: z_B = z_A + (focusOffsetUm(B) - focusOffsetUm(A)). hasFocusOffset is false until measured;
+	// callers must then not apply anything (same rule as hasFovOffset).
+	bool hasFocusOffset{ false };
+	double focusOffsetUm{ 0.0 };
+	double focusOffsetSigmaUm{ 0.0 };		// [um] std dev of the offset over the calibration round trips
+
 	// [um/pix] repeatability (std dev of the isotropic pixel pitch, see
 	// ScaleCalibrationHelper::isotropicPixelPitchUm()) of the pix<->um scale calibration across
 	// the automated "Automated calibration: Scale" cycles that produced it - 0 if the scale
