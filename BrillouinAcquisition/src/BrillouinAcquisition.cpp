@@ -3694,8 +3694,8 @@ void BrillouinAcquisition::restoreCameraSettings() {
 	this->on_ROIWidth_valueChanged(width_phsical);
 	auto height_phsical = settings.value("brillouin-camera-roi-height-physical").toInt();
 	this->on_ROIHeight_valueChanged(height_phsical);
-	// The frame count is only read from the shared settings file (never written by this version, see writeSettings()); the rest of the
-	// Brillouin camera has the working defaults of this version, not what another version left in the shared file.
+	// ROI and frame count are read from the shared settings file as always; exposure, binning, readout rate and pre-amp gain start with the
+	// working defaults of this version (they are written to the file at exit like every other setting).
 	auto frameCount = settings.value("brillouin-camera-frame-count", 2).toInt();
 	ui->frameCount->setValue(frameCount);
 	settings.endGroup();
@@ -7860,8 +7860,13 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-surface-proxy-roi-2-frame-origin-bottom", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameOriginBottom);
 	settings.setValue("brillouin-surface-proxy-roi-2-frame-width-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameWidthPhysical);
 	settings.setValue("brillouin-surface-proxy-roi-2-frame-height-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameHeightPhysical);
-	// The Brillouin camera settings (ROI, exposure, frame count) are deliberately NOT written: several versions of the software on this computer
-	// share this file, and this one has its own working defaults (restoreCameraSettings()). Every measurement stores its camera settings in its file.
+	// The Brillouin camera as always (the file is shared with other versions of the software, which read the same keys)
+	settings.setValue("brillouin-camera-roi-left", m_deviceSettings.camera.roi.left);
+	settings.setValue("brillouin-camera-roi-top", m_deviceSettings.camera.roi.top);
+	settings.setValue("brillouin-camera-roi-width-physical", m_deviceSettings.camera.roi.width_physical);
+	settings.setValue("brillouin-camera-roi-height-physical", m_deviceSettings.camera.roi.height_physical);
+	settings.setValue("brillouin-camera-exposure-time", m_Brillouin->settings.camera.exposureTime);
+	settings.setValue("brillouin-camera-frame-count", m_Brillouin->settings.camera.frameCount);
 	writeOverviewSettings(settings);
 	settings.endGroup();
 }

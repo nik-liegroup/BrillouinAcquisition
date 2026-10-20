@@ -144,6 +144,18 @@ void BrillouinAcquisition::setupOverviewTab() {
 	m_overviewObjectiveStackRangeSpinBox->setRange(1.0, 2000.0);
 	m_overviewObjectiveStackRangeSpinBox->setDecimals(1);
 	objectiveGrid->addWidget(m_overviewObjectiveStackRangeSpinBox, 7, 1);
+	// a brightfield image at the measured points: with the objective that measures (another one would turn the nosepiece at every point)
+	m_overviewPerPointCheckbox = new QCheckBox("BF image at points", objectiveGroup);
+	m_overviewPerPointCheckbox->setToolTip("A brightfield image at every N-th measured point, with the objective that measures. Not available for the other "
+		"objectives: they would have to turn the nosepiece at every point.");
+	objectiveGrid->addWidget(m_overviewPerPointCheckbox, 8, 0, 1, 2);
+	objectiveGrid->addWidget(new QLabel("Every N points", objectiveGroup), 9, 0);
+	m_overviewPerPointEverySpinBox = new QSpinBox(objectiveGroup);
+	m_overviewPerPointEverySpinBox->setRange(1, 100000);
+	objectiveGrid->addWidget(m_overviewPerPointEverySpinBox, 9, 1);
+	m_overviewPerPointDuringCheckbox = new QCheckBox("During the exposure", objectiveGroup);
+	m_overviewPerPointDuringCheckbox->setToolTip("Take the image while the Brillouin spectrum is exposed (no extra time), instead of after it.");
+	objectiveGrid->addWidget(m_overviewPerPointDuringCheckbox, 10, 0, 1, 2);
 	layout->addWidget(objectiveGroup);
 
 	// ---- when
@@ -190,44 +202,33 @@ void BrillouinAcquisition::setupOverviewTab() {
 	shrinkableCombo(m_driftObjectiveCombo);
 	m_driftObjectiveCombo->setToolTip("Only objectives that take overviews can be chosen. The centre slice of a z stack is used.");
 	driftGrid->addWidget(m_driftObjectiveCombo, 1, 0, 1, 2);
-	// the limits of what is believed: the defaults are fine, so they are folded away
-	auto* advancedToggle = new QToolButton(driftGroup);
-	advancedToggle->setText("Advanced");
-	advancedToggle->setCheckable(true);
-	advancedToggle->setAutoRaise(true);
-	advancedToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-	advancedToggle->setArrowType(Qt::RightArrow);
-	advancedToggle->setToolTip("When a measured drift step is believed: correlation, largest step, fastest drift. The defaults are fine for most samples.");
-	driftGrid->addWidget(advancedToggle, 2, 0, 1, 2);
+	// the limits of what is believed (see the tooltips)
 	auto* driftAdvanced = new QWidget(driftGroup);
 	auto* advancedGrid = new QGridLayout(driftAdvanced);
 	advancedGrid->setContentsMargins(0, 0, 0, 0);
 	advancedGrid->setHorizontalSpacing(4);
 	advancedGrid->setVerticalSpacing(2);
-	driftAdvanced->setVisible(false);
-	driftGrid->addWidget(driftAdvanced, 3, 0, 1, 2);
-	connect(advancedToggle, &QToolButton::toggled, driftAdvanced, [driftAdvanced, advancedToggle](bool open) {
-		driftAdvanced->setVisible(open);
-		advancedToggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
-	});
+	driftGrid->addWidget(driftAdvanced, 2, 0, 1, 2);
 	advancedGrid->addWidget(new QLabel("Min. corr.", driftAdvanced), 0, 0);
 	m_driftMinNccSpinBox = new QDoubleSpinBox(driftAdvanced);
 	m_driftMinNccSpinBox->setRange(0.05, 0.99);
 	m_driftMinNccSpinBox->setSingleStep(0.05);
 	m_driftMinNccSpinBox->setDecimals(2);
-	m_driftMinNccSpinBox->setToolTip("Normalised cross-correlation of the overviews below which a step is not applied (unrelated images give up to about 0.2).");
+	m_driftMinNccSpinBox->setToolTip("How alike the two overviews have to be (normalised cross-correlation, 1 = identical) for the measured shift to be believed. Consecutive overviews of a stable sample give 0.9 and more, unrelated images up to about 0.2.");
 	advancedGrid->addWidget(m_driftMinNccSpinBox, 0, 1);
 	advancedGrid->addWidget(new QLabel("Max. step", driftAdvanced), 1, 0);
 	m_driftMaxStepSpinBox = new QDoubleSpinBox(driftAdvanced);
 	m_driftMaxStepSpinBox->setSuffix(" µm");
 	m_driftMaxStepSpinBox->setRange(1.0, 1000.0);
 	m_driftMaxStepSpinBox->setDecimals(0);
+	m_driftMaxStepSpinBox->setToolTip("A shift larger than this between two overviews is not believed (a wrong match, not drift).");
 	advancedGrid->addWidget(m_driftMaxStepSpinBox, 1, 1);
 	advancedGrid->addWidget(new QLabel("Max. speed", driftAdvanced), 2, 0);
 	m_driftMaxSpeedSpinBox = new QDoubleSpinBox(driftAdvanced);
 	m_driftMaxSpeedSpinBox->setSuffix(" µm/min");
 	m_driftMaxSpeedSpinBox->setRange(1.0, 1000.0);
 	m_driftMaxSpeedSpinBox->setDecimals(0);
+	m_driftMaxSpeedSpinBox->setToolTip("A shift that would mean drifting faster than this (shift divided by the time since the last accepted overview) is not believed.");
 	advancedGrid->addWidget(m_driftMaxSpeedSpinBox, 2, 1);
 	m_driftExtrapolateCheckbox = new QCheckBox("Keep last drift speed", driftAdvanced);
 	m_driftExtrapolateCheckbox->setToolTip("Between two overviews the grid keeps moving at the speed of the last accepted step (limited to twice the interval).");
@@ -244,13 +245,9 @@ void BrillouinAcquisition::setupOverviewTab() {
 	layout->addStretch(1);
 
 	ui->acquisitionModeTabs->addTab(m_overviewTabPage, "Overview");
-	// The overview of the objective that measures is set here now (the same settings, coupled): its rows in the Fluorescence tab are folded
-	// away, only the brightfield image at each point stays there
-	for (QWidget* legacy : std::initializer_list<QWidget*>{ ui->saveOverviewBrightfieldPerZCheckbox, ui->overviewSingleImageRadio,
-		ui->overviewFullGridRadio, ui->overviewFullStackCheckbox }) {
-		legacy->hide();
-	}
-	ui->bfOverviewGroupBox->setTitle("BF at each point");
+	// The overview and the brightfield image at the points of the objective that measures are set here now (the same settings, coupled):
+	// the "BF overview" box of the Fluorescence tab is gone, its controls stay behind it as the ones this tab operates
+	ui->bfOverviewGroupBox->hide();
 	arrangeAcquisitionTabs();
 
 	// ---- the repeat of the surface scan, in the Surface scanning tab below its group (the group has a fixed height of 380, the tab 456)
@@ -366,6 +363,22 @@ void BrillouinAcquisition::setupOverviewTab() {
 		}
 		if (auto* entry = findOverviewObjectiveEntry(m_overviewSelectedSlot, true)) {
 			entry->stackRangeUm = value;
+		}
+	});
+	connect(m_overviewPerPointCheckbox, &QCheckBox::toggled, this, [this](bool checked) {
+		if (!m_updatingOverviewTab && m_capturePerPointBrightfieldCheckbox) {
+			m_capturePerPointBrightfieldCheckbox->setChecked(checked);
+		}
+		updateOverviewTab();
+	});
+	connect(m_overviewPerPointEverySpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+		if (!m_updatingOverviewTab && m_perPointBrightfieldEveryNSpinBox) {
+			m_perPointBrightfieldEveryNSpinBox->setValue(value);
+		}
+	});
+	connect(m_overviewPerPointDuringCheckbox, &QCheckBox::toggled, this, [this](bool checked) {
+		if (!m_updatingOverviewTab && m_perPointBrightfieldDuringAcquisitionCheckbox) {
+			m_perPointBrightfieldDuringAcquisitionCheckbox->setChecked(checked);
 		}
 	});
 	connect(m_overviewTriggerCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
@@ -597,6 +610,14 @@ void BrillouinAcquisition::updateOverviewTab() {
 		// the stack of the measuring objective spans the grid's z range (zMin to zMax, zSteps images)
 		m_overviewObjectiveStackStepsSpinBox->setEnabled(overviewPossible && shown.active && shown.fullStack && !measuring);
 		m_overviewObjectiveStackRangeSpinBox->setEnabled(overviewPossible && shown.active && shown.fullStack && !measuring);
+		// brightfield images at the points: only the objective that measures has them
+		const auto perPointOn = settings.capturePerPointBrightfield;
+		m_overviewPerPointCheckbox->setChecked(measuring && perPointOn);
+		m_overviewPerPointCheckbox->setEnabled(overviewPossible && measuring);
+		m_overviewPerPointEverySpinBox->setValue(settings.perPointBrightfieldEveryN);
+		m_overviewPerPointEverySpinBox->setEnabled(overviewPossible && measuring && perPointOn);
+		m_overviewPerPointDuringCheckbox->setChecked(settings.perPointBrightfieldDuringAcquisition);
+		m_overviewPerPointDuringCheckbox->setEnabled(overviewPossible && measuring && perPointOn);
 		const auto* stackTip = measuring ? "The stack of the measuring objective spans the grid's z range." : "";
 		m_overviewObjectiveStackStepsSpinBox->setToolTip(stackTip);
 		m_overviewObjectiveStackRangeSpinBox->setToolTip(stackTip);

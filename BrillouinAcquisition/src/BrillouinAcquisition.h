@@ -507,6 +507,9 @@ private:
 	QDoubleSpinBox* m_driftMaxSpeedSpinBox{ nullptr };
 	QCheckBox* m_driftExtrapolateCheckbox{ nullptr };
 	QLabel* m_driftStatusLabel{ nullptr };
+	QCheckBox* m_overviewPerPointCheckbox{ nullptr };
+	QSpinBox* m_overviewPerPointEverySpinBox{ nullptr };
+	QCheckBox* m_overviewPerPointDuringCheckbox{ nullptr };
 	QCheckBox* m_livePreviewsCheckbox{ nullptr };
 	QGroupBox* m_surfaceRescanGroup{ nullptr };
 	QComboBox* m_surfaceRescanCombo{ nullptr };
