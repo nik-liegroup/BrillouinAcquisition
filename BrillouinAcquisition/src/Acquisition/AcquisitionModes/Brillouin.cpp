@@ -515,6 +515,19 @@ void Brillouin::setScanOrderAuto(bool automatical) {
 	determineScanOrder();
 }
 
+void Brillouin::setScanOrder(const SCAN_ORDER& order) {
+	// a permutation of the loop levels 0, 1, 2 only
+	const auto valid = order.x >= 0 && order.x <= 2 && order.y >= 0 && order.y <= 2 && order.z >= 0 && order.z <= 2
+		&& order.x != order.y && order.x != order.z && order.y != order.z;
+	m_scanOrder.automatical = order.automatical;
+	if (valid) {
+		m_scanOrder.x = order.x;
+		m_scanOrder.y = order.y;
+		m_scanOrder.z = order.z;
+	}
+	determineScanOrder();
+}
+
 bool Brillouin::isZOutermostInPlan() const {
 	for (size_t ii{ 1 }; ii < m_orderedIndices.size(); ii++) {
 		if (m_orderedIndices[ii].z < m_orderedIndices[ii - 1].z) {

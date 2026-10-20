@@ -138,6 +138,7 @@
     <ClCompile Include="DriftTest.cpp" />
     <ClCompile Include="OverviewScheduleTest.cpp" />
     <ClCompile Include="ResumeSettingsTest.cpp" />
+    <ClCompile Include="ResumeFileTest.cpp" />
     <ClCompile Include="POINT2Test.cpp" />
     <ClCompile Include="POINT3Test.cpp" />
     <ClCompile Include="ScanControlProjectionTest.cpp" />

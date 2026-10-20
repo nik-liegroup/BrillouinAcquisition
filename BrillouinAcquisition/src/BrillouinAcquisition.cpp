@@ -26,6 +26,11 @@ namespace {
 	constexpr const char* kSettingsOrg = "Guck Lab";
 	constexpr const char* kSettingsApp = "Brillouin Acquisition Experimental";
 
+	// Working defaults of the Brillouin camera in this version (not taken from the settings file other versions share)
+	constexpr double kBrillouinCameraDefaultExposure = 0.2;				// [s]
+	const std::wstring kBrillouinCameraDefaultBinning = L"2x2";
+	const std::wstring kBrillouinCameraDefaultReadoutRate = L"100 MHz";
+
 	// Indices of the first point of every distinct (x, y) column, in original order. Every z layer
 	// of a column is generated from the exact same x/y value, so exact equality is safe.
 	std::vector<size_t> uniqueXYIndices(const std::vector<POINT3>& positions) {
@@ -196,7 +201,7 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		m_Brillouin,
 		&Brillouin::s_askSurfacePrior,
 		this,
-		[this](QString text, bool offerReuse, int timeoutSeconds) { showSurfacePriorQuestion(text, offerReuse, timeoutSeconds); }
+		[this](QString text, bool offerPrior, bool offerReuse, int timeoutSeconds) { showSurfacePriorQuestion(text, offerPrior, offerReuse, timeoutSeconds); }
 	);
 
 	// slot to update filename
@@ -3683,12 +3688,26 @@ void BrillouinAcquisition::restoreCameraSettings() {
 	this->on_ROIWidth_valueChanged(width_phsical);
 	auto height_phsical = settings.value("brillouin-camera-roi-height-physical").toInt();
 	this->on_ROIHeight_valueChanged(height_phsical);
-	auto exposureTime = settings.value("brillouin-camera-exposure-time", 0.5).toDouble();
-	ui->exposureTime->setValue(exposureTime);
+	// The frame count is only read from the shared settings file (never written by this version, see writeSettings()); the rest of the
+	// Brillouin camera has the working defaults of this version, not what another version left in the shared file.
 	auto frameCount = settings.value("brillouin-camera-frame-count", 2).toInt();
 	ui->frameCount->setValue(frameCount);
-
 	settings.endGroup();
+
+	const std::wstring preAmpDefault = ui->preAmpGain->count() > 2 ? ui->preAmpGain->itemText(2).toStdWString() : std::wstring{ L"16-bit (low noise & high well capacity)" };
+	ui->exposureTime->setValue(kBrillouinCameraDefaultExposure);
+	ui->binning->setCurrentText(QString::fromStdWString(kBrillouinCameraDefaultBinning));
+	ui->pixelReadoutRate->setCurrentText(QString::fromStdWString(kBrillouinCameraDefaultReadoutRate));
+	if (ui->preAmpGain->count() > 2) {
+		ui->preAmpGain->setCurrentIndex(2);
+	}
+	// the settings themselves as well (a combo box that already shows the value does not report a change), then to the camera
+	auto& camera = m_Brillouin->settings.camera;
+	camera.exposureTime = kBrillouinCameraDefaultExposure;
+	camera.roi.binning = kBrillouinCameraDefaultBinning;
+	camera.readout.pixelReadoutRate = kBrillouinCameraDefaultReadoutRate;
+	camera.readout.preAmpGain = preAmpDefault;
+	applyCameraSettings();
 }
 
 void BrillouinAcquisition::showNoCameraFound() {
@@ -7784,12 +7803,8 @@ void BrillouinAcquisition::writeSettings() {
 	settings.setValue("brillouin-surface-proxy-roi-2-frame-origin-bottom", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameOriginBottom);
 	settings.setValue("brillouin-surface-proxy-roi-2-frame-width-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameWidthPhysical);
 	settings.setValue("brillouin-surface-proxy-roi-2-frame-height-physical", (qlonglong)m_Brillouin->settings.surfaceProxyRoi2FrameHeightPhysical);
-	settings.setValue("brillouin-camera-roi-left", m_deviceSettings.camera.roi.left);
-	settings.setValue("brillouin-camera-roi-top", m_deviceSettings.camera.roi.top);
-	settings.setValue("brillouin-camera-roi-width-physical", m_deviceSettings.camera.roi.width_physical);
-	settings.setValue("brillouin-camera-roi-height-physical", m_deviceSettings.camera.roi.height_physical);
-	settings.setValue("brillouin-camera-exposure-time", m_Brillouin->settings.camera.exposureTime);
-	settings.setValue("brillouin-camera-frame-count", m_Brillouin->settings.camera.frameCount);
+	// The Brillouin camera settings (ROI, exposure, frame count) are deliberately NOT written: several versions of the software on this computer
+	// share this file, and this one has its own working defaults (restoreCameraSettings()). Every measurement stores its camera settings in its file.
 	writeOverviewSettings(settings);
 	settings.endGroup();
 }

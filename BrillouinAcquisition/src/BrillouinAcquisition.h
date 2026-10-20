@@ -526,7 +526,7 @@ private:
 	void updateContinueAvailability();
 	void onBrillouinContinueClicked();
 	void applyRestoredBrillouinSettings(const BRILLOUIN_SETTINGS& restored);
-	void showSurfacePriorQuestion(const QString& text, bool offerReuse, int timeoutSeconds);
+	void showSurfacePriorQuestion(const QString& text, bool offerPrior, bool offerReuse, int timeoutSeconds);
 	void writeOverviewSettings(QSettings& settings);
 	void readOverviewSettings(QSettings& settings);
 

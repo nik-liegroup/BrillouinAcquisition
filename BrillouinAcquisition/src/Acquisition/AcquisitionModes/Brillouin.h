@@ -8,6 +8,7 @@
 #include "src/lib/math/drift.h"
 #include "src/Acquisition/Planning/OverviewSchedule.h"
 #include "ResumeRecord.h"
+#include "ResumeFile.h"
 #include <functional>
 #include <map>
 #include <limits>
@@ -28,6 +29,9 @@ struct SCAN_ORDER {
 	int y{ 1 };	// then in y-direction
 	int z{ 2 };	// scan in z-direction last
 };
+
+// Writes the live previews of the overviews on a thread of its own (Brillouin_Overview.cpp)
+class LivePreviewWorker;
 
 // What an overview with one objective looks like (the settings of the objective that measures are the BF overview settings of
 // BRILLOUIN_SETTINGS below; this is for the others, see Brillouin_Overview.cpp). Each objective has its own, independent of the others.
@@ -516,51 +520,8 @@ public:
 	// gets a message and can change the settings; nothing is created or saved then. Uses the settings last given to setSettings().
 	bool validateOverviewSetup(std::string* problem) const { return checkOverviewSetup(problem); }
 
-	// Everything a continue of an interrupted measurement (crash, cancel, pause) needs, read from the file (Brillouin_Resume.cpp)
-	struct ResumeInfo {
-		int repetition{ -1 };				// the Brillouin repetition in the file
-		int fluorescenceRepetition{ -1 };	// the one holding its overview images, -1 if none
-		std::string state;					// "measuring" or "stopped"
-		resume::Record settings;			// the settings the measurement was started with
-		POINT3 startPosition{ 0.0, 0.0, 0.0 };
-		int objectiveSlot{ -1 };
-		bool gridAbsolute{ false };
-		int seriesRepetition{ 0 };			// which repetition of the series this was
-		std::vector<POINT3> positions;		// the plan: stage positions (z as the surface scan left them), in measurement order
-		std::vector<POINT3> positionsRelative;
-		std::vector<INDEX3> indices;
-		std::vector<bool> calibrationAllowed;
-		int pointsTotal{ 0 };
-		int pointsDone{ 0 };				// planned points that are complete in the file (the first ones of the plan)
-		bool orderedPrefix{ true };			// false: the complete points are not the first ones of the plan
-		std::vector<int> incompletePoints;	// created but not complete (the write was cut short): removed on continue
-		std::string lastDataDate;
-		int calibrations{ 0 };
-		int backgrounds{ 0 };
-		int overviewEvents{ 0 };
-		int surfaceRescans{ 0 };
-		int resumeEvents{ 0 };				// how often this measurement was continued before
-		POINT2 carriedOffset{ 0.0, 0.0 };	// grid offset the repetition started with
-		std::vector<int> eventPointIndex;	// per overview event: the point it came after, and the grid offset from then on
-		std::vector<POINT2> eventOffsetAfter;
-		// A measurement that stopped during its surface scan ("surface-scan"): the medium reference and every column that was finished
-		struct SurfaceColumn {
-			int xi{ 0 };
-			int yi{ 0 };
-			bool valid{ false };
-			double z{ 0.0 };
-			int order{ -1 };
-			double metric{ 0.0 };
-			std::vector<double> curveZ;
-			std::vector<double> curveMetric;
-		};
-		bool surfaceScanPhase{ false };
-		double surfaceReference{ std::numeric_limits<double>::quiet_NaN() };
-		std::vector<SurfaceColumn> surfaceColumns;
-		std::vector<double> prescanZ;		// the surface of the last surface scan (flat like m_surfacePreScanZUm)
-		std::vector<double> prescanFound;
-		double referenceThreshold{ std::numeric_limits<double>::quiet_NaN() };
-	};
+	// Everything a continue of an interrupted measurement (crash, cancel, pause) needs, read from the file (ResumeFile.h, Brillouin_Resume.cpp)
+	using ResumeInfo = resume::Info;
 	// Reads it from the file; `storage` must be used on its own thread (call from there). False with the reason if the file holds nothing
 	// that can be continued. Opens the repetition it found (no data is changed).
 	static bool readResumeInfo(StorageWrapper* storage, ResumeInfo* info, std::string* problem);
@@ -573,6 +534,9 @@ public slots:
 	// The operator's answer to the question about the surface scan of an earlier repetition (see s_askSurfacePrior()):
 	// 0 new scan from scratch (as always), 1 new scan that starts from the earlier one, 2 no new scan, the earlier surface is used
 	void setSurfacePriorAnswer(int choice);
+	// The order the axes are scanned in (saved with the settings, in the file and in the application settings)
+	SCAN_ORDER scanOrder() const { return m_scanOrder; }
+	void setScanOrder(const SCAN_ORDER& order);
 	// What the operator allowed for the next continueRepetition(): move the stage to the saved start position (relative mode), turn the
 	// nosepiece back to the objective of the measurement (after retracting z) if another one is in the beam
 	void setResumeOptions(bool moveToStart, bool switchObjective) {
@@ -959,6 +923,7 @@ private:
 	void writeLivePreview(const std::string& name, const std::vector<std::byte>& image, const CAMERA_SETTINGS& settings);
 	void appendLiveLog(const std::string& line);
 	bool m_livePreviewFailed{ false };
+	std::shared_ptr<LivePreviewWorker> m_livePreviewWorker;		// writes the previews in the background
 	void writeSurfaceCheckpointReference(double mediumReference, size_t columnsX, size_t columnsY);
 	void writeSurfaceCheckpointColumn(gsl::index xi, gsl::index yi, bool valid, double z, int order, double metric,
 		const std::vector<double>& curveZ, const std::vector<double>& curveMetric);
@@ -969,18 +934,8 @@ private:
 
 	// ---- the surface scan of an earlier repetition of the file (Brillouin_Resume.cpp)
 	enum class SURFACE_STRATEGY { NEW_SCAN = 0, PRIOR = 1, REUSE = 2 };
-	struct PreviousSurface {
-		int repetition{ -1 };
-		std::vector<double> z;				// coarse surface of that scan (flat like m_surfacePreScanZUm) and where it was found
-		std::vector<double> found;
-		bool hasPlan{ false };				// the plan of that repetition is in the file: its surface can be used without a new scan
-		std::vector<INDEX3> planIndices;
-		std::vector<double> planZ;			// z of its points (stage frame)
-		POINT3 startPosition{ 0.0, 0.0, 0.0 };
-		std::map<std::string, double> settings;		// grid and surface scan settings of that repetition
-	};
-	static bool readPreviousSurface(StorageWrapper* storage, int beforeRepetition, PreviousSurface* previous);
-	// Asks the operator (popup with a timer, default: new scan) if the file holds a surface scan of an earlier repetition
+	using PreviousSurface = resume::PreviousSurface;
+	// Asks the operator (popup with a timer, default: start from the earlier scan) if the file holds a surface scan of an earlier repetition
 	SURFACE_STRATEGY chooseSurfaceStrategy(std::unique_ptr<StorageWrapper>& storage, PreviousSurface* previous);
 	void applyPreviousSurface(const PreviousSurface& previous);
 	int m_surfacePriorAnswer{ -1 };
@@ -1142,8 +1097,8 @@ signals:
 	void s_excludedPositionsChanged(std::vector<POINT3>);
 	void s_surfaceScanProgress(double progress, QString message);
 	// A surface scan of an earlier repetition is in the file: ask the operator how to use it. The answer comes back through
-	// setSurfacePriorAnswer(); without one after timeoutSeconds the GUI answers 0 (new scan from scratch).
-	void s_askSurfacePrior(QString text, bool offerReuse, int timeoutSeconds);
+	// setSurfacePriorAnswer(); without one after timeoutSeconds the GUI answers 1 (start from the earlier scan) if that is offered, else 0.
+	void s_askSurfacePrior(QString text, bool offerPrior, bool offerReuse, int timeoutSeconds);
 	// elapsed wall-clock time since the main measurement grid started, in seconds - drives the
 	// live elapsed-time display that replaces the static pre-run estimate in estimatedAcquisitionTime
 	// once a measurement is actually running (see BrillouinAcquisition::showMeasurementElapsedTime()).

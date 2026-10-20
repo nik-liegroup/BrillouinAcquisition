@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "Brillouin.h"
 #include "BrillouinResume.h"
+#include "ResumeFile.h"
 #include "src/helper/logger.h"
 
 #include <algorithm>
@@ -12,216 +13,17 @@
 #include <thread>
 
 /*
- * Continue of an interrupted measurement: crash, cancel, pause. Everything needed is in the file of the measurement:
- *  - the state of the repetition ("preparing", "measuring", "stopped", "finished" - attribute acquisition_state of the repetition group),
+ * Continue of an interrupted measurement: crash, cancel, pause. Everything needed is in the file of the measurement (what is written and how it
+ * is read back is in ResumeFile.h):
+ *  - the state of the repetition ("preparing", "surface-scan", "measuring", "stopped", "finished", ... - attribute acquisition_state),
  *  - the settings in full, the start position, the objective, the plan (positions in measuring order, z as the surface scan left them),
  *  - which points are in the file (the points themselves), and the overview events and surface rescans of the engine.
  * A continue appends to the same repetition, starts at the first point that is not complete in the file and notes in the file where and when
  * the measurement was stopped (resume-event-N-*). It is never started by itself: the operator loads the file and presses Continue.
  */
 
-namespace {
-
-	std::string padded(int number, int digits) {
-		auto text = std::to_string(number);
-		while ((int)text.size() < digits) {
-			text = "0" + text;
-		}
-		return text;
-	}
-
-}
-
 bool Brillouin::readResumeInfo(StorageWrapper* storage, ResumeInfo* info, std::string* problem) {
-	auto fail = [&](const std::string& text) {
-		if (problem) {
-			*problem = text;
-		}
-		return false;
-	};
-	if (!storage || !storage->isWritable()) {
-		return fail("No acquisition file is open for writing.");
-	}
-	const auto repetition = storage->lastRepetition(ACQUISITION_MODE::BRILLOUIN);
-	if (repetition < 0) {
-		return fail("The open file holds no Brillouin measurement.");
-	}
-	const auto state = storage->getRepetitionState(ACQUISITION_MODE::BRILLOUIN, repetition);
-	if (state.empty()) {
-		return fail("The last Brillouin measurement of this file was written by a version that cannot be continued.");
-	}
-	if (state == "finished") {
-		return fail("The last Brillouin measurement of this file is finished.");
-	}
-	if (state == "preparing") {
-		return fail("The last Brillouin measurement was stopped before it started measuring (during the surface scan or before it), so there is nothing to continue; start it again.");
-	}
-	const auto surfacePhase = state == "surface-scan" || state == "surface-scan-stopped";
-	if (state != "measuring" && state != "stopped" && !surfacePhase) {
-		return fail("The last Brillouin measurement of this file is in the state \"" + state + "\", which cannot be continued.");
-	}
-	if (!storage->openRepetition(ACQUISITION_MODE::BRILLOUIN, repetition)) {
-		return fail("The last Brillouin measurement of this file cannot be opened.");
-	}
-
-	ResumeInfo result;
-	result.repetition = repetition;
-	result.state = state;
-
-	std::vector<double> values;
-	const auto number = [&](const std::string& name, size_t count) {
-		return storage->getResumeNumbers(name, &values) && values.size() >= count;
-	};
-	if (!number("version", 1)) {
-		return fail("The file has no continue information for its last Brillouin measurement.");
-	}
-	if (!number("start-position", 3)) {
-		return fail("The start position of the measurement is not in the file.");
-	}
-	result.startPosition = POINT3{ values[0], values[1], values[2] };
-	if (number("objective-slot", 1)) {
-		result.objectiveSlot = (int)std::llround(values[0]);
-	}
-	if (number("series", 1)) {
-		result.seriesRepetition = (int)std::llround(values[0]);
-	}
-	if (number("fluorescence-repetition", 1)) {
-		result.fluorescenceRepetition = (int)std::llround(values[0]);
-	}
-
-	// the settings
-	for (const auto& name : resume::settingNames(true)) {
-		if (storage->getResumeNumbers("s." + name, &values)) {
-			result.settings.numbers[name] = values;
-		}
-	}
-	for (const auto& name : resume::settingNames(false)) {
-		std::string text;
-		if (storage->getResumeText("s." + name, &text)) {
-			result.settings.strings[name] = text;
-		}
-	}
-	if (result.settings.numbers.empty()) {
-		return fail("The settings of the measurement are not in the file.");
-	}
-	const auto absolute = result.settings.numbers.find("gridCoordinatesAbsolute");
-	result.gridAbsolute = absolute != result.settings.numbers.end() && !absolute->second.empty() && absolute->second.front() != 0.0;
-
-	if (surfacePhase) {
-		// stopped during the surface scan: the checkpoint (medium reference, every column that was finished), no plan yet
-		result.surfaceScanPhase = true;
-		std::vector<double> reference;
-		if (!storage->getResumeNumbers("surface-reference", &reference) || reference.size() < 4) {
-			return fail("The measurement stopped during its surface scan before the medium reference was measured; start it again.");
-		}
-		result.surfaceReference = reference[0];
-		const auto columnsX = (int)std::llround(reference[2]);
-		const auto columnsY = (int)std::llround(reference[3]);
-		for (auto yi = 0; yi < columnsY; yi++) {
-			for (auto xi = 0; xi < columnsX; xi++) {
-				std::vector<double> column;
-				if (!storage->getResumeNumbers("surface-col-" + std::to_string(yi) + "-" + std::to_string(xi), &column) || column.size() < 5) {
-					continue;
-				}
-				ResumeInfo::SurfaceColumn entry;
-				entry.xi = xi;
-				entry.yi = yi;
-				entry.valid = column[0] != 0.0;
-				entry.z = column[1];
-				entry.order = (int)std::llround(column[2]);
-				entry.metric = column[3];
-				const auto samples = (size_t)std::llround(column[4]);
-				if (column.size() >= 5 + 2 * samples) {
-					entry.curveZ.assign(column.begin() + 5, column.begin() + 5 + samples);
-					entry.curveMetric.assign(column.begin() + 5 + samples, column.begin() + 5 + 2 * samples);
-				}
-				result.surfaceColumns.push_back(std::move(entry));
-			}
-		}
-		for (auto k = 0; storage->getResumeNumbers("event-" + padded(k, 4) + "-point-index", &values); k++) {
-			result.resumeEvents++;
-		}
-		*info = std::move(result);
-		return true;
-	}
-
-	// the plan
-	std::vector<double> ix, iy, iz, px, py, pz, rx, ry, rz, allowed;
-	if (!storage->getResumeNumbers("plan-index-x", &ix) || !storage->getResumeNumbers("plan-index-y", &iy) || !storage->getResumeNumbers("plan-index-z", &iz)
-		|| !storage->getResumeNumbers("plan-pos-x", &px) || !storage->getResumeNumbers("plan-pos-y", &py) || !storage->getResumeNumbers("plan-pos-z", &pz)
-		|| !storage->getResumeNumbers("plan-posrel-x", &rx) || !storage->getResumeNumbers("plan-posrel-y", &ry) || !storage->getResumeNumbers("plan-posrel-z", &rz)
-		|| !storage->getResumeNumbers("plan-calibration-allowed", &allowed)) {
-		return fail("The plan of the measurement (its points) is not in the file.");
-	}
-	const auto total = ix.size();
-	if (total == 0 || iy.size() != total || iz.size() != total || px.size() != total || py.size() != total || pz.size() != total || rx.size() != total
-		|| ry.size() != total || rz.size() != total || allowed.size() != total) {
-		return fail("The plan of the measurement in the file is inconsistent.");
-	}
-	for (size_t i = 0; i < total; i++) {
-		result.indices.push_back(INDEX3{ (int)std::llround(ix[i]), (int)std::llround(iy[i]), (int)std::llround(iz[i]) });
-		result.positions.push_back(POINT3{ px[i], py[i], pz[i] });
-		result.positionsRelative.push_back(POINT3{ rx[i], ry[i], rz[i] });
-		result.calibrationAllowed.push_back(allowed[i] != 0.0);
-	}
-	result.pointsTotal = (int)total;
-
-	// which points are in the file
-	std::vector<int> complete;
-	storage->listPayloadPoints(&complete, &result.incompletePoints);
-	const std::set<int> completeSet(complete.begin(), complete.end());
-	std::vector<bool> done(total, false);
-	for (size_t i = 0; i < total; i++) {
-		done[i] = completeSet.count(storage->payloadIndex(result.indices[i].x, result.indices[i].y, result.indices[i].z)) > 0;
-	}
-	result.pointsDone = 0;
-	while ((size_t)result.pointsDone < total && done[(size_t)result.pointsDone]) {
-		result.pointsDone++;
-	}
-	for (size_t i = (size_t)result.pointsDone; i < total; i++) {
-		if (done[i]) {
-			result.orderedPrefix = false;
-		}
-	}
-	if (result.pointsDone > 0) {
-		const auto& last = result.indices[(size_t)result.pointsDone - 1];
-		result.lastDataDate = storage->getPayloadDateByIndex(storage->payloadIndex(last.x, last.y, last.z));
-	}
-	result.calibrations = storage->countCalibrationData();
-	result.backgrounds = storage->countBackgroundData();
-
-	// the engine: overview events (with the grid offset from them on), surface rescans, earlier continues
-	for (auto k = 0;; k++) {
-		std::vector<double> point, offset;
-		const auto prefix = "overview-event-" + padded(k, 4) + "-";
-		if (!storage->readPositions(prefix + "point-index", &point) || point.empty() || !storage->readPositions(prefix + "grid-offset-after-um", &offset)
-			|| offset.size() < 2) {
-			break;
-		}
-		result.eventPointIndex.push_back((int)std::llround(point[0]));
-		result.eventOffsetAfter.push_back(POINT2{ offset[0], offset[1] });
-	}
-	result.overviewEvents = (int)result.eventPointIndex.size();
-	for (auto k = 0; storage->readPositions("surface-rescan-" + padded(k, 4) + "-success", &values); k++) {
-		result.surfaceRescans++;
-	}
-	for (auto k = 0; storage->getResumeNumbers("event-" + padded(k, 4) + "-point-index", &values); k++) {
-		result.resumeEvents++;
-	}
-	std::vector<double> carriedX, carriedY;
-	if (storage->readPositions("drift-carried-over-x-um", &carriedX) && storage->readPositions("drift-carried-over-y-um", &carriedY) && !carriedX.empty() && !carriedY.empty()) {
-		result.carriedOffset = POINT2{ carriedX[0], carriedY[0] };
-	}
-
-	// the last surface scan (the prior of a later rescan)
-	storage->readPositions("surface-prescan-z-um", &result.prescanZ);
-	storage->readPositions("surface-prescan-found-mask", &result.prescanFound);
-	if (storage->readPositions("surface-reference-threshold-computed", &values) && !values.empty()) {
-		result.referenceThreshold = values[0];
-	}
-
-	*info = std::move(result);
-	return true;
+	return resume::readInfo(storage, ACQUISITION_MODE::BRILLOUIN, resume::settingNames(true), resume::settingNames(false), info, problem);
 }
 
 void Brillouin::setStorageState(const std::string& state) {
@@ -236,54 +38,24 @@ void Brillouin::setStorageState(const std::string& state) {
 
 void Brillouin::writeResumePlan(std::unique_ptr<StorageWrapper>& storage, bool direct) {
 	auto* target = storage.get();
-	const auto put = [&](const std::string& name, const std::vector<double>& values) {
-		if (direct) {
-			target->setResumeNumbers(name, values);
-		} else {
-			QMetaObject::invokeMethod(target, [target, name, values]() { target->setResumeNumbers(name, values); }, Qt::AutoConnection);
-		}
-	};
-	const auto count = m_orderedPositions.size();
-	std::vector<double> ix(count), iy(count), iz(count), px(count), py(count), pz(count), rx(count), ry(count), rz(count), allowed(count);
-	for (size_t i = 0; i < count; i++) {
-		ix[i] = m_orderedIndices[i].x;
-		iy[i] = m_orderedIndices[i].y;
-		iz[i] = m_orderedIndices[i].z;
-		px[i] = m_orderedPositions[i].x;
-		py[i] = m_orderedPositions[i].y;
-		pz[i] = m_orderedPositions[i].z;
-		rx[i] = m_orderedPositionsRelative[i].x;
-		ry[i] = m_orderedPositionsRelative[i].y;
-		rz[i] = m_orderedPositionsRelative[i].z;
-		allowed[i] = m_calibrationAllowed[i] ? 1.0 : 0.0;
+	resume::Plan plan;
+	plan.positions = m_orderedPositions;
+	plan.positionsRelative = m_orderedPositionsRelative;
+	plan.indices = m_orderedIndices;
+	plan.calibrationAllowed = m_calibrationAllowed;
+	if (direct) {
+		resume::writePlan(target, plan);
+	} else {
+		// mid-measurement the storage thread is busy writing: the plan goes through its queue
+		QMetaObject::invokeMethod(target, [target, plan]() { resume::writePlan(target, plan); }, Qt::AutoConnection);
 	}
-	put("plan-index-x", ix);
-	put("plan-index-y", iy);
-	put("plan-index-z", iz);
-	put("plan-pos-x", px);
-	put("plan-pos-y", py);
-	put("plan-pos-z", pz);
-	put("plan-posrel-x", rx);
-	put("plan-posrel-y", ry);
-	put("plan-posrel-z", rz);
-	put("plan-calibration-allowed", allowed);
 }
 
 void Brillouin::writeResumeBasics(std::unique_ptr<StorageWrapper>& storage) {
 	auto* target = storage.get();
-	const auto record = resume::encodeSettings(m_settings);
-	for (const auto& entry : record.numbers) {
-		target->setResumeNumbers("s." + entry.first, entry.second);
-	}
-	for (const auto& entry : record.strings) {
-		target->setResumeText("s." + entry.first, entry.second);
-	}
-	target->setResumeNumbers("version", std::vector<double>{ 1.0 });
-	target->setResumeNumbers("start-position", std::vector<double>{ m_startPosition.x, m_startPosition.y, m_startPosition.z });
-	target->setResumeNumbers("objective-slot", std::vector<double>{ (double)(m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1) });
-	target->setResumeNumbers("series", std::vector<double>{ (double)m_currentRepetition });
 	const auto fluorescence = overviewImagesExpected() ? target->getModeHandle(ACQUISITION_MODE::FLUORESCENCE)->repetitionCount : -1;
-	target->setResumeNumbers("fluorescence-repetition", std::vector<double>{ (double)fluorescence });
+	resume::writeBasics(target, resume::encodeSettings(m_settings), m_startPosition, m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1,
+		m_currentRepetition, fluorescence, m_scanOrder.automatical, m_scanOrder.x, m_scanOrder.y, m_scanOrder.z);
 }
 
 void Brillouin::writeResumeRecord(std::unique_ptr<StorageWrapper>& storage) {
@@ -296,8 +68,7 @@ void Brillouin::writeSurfaceCheckpointReference(double mediumReference, size_t c
 	if (!storage) {
 		return;
 	}
-	// [medium reference, drop fraction, columns in x, columns in y]
-	storage->setResumeNumbers("surface-reference", std::vector<double>{ mediumReference, m_settings.surfaceDropFraction, (double)columnsX, (double)columnsY });
+	resume::writeSurfaceReference(storage, mediumReference, m_settings.surfaceDropFraction, columnsX, columnsY);
 	storage->flushFile();
 }
 
@@ -307,11 +78,7 @@ void Brillouin::writeSurfaceCheckpointColumn(gsl::index xi, gsl::index yi, bool 
 	if (!storage) {
 		return;
 	}
-	// [found, z, order, metric, number of samples, curve z..., curve metric...]
-	std::vector<double> values{ valid ? 1.0 : 0.0, z, (double)order, metric, (double)curveZ.size() };
-	values.insert(values.end(), curveZ.begin(), curveZ.end());
-	values.insert(values.end(), curveMetric.begin(), curveMetric.end());
-	storage->setResumeNumbers("surface-col-" + std::to_string(yi) + "-" + std::to_string(xi), values);
+	resume::writeSurfaceColumn(storage, (int)xi, (int)yi, valid, z, order, metric, curveZ, curveMetric);
 	storage->flushFile();
 }
 
@@ -349,16 +116,28 @@ void Brillouin::continueRepetition() {
 	restored = m_settings;
 	resume::decodeSettings(info.settings, &restored);
 	m_settings = restored;
+	if (info.hasScanOrder) {
+		SCAN_ORDER order;
+		order.automatical = info.scanAutomatic;
+		order.x = info.scanX;
+		order.y = info.scanY;
+		order.z = info.scanZ;
+		setScanOrder(order);
+	}
 
 	if (!m_scanControl) {
 		refuse("No scan control is connected.");
 		return;
 	}
-	if (info.objectiveSlot >= 0 && m_scanControl->getActiveObjectiveSlot() != info.objectiveSlot) {
-		// e.g. the software stopped during an overview with another objective: the measurement continues with the objective it was made with
-		std::string reason;
-		if (m_resumeSwitchObjective && m_settings.overviewObjectiveRetractUm != 0.0
-			&& m_scanControl->canSwitchObjectiveAutomatically(m_scanControl->getActiveObjectiveSlot(), info.objectiveSlot, &reason)) {
+	// e.g. the software stopped during an overview with another objective: the measurement continues with the objective it was made with
+	std::string reason;
+	const auto activeSlot = m_scanControl->getActiveObjectiveSlot();
+	const auto changerAllows = info.objectiveSlot >= 0 && activeSlot != info.objectiveSlot
+		&& m_scanControl->canSwitchObjectiveAutomatically(activeSlot, info.objectiveSlot, &reason);
+	switch (resume::decideObjective(activeSlot, info.objectiveSlot, m_resumeSwitchObjective, m_settings.overviewObjectiveRetractUm, changerAllows)) {
+		case resume::ObjectiveAction::NONE:
+			break;
+		case resume::ObjectiveAction::SWITCH: {
 			closeDoseProtectionShutter();
 			// away from the sample first, as in every automatic switch
 			m_scanControl->movePosition(POINT3{ 0.0, 0.0, m_settings.overviewObjectiveRetractUm });
@@ -367,11 +146,12 @@ void Brillouin::continueRepetition() {
 				refuse("The nosepiece could not be turned to slot " + std::to_string(info.objectiveSlot) + ": " + error);
 				return;
 			}
-		} else {
-			refuse("The objective in slot " + std::to_string(m_scanControl->getActiveObjectiveSlot()) + " is in the beam, the measurement was made with slot "
-				+ std::to_string(info.objectiveSlot) + ". Turn the nosepiece back." + (reason.empty() ? std::string{} : " (" + reason + ")"));
-			return;
+			break;
 		}
+		case resume::ObjectiveAction::REFUSE:
+			refuse("The objective in slot " + std::to_string(activeSlot) + " is in the beam, the measurement was made with slot " + std::to_string(info.objectiveSlot)
+				+ ". Turn the nosepiece back." + (reason.empty() ? std::string{} : " (" + reason + ")"));
+			return;
 	}
 	if (m_settings.gridCoordinatesAbsolute) {
 		const auto activeCalibration = m_scanControl->getActiveObjectiveCalibration();
@@ -422,19 +202,11 @@ void Brillouin::continueRepetition() {
 
 	// the note in the file: where and when the measurement was stopped, and that it was continued
 	{
-		const auto k = padded(info.resumeEvents, 4);
 		const auto now = (double)QDateTime::currentSecsSinceEpoch();
+		const auto date = QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc()).toString(Qt::ISODateWithMs).toStdString();
 		QMetaObject::invokeMethod(storagePtr, [&]() {
-			storagePtr->setResumeNumbers("event-" + k + "-point-index", std::vector<double>{ (double)info.pointsDone });
-			storagePtr->setResumeNumbers("event-" + k + "-points-total", std::vector<double>{ (double)info.pointsTotal });
-			storagePtr->setResumeNumbers("event-" + k + "-resumed-epoch-seconds", std::vector<double>{ now });
-			// 0: nothing was written when the software stopped (crash, power loss), 1: the measurement was cancelled
-			storagePtr->setResumeNumbers("event-" + k + "-was-cancelled", std::vector<double>{ info.state == "stopped" ? 1.0 : 0.0 });
-			storagePtr->setResumeNumbers("event-" + k + "-incomplete-points-removed", std::vector<double>{ (double)info.incompletePoints.size() });
-			storagePtr->setResumeText("event-" + k + "-previous-state", info.state);
-			storagePtr->setResumeText("event-" + k + "-last-point-date", info.lastDataDate);
-			storagePtr->setResumeText("event-" + k + "-resumed-date", QDateTime::currentDateTime().toOffsetFromUtc(QDateTime::currentDateTime().offsetFromUtc())
-				.toString(Qt::ISODateWithMs).toStdString());
+			resume::writeResumeEvent(storagePtr, info.resumeEvents, info.pointsDone, info.pointsTotal, now, info.state == "stopped" || info.state == "surface-scan-stopped",
+				(int)info.incompletePoints.size(), info.state, info.lastDataDate, date);
 		}, Qt::BlockingQueuedConnection);
 	}
 
@@ -543,58 +315,13 @@ void Brillouin::endResumeMode(std::unique_ptr<StorageWrapper>& storage) {
  * The surface scan of an earlier repetition of the file. A new repetition (Restart, or the next repetition of a series) can start its surface
  * scan from it (the offset between the two scans found in the first columns moves the old surface of every other column, see
  * m_surfacePriorZUm) or, if the plan of that repetition is in the file, use its surface as it is without scanning again. The operator is asked
- * in a popup with a timer; without an answer the scan is made from scratch, as always.
+ * in a popup with a timer; without an answer the scan starts from the earlier one (if the grid is the same), else from scratch.
  */
 
 namespace {
 
 	constexpr int kSurfacePriorTimeoutS = 20;
 
-}
-
-bool Brillouin::readPreviousSurface(StorageWrapper* storage, int beforeRepetition, PreviousSurface* previous) {
-	for (auto repetition = beforeRepetition - 1; repetition >= 0; repetition--) {
-		std::vector<double> z, found;
-		if (!storage->readPositionsOfRepetition(ACQUISITION_MODE::BRILLOUIN, repetition, "surface-prescan-z-um", &z)
-			|| !storage->readPositionsOfRepetition(ACQUISITION_MODE::BRILLOUIN, repetition, "surface-prescan-found-mask", &found)
-			|| z.empty() || z.size() != found.size()) {
-			continue;
-		}
-		PreviousSurface result;
-		result.repetition = repetition;
-		result.z = std::move(z);
-		result.found = std::move(found);
-		std::vector<double> ix, iy, iz, pz, start;
-		// the resume vectors carry their length in front (see H5BM::setResumeNumbers())
-		const auto resumeVector = [&](const std::string& name, std::vector<double>* out) {
-			if (!storage->readPositionsOfRepetition(ACQUISITION_MODE::BRILLOUIN, repetition, "resume-" + name, out) || out->empty()) {
-				return false;
-			}
-			out->erase(out->begin());
-			return true;
-		};
-		if (resumeVector("plan-index-x", &ix) && resumeVector("plan-index-y", &iy) && resumeVector("plan-index-z", &iz) && resumeVector("plan-pos-z", &pz)
-			&& resumeVector("start-position", &start)
-			&& ix.size() == iy.size() && ix.size() == iz.size() && ix.size() == pz.size() && !ix.empty() && start.size() >= 3) {
-			result.hasPlan = true;
-			for (size_t i = 0; i < ix.size(); i++) {
-				result.planIndices.push_back(INDEX3{ (int)std::llround(ix[i]), (int)std::llround(iy[i]), (int)std::llround(iz[i]) });
-			}
-			result.planZ = std::move(pz);
-			result.startPosition = POINT3{ start[0], start[1], start[2] };
-		}
-		// the grid and the surface scan settings of that repetition (a surface is only reused for the same grid)
-		for (const char* name : { "xMin", "xMax", "xSteps", "yMin", "yMax", "ySteps", "zMin", "zMax", "zSteps", "gridCoordinatesAbsolute", "preScanXYBin",
-			"absoluteGridOriginUm.x", "absoluteGridOriginUm.y", "absoluteGridOriginUm.z" }) {
-			std::vector<double> value;
-			if (storage->readPositionsOfRepetition(ACQUISITION_MODE::BRILLOUIN, repetition, std::string("resume-s.") + name, &value) && value.size() >= 2) {
-				result.settings[name] = value[1];		// [length, value]
-			}
-		}
-		*previous = std::move(result);
-		return true;
-	}
-	return false;
 }
 
 void Brillouin::setSurfacePriorAnswer(int choice) {
@@ -607,41 +334,45 @@ Brillouin::SURFACE_STRATEGY Brillouin::chooseSurfaceStrategy(std::unique_ptr<Sto
 	}
 	auto* storageObject = storage.get();
 	auto available = false;
-	QMetaObject::invokeMethod(storageObject, [&]() { available = readPreviousSurface(storageObject, m_fileRepetition, previous); }, Qt::BlockingQueuedConnection);
+	QMetaObject::invokeMethod(storageObject, [&]() {
+		available = resume::readPreviousSurface(storageObject, ACQUISITION_MODE::BRILLOUIN, m_fileRepetition, previous);
+	}, Qt::BlockingQueuedConnection);
 	if (!available) {
 		return SURFACE_STRATEGY::NEW_SCAN;
 	}
 	const auto [xSamples, ySamples] = coarseXYSamples(m_settings.preScanXYBin);
-	// The surface of an earlier repetition only fits the same grid: its columns are where this repetition's columns are only if the extent,
-	// steps and surface scan bin are the same (and in absolute coordinates the same origin); its plan only if the z planes are the same too.
-	const auto same = [&](const char* name, double current) {
-		const auto found = previous->settings.find(name);
-		return found != previous->settings.end() && std::abs(found->second - current) < 1e-9;
-	};
-	const auto xyGridSame = same("xMin", m_settings.xMin) && same("xMax", m_settings.xMax) && same("xSteps", m_settings.xSteps)
-		&& same("yMin", m_settings.yMin) && same("yMax", m_settings.yMax) && same("ySteps", m_settings.ySteps)
-		&& same("gridCoordinatesAbsolute", m_settings.gridCoordinatesAbsolute ? 1.0 : 0.0) && same("preScanXYBin", m_settings.preScanXYBin)
-		&& (!m_settings.gridCoordinatesAbsolute || (same("absoluteGridOriginUm.x", m_settings.absoluteGridOriginUm.x) && same("absoluteGridOriginUm.y", m_settings.absoluteGridOriginUm.y)));
-	const auto zGridSame = same("zMin", m_settings.zMin) && same("zMax", m_settings.zMax) && same("zSteps", m_settings.zSteps);
-	const auto priorCompatible = xyGridSame && previous->z.size() == xSamples.size() * ySamples.size();
-	const auto canReuse = previous->hasPlan && xyGridSame && zGridSame;
-	if (!priorCompatible && !canReuse) {
+	resume::GridSignature now;
+	now.xMin = m_settings.xMin;
+	now.xMax = m_settings.xMax;
+	now.xSteps = m_settings.xSteps;
+	now.yMin = m_settings.yMin;
+	now.yMax = m_settings.yMax;
+	now.ySteps = m_settings.ySteps;
+	now.zMin = m_settings.zMin;
+	now.zMax = m_settings.zMax;
+	now.zSteps = m_settings.zSteps;
+	now.absolute = m_settings.gridCoordinatesAbsolute;
+	now.preScanXYBin = m_settings.preScanXYBin;
+	now.originX = m_settings.absoluteGridOriginUm.x;
+	now.originY = m_settings.absoluteGridOriginUm.y;
+	const auto options = resume::surfaceOptions(*previous, now, xSamples.size() * ySamples.size());
+	if (!options.priorCompatible && !options.canReuse) {
 		qInfo(logInfo()) << "The surface scan of repetition" << previous->repetition << "is not offered: the grid or the surface scan settings differ.";
 		return SURFACE_STRATEGY::NEW_SCAN;
 	}
 
 	auto text = QString("This file holds the surface scan of repetition %1.\n\n").arg(previous->repetition);
-	if (priorCompatible) {
+	if (options.priorCompatible) {
 		text += "Yes: scan again, starting from it. The first columns find the offset between the two surfaces and all other columns start next to "
 			"where the surface is expected, which makes the scan faster.\n";
 	}
 	text += "No: scan from scratch, as always.\n";
-	if (!xyGridSame) {
+	if (!options.xyGridSame) {
 		text += "(The grid or the surface scan bin differs from that repetition, so only a new scan is possible.)\n";
-	} else if (!zGridSame) {
+	} else if (!options.zGridSame) {
 		text += "(The z planes differ from that repetition: its surface cannot be reused without a new scan.)\n";
 	}
-	if (canReuse) {
+	if (options.canReuse) {
 		text += "Reuse: no new scan, the surface of that repetition is used as it is.\n";
 	}
 	m_surfacePriorAnswer = -1;
@@ -656,19 +387,13 @@ Brillouin::SURFACE_STRATEGY Brillouin::chooseSurfaceStrategy(std::unique_ptr<Sto
 		}
 	});
 	poll.start(100);
-	emit(s_askSurfacePrior(text, canReuse, kSurfacePriorTimeoutS));
+	emit(s_askSurfacePrior(text, options.priorCompatible, options.canReuse, kSurfacePriorTimeoutS));
 	loop.exec();
 	poll.stop();
 
-	const auto answer = m_surfacePriorAnswer;
+	const auto answer = resume::resolveSurfaceAnswer(m_surfacePriorAnswer, options);
 	m_surfacePriorAnswer = -1;
-	if (answer == 1 && priorCompatible) {
-		return SURFACE_STRATEGY::PRIOR;
-	}
-	if (answer == 2 && canReuse) {
-		return SURFACE_STRATEGY::REUSE;
-	}
-	return SURFACE_STRATEGY::NEW_SCAN;
+	return answer == 1 ? SURFACE_STRATEGY::PRIOR : (answer == 2 ? SURFACE_STRATEGY::REUSE : SURFACE_STRATEGY::NEW_SCAN);
 }
 
 void Brillouin::applyPreviousSurface(const PreviousSurface& previous) {

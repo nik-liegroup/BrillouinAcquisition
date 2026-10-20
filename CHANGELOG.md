@@ -58,6 +58,13 @@
   write was cut short, and appends to the same repetition from the first point that is not in the file. If the measurement stopped during
   its surface scan, the scan continues with the columns that are done (checkpoint per column, same medium reference). Every continue is noted
   in the file (resume-event-N-*: point, time, cancelled or crash, last point date). Overview events, drift offset and rescan numbering go on.
+- Brillouin camera: this version starts with exposure 0.2 s, binning 2x2, pixel readout rate 100 MHz and pre-amp gain option 2 (16-bit), and
+  no longer writes the camera ROI, exposure and frame count to the settings file that other versions share (every measurement stores its own
+  camera settings in its file). The scan order preference is saved (settings file and measurement file).
+- The question about the surface scan of an earlier repetition defaults to Yes (start from it) when the grid is the same.
+- Live previews are written on a thread of their own (the measurement only copies the frame).
+- Tests: Continue is tested against real HDF5 files (crash and reopen, state, plan, cut-short points, surface scan checkpoint, earlier
+  surface), the objective decision and the surface scan decision without files (ResumeFileTest, ResumeSettingsTest).
 - Live check: the centre slice of every overview is also saved as a PNG (contrast stretched) in a folder next to the file (<file>_live) with
   events.csv (one line per overview event, surface rescan and continue: drift step, correlation, offsets, objective switch times). Switch
   "Live PNG previews" in the Overview tab; it switches itself off if the folder cannot be written.

@@ -193,7 +193,7 @@ void BrillouinAcquisition::onBrillouinContinueClicked() {
 	);
 }
 
-void BrillouinAcquisition::showSurfacePriorQuestion(const QString& text, bool offerReuse, int timeoutSeconds) {
+void BrillouinAcquisition::showSurfacePriorQuestion(const QString& text, bool offerPrior, bool offerReuse, int timeoutSeconds) {
 	QDialog dialog(this);
 	dialog.setWindowTitle("Surface scan");
 	auto* layout = new QVBoxLayout(&dialog);
@@ -214,21 +214,26 @@ void BrillouinAcquisition::showSurfacePriorQuestion(const QString& text, bool of
 		reuse->hide();
 	}
 	layout->addLayout(buttons);
-	no->setDefault(true);
-	no->setFocus();
+	// the default is to start from the earlier scan (Yes) if that is possible, else a new scan
+	yes->setEnabled(offerPrior);
+	const auto defaultAnswer = offerPrior ? 1 : 0;
+	(offerPrior ? yes : no)->setDefault(true);
+	(offerPrior ? yes : no)->setFocus();
 
-	auto answer = 0;
+	auto answer = defaultAnswer;
 	connect(yes, &QPushButton::clicked, &dialog, [&]() { answer = 1; dialog.accept(); });
 	connect(no, &QPushButton::clicked, &dialog, [&]() { answer = 0; dialog.accept(); });
 	connect(reuse, &QPushButton::clicked, &dialog, [&]() { answer = 2; dialog.accept(); });
 	auto remaining = timeoutSeconds;
-	const auto showRemaining = [&]() { countdown->setText(QString("Without an answer: new scan from scratch in %1 s").arg(remaining)); };
+	const auto showRemaining = [&]() {
+		countdown->setText(QString("Without an answer: %1 in %2 s").arg(offerPrior ? "scan starting from the earlier one" : "new scan from scratch").arg(remaining));
+	};
 	showRemaining();
 	QTimer timer;
 	connect(&timer, &QTimer::timeout, &dialog, [&]() {
 		remaining--;
 		if (remaining <= 0) {
-			answer = 0;
+			answer = defaultAnswer;
 			dialog.accept();
 			return;
 		}

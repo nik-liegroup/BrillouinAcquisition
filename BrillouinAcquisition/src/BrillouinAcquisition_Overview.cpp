@@ -676,6 +676,11 @@ void BrillouinAcquisition::writeOverviewSettings(QSettings& settings) {
 	settings.setValue("brillouin-drift-extrapolate", s.driftExtrapolate);
 	settings.setValue("brillouin-surface-rescan", (int)s.surfaceRescan);
 	settings.setValue("brillouin-live-previews", s.livePreviews);
+	const auto order = m_Brillouin->scanOrder();
+	settings.setValue("brillouin-scan-order-automatic", order.automatical);
+	settings.setValue("brillouin-scan-order-x", order.x);
+	settings.setValue("brillouin-scan-order-y", order.y);
+	settings.setValue("brillouin-scan-order-z", order.z);
 	settings.setValue("brillouin-overview-objectives-count", (int)s.overviewObjectives.size());
 	for (size_t i = 0; i < s.overviewObjectives.size(); i++) {
 		const auto& entry = s.overviewObjectives[i];
@@ -705,6 +710,14 @@ void BrillouinAcquisition::readOverviewSettings(QSettings& settings) {
 	s.driftExtrapolate = settings.value("brillouin-drift-extrapolate", s.driftExtrapolate).toBool();
 	s.surfaceRescan = (SURFACE_RESCAN)std::clamp(settings.value("brillouin-surface-rescan", (int)s.surfaceRescan).toInt(), 0, 2);
 	s.livePreviews = settings.value("brillouin-live-previews", s.livePreviews).toBool();
+	if (settings.contains("brillouin-scan-order-x")) {
+		SCAN_ORDER order = m_Brillouin->scanOrder();
+		order.automatical = settings.value("brillouin-scan-order-automatic", order.automatical).toBool();
+		order.x = settings.value("brillouin-scan-order-x", order.x).toInt();
+		order.y = settings.value("brillouin-scan-order-y", order.y).toInt();
+		order.z = settings.value("brillouin-scan-order-z", order.z).toInt();
+		m_Brillouin->setScanOrder(order);
+	}
 	const auto count = std::clamp(settings.value("brillouin-overview-objectives-count", 0).toInt(), 0, 32);
 	s.overviewObjectives.clear();
 	for (int i = 0; i < count; i++) {

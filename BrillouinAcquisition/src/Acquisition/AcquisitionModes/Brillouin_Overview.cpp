@@ -6,7 +6,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <atomic>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
+#include <memory>
+#include <mutex>
 #include <filesystem>
 #include <fstream>
 #include <QImage>
@@ -831,6 +836,102 @@ void Brillouin::writeOverviewEvent(
 	appendLiveLog(line);
 }
 
+
+// The previews are written on a thread of their own: the measurement only copies the frame and moves on. At most kMaxQueued frames wait; a
+// frame that finds the queue full is dropped (the preview is for looking at, the data is in the file).
+class LivePreviewWorker {
+public:
+	struct Job {
+		std::string path;
+		std::vector<std::byte> image;
+		CAMERA_SETTINGS settings;
+	};
+
+	LivePreviewWorker() : m_thread([this]() { run(); }) {}
+	~LivePreviewWorker() {
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			m_stop = true;
+		}
+		m_condition.notify_all();
+		m_thread.join();
+	}
+	bool enqueue(Job&& job) {
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			if (m_queue.size() >= kMaxQueued) {
+				return false;
+			}
+			m_queue.push_back(std::move(job));
+		}
+		m_condition.notify_one();
+		return true;
+	}
+	bool failed() const { return m_failed; }
+
+private:
+	static constexpr size_t kMaxQueued = 8;
+
+	void run() {
+		for (;;) {
+			Job job;
+			{
+				std::unique_lock<std::mutex> lock(m_mutex);
+				m_condition.wait(lock, [this]() { return m_stop || !m_queue.empty(); });
+				if (m_queue.empty()) {
+					return;
+				}
+				job = std::move(m_queue.front());
+				m_queue.pop_front();
+			}
+			render(job);
+		}
+	}
+
+	void render(const Job& job) {
+		try {
+			std::vector<float> pixels;
+			int width = 0;
+			int height = 0;
+			if (!frameToFloat(job.image, job.settings, &pixels, &width, &height) || width <= 0 || height <= 0) {
+				return;
+			}
+			std::filesystem::create_directories(std::filesystem::path(job.path).parent_path());
+			// contrast from a sparse sample (1 % to 99.5 %): this is only to look at
+			std::vector<float> sample;
+			for (size_t i = 0; i < pixels.size(); i += 17) {
+				sample.push_back(pixels[i]);
+			}
+			std::sort(sample.begin(), sample.end());
+			const auto low = sample[(size_t)(0.01 * (double)(sample.size() - 1))];
+			auto high = sample[(size_t)(0.995 * (double)(sample.size() - 1))];
+			if (high <= low) {
+				high = low + 1.0f;
+			}
+			QImage preview(width, height, QImage::Format_Grayscale8);
+			for (int row = 0; row < height; row++) {
+				auto* line = preview.scanLine(row);
+				for (int col = 0; col < width; col++) {
+					const auto value = (pixels[(size_t)row * (size_t)width + (size_t)col] - low) / (high - low);
+					line[col] = (uchar)std::clamp((int)std::lround(255.0f * value), 0, 255);
+				}
+			}
+			if (!preview.save(QString::fromStdString(job.path), "PNG", 80)) {
+				m_failed = true;
+			}
+		} catch (const std::exception&) {
+			m_failed = true;
+		}
+	}
+
+	std::mutex m_mutex;
+	std::condition_variable m_condition;
+	std::deque<Job> m_queue;
+	bool m_stop{ false };
+	std::atomic<bool> m_failed{ false };
+	std::thread m_thread;
+};
+
 std::string Brillouin::livePreviewFolder() const {
 	if (!m_acquisition) {
 		return {};
@@ -843,44 +944,20 @@ void Brillouin::writeLivePreview(const std::string& name, const std::vector<std:
 	if (!m_settings.livePreviews || m_livePreviewFailed || image.empty()) {
 		return;
 	}
-	try {
-		std::vector<float> pixels;
-		int width = 0;
-		int height = 0;
-		if (!frameToFloat(image, settings, &pixels, &width, &height) || width <= 0 || height <= 0) {
-			return;
-		}
-		const auto folder = livePreviewFolder();
-		if (folder.empty()) {
-			return;
-		}
-		std::filesystem::create_directories(folder);
-		// contrast from a sparse sample (1 % to 99.5 %), the same for every image of a kind is not needed: this is only to look at
-		std::vector<float> sample;
-		for (size_t i = 0; i < pixels.size(); i += 17) {
-			sample.push_back(pixels[i]);
-		}
-		std::sort(sample.begin(), sample.end());
-		const auto low = sample[(size_t)(0.01 * (double)(sample.size() - 1))];
-		auto high = sample[(size_t)(0.995 * (double)(sample.size() - 1))];
-		if (high <= low) {
-			high = low + 1.0f;
-		}
-		QImage preview(width, height, QImage::Format_Grayscale8);
-		for (int row = 0; row < height; row++) {
-			auto* line = preview.scanLine(row);
-			for (int col = 0; col < width; col++) {
-				const auto value = (pixels[(size_t)row * (size_t)width + (size_t)col] - low) / (high - low);
-				line[col] = (uchar)std::clamp((int)std::lround(255.0f * value), 0, 255);
-			}
-		}
-		if (!preview.save(QString::fromStdString(folder + "/" + name + ".png"), "PNG", 80)) {
-			m_livePreviewFailed = true;
-			qWarning(logWarning()) << "Brillouin: live previews switched off, the preview folder cannot be written:" << folder.c_str();
-		}
-	} catch (const std::exception& e) {
+	const auto folder = livePreviewFolder();
+	if (folder.empty()) {
+		return;
+	}
+	if (!m_livePreviewWorker) {
+		m_livePreviewWorker = std::make_shared<LivePreviewWorker>();
+	}
+	if (m_livePreviewWorker->failed()) {
 		m_livePreviewFailed = true;
-		qWarning(logWarning()) << "Brillouin: live previews switched off:" << e.what();
+		return;
+	}
+	// the raw frame is copied (a few ms at most), everything else - contrast, PNG, disk - happens on the worker's thread
+	if (!m_livePreviewWorker->enqueue(LivePreviewWorker::Job{ folder + "/" + name + ".png", image, settings })) {
+		qWarning(logWarning()) << "Brillouin: live preview" << name.c_str() << "dropped, the writer is behind.";
 	}
 }
 
