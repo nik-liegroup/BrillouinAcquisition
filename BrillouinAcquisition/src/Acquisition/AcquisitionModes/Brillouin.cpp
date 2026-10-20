@@ -632,6 +632,7 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 	);
 	loop.exec();
 
+	m_runningMeasurementObjectiveSlot = -1;
 	if (m_measuringState) {
 		// everything that was queued is in the file now: the measurement can be continued from here
 		m_measuringState = false;
@@ -2860,8 +2861,12 @@ void Brillouin::captureOverviewBrightfield(
 	// Deliberately no ROI override here - the overview capture always uses whatever ROI the
 	// camera is currently at (full sensor unless something else cropped it), giving it the
 	// widest field of view of any capture path on purpose.
-	brightfieldSettings.exposureTime = 1e-3 * std::max(1, m_settings.overviewBrightfieldExposureMs);
-	brightfieldSettings.gain = m_settings.overviewBrightfieldGain;
+	// exposure and gain as the operator has them now (they can be changed during the measurement)
+	auto overviewExposureMs = m_settings.overviewBrightfieldExposureMs;
+	auto overviewGain = m_settings.overviewBrightfieldGain;
+	liveOverviewCamera(m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1, &overviewExposureMs, &overviewGain);
+	brightfieldSettings.exposureTime = 1e-3 * std::max(1, overviewExposureMs);
+	brightfieldSettings.gain = overviewGain;
 	brightfieldSettings.frameCount = 1;
 	brightfieldSettings.readout.triggerMode = L"Software";
 	brightfieldSettings.readout.cycleMode = L"Fixed";
@@ -2939,8 +2944,12 @@ void Brillouin::capturePerPointBrightfieldImage(
 	const auto stagePosition = rawPositionToGridFrame(m_scanControl->getPosition());
 
 	auto brightfieldSettings = m_brightfieldCamera->getSettings();
-	brightfieldSettings.exposureTime = 1e-3 * std::max(1, m_settings.overviewBrightfieldExposureMs);
-	brightfieldSettings.gain = m_settings.overviewBrightfieldGain;
+	// exposure and gain as the operator has them now (they can be changed during the measurement)
+	auto overviewExposureMs = m_settings.overviewBrightfieldExposureMs;
+	auto overviewGain = m_settings.overviewBrightfieldGain;
+	liveOverviewCamera(m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1, &overviewExposureMs, &overviewGain);
+	brightfieldSettings.exposureTime = 1e-3 * std::max(1, overviewExposureMs);
+	brightfieldSettings.gain = overviewGain;
 	brightfieldSettings.frameCount = 1;
 	brightfieldSettings.readout.triggerMode = L"Software";
 	brightfieldSettings.readout.cycleMode = L"Fixed";
@@ -2988,8 +2997,12 @@ std::optional<CAMERA_SETTINGS> Brillouin::startPerPointBrightfieldDuring() {
 		return std::nullopt;
 	}
 	auto brightfieldSettings = m_brightfieldCamera->getSettings();
-	brightfieldSettings.exposureTime = 1e-3 * std::max(1, m_settings.overviewBrightfieldExposureMs);
-	brightfieldSettings.gain = m_settings.overviewBrightfieldGain;
+	// exposure and gain as the operator has them now (they can be changed during the measurement)
+	auto overviewExposureMs = m_settings.overviewBrightfieldExposureMs;
+	auto overviewGain = m_settings.overviewBrightfieldGain;
+	liveOverviewCamera(m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1, &overviewExposureMs, &overviewGain);
+	brightfieldSettings.exposureTime = 1e-3 * std::max(1, overviewExposureMs);
+	brightfieldSettings.gain = overviewGain;
 	brightfieldSettings.frameCount = 1;
 	brightfieldSettings.readout.triggerMode = L"Software";
 	brightfieldSettings.readout.cycleMode = L"Fixed";
@@ -3380,6 +3393,11 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	if (nrPositions <= 0) {
 		m_abort = true;
 		return;
+	}
+	{
+		// the live exposure/gain of an earlier run do not carry over: the settings the measurement starts with are the current ones
+		std::lock_guard<std::mutex> lock(m_liveCameraMutex);
+		m_liveCamera.clear();
 	}
 	// a continued measurement starts at the first point that is not in the file yet
 	const gsl::index firstIndex = m_resuming ? std::min<gsl::index>(m_resumeStartIndex, nrPositions) : 0;
@@ -4356,6 +4374,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	loop.exec();
 
 	m_measurementObjectiveSlot = -1;
+	m_runningMeasurementObjectiveSlot = -1;
 	m_measuringState = false;
 	setStorageState("finished");
 	endResumeMode(storage);

@@ -50,17 +50,28 @@ void BrillouinAcquisition::updateContinueAvailability() {
 		"stopped). Not available before a measurement was started, and not after it finished.");
 	const auto running = status == ACQUISITION_STATUS::WAITFORREPETITION || status == ACQUISITION_STATUS::STARTED
 		|| status == ACQUISITION_STATUS::RUNNING || status == ACQUISITION_STATUS::WAITFORSURFACEREVIEW || status == ACQUISITION_STATUS::ALIGNING;
-	auto resumable = false;
 	auto* storage = m_acquisition->m_storage.get();
 	if (storage && !running && m_enabledModes == ACQUISITION_MODE::NONE) {
-		// only what the file says about its last repetition (two small reads), the details are read when Continue is pressed
-		std::string state;
-		QMetaObject::invokeMethod(storage, [storage, &state]() {
+		// Only what the file says about its last repetition (two small reads), the details are read when Continue is pressed. Asked on the
+		// storage thread without waiting for it, so the interface never stands still for the file: the answer comes back as a queued call.
+		QMetaObject::invokeMethod(storage, [this, storage]() {
 			const auto repetition = storage->lastRepetition(ACQUISITION_MODE::BRILLOUIN);
-			state = repetition < 0 ? std::string{} : storage->getRepetitionState(ACQUISITION_MODE::BRILLOUIN, repetition);
-		}, Qt::BlockingQueuedConnection);
-		resumable = state == "measuring" || state == "stopped" || state == "surface-scan" || state == "surface-scan-stopped";
+			const auto state = repetition < 0 ? std::string{} : storage->getRepetitionState(ACQUISITION_MODE::BRILLOUIN, repetition);
+			QMetaObject::invokeMethod(this, [this, state]() { applyContinueAvailability(state, false); }, Qt::QueuedConnection);
+		}, Qt::QueuedConnection);
+		return;
 	}
+	applyContinueAvailability(std::string{}, running);
+}
+
+void BrillouinAcquisition::applyContinueAvailability(const std::string& state, bool running) {
+	// a measurement started in the meantime: nothing to show
+	const auto status = m_Brillouin->getStatus();
+	if (status == ACQUISITION_STATUS::WAITFORREPETITION || status == ACQUISITION_STATUS::STARTED || status == ACQUISITION_STATUS::RUNNING
+		|| status == ACQUISITION_STATUS::WAITFORSURFACEREVIEW || status == ACQUISITION_STATUS::ALIGNING || m_enabledModes != ACQUISITION_MODE::NONE) {
+		running = true;
+	}
+	const auto resumable = !running && (state == "measuring" || state == "stopped" || state == "surface-scan" || state == "surface-scan-stopped");
 	m_brillouinContinueButton->setEnabled(resumable);
 	if (resumable) {
 		// Start makes a new repetition in the same file, as it always did; Continue appends to the one that was interrupted

@@ -983,6 +983,21 @@ void ScaleCalibration::setFovOffsetSigma(double value) {
 	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
 }
 
+void ScaleCalibration::setHasFocusOffset(bool hasFocusOffset) {
+	m_scaleCalibration.hasFocusOffset = hasFocusOffset;
+	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
+}
+
+void ScaleCalibration::setFocusOffsetZ(double value) {
+	m_scaleCalibration.focusOffsetUm = value;
+	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
+}
+
+void ScaleCalibration::setFocusOffsetZSigma(double value) {
+	m_scaleCalibration.focusOffsetSigmaUm = value;
+	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
+}
+
 /*
  * FOV-offset auto-measurement.
  *

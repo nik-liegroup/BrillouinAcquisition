@@ -516,6 +516,13 @@ private:
 	OVERVIEW_OBJECTIVE_SETTINGS m_overviewInheritedSnapshot;
 	bool m_updatingOverviewTab{ false };
 	void setupOverviewTab();
+	// the objective that measures as the Overview tab shows it: the one a running measurement was started with, else the one in the beam
+	int overviewMeasuringSlot() const;
+	// Grid, Fluorescence, Overview, Surface scanning, ODT (the tabs that exist, in this order)
+	void arrangeAcquisitionTabs();
+	// updateOverviewTab() soon, once, however often it is asked for in between
+	void scheduleOverviewTabUpdate();
+	bool m_overviewTabUpdatePending{ false };
 	void updateOverviewTab();
 	OVERVIEW_OBJECTIVE_SETTINGS* findOverviewObjectiveEntry(int slot, bool create);
 	void syncOverviewObjectiveSettingsOnSwitch(int previousSlot, int newSlot);
@@ -524,6 +531,7 @@ private:
 	QPushButton* m_brillouinContinueButton{ nullptr };
 	void setupContinueButton();
 	void updateContinueAvailability();
+	void applyContinueAvailability(const std::string& state, bool running);
 	void onBrillouinContinueClicked();
 	void applyRestoredBrillouinSettings(const BRILLOUIN_SETTINGS& restored);
 	void showSurfacePriorQuestion(const QString& text, bool offerPrior, bool offerReuse, int timeoutSeconds);
@@ -726,6 +734,9 @@ private slots:
 	void setFovOffsetX(double value);
 	void setFovOffsetY(double value);
 	void setFovOffsetSigma(double value);
+	void setHasFocusOffset(bool hasFocusOffset);
+	void setFocusOffsetZ(double value);
+	void setFocusOffsetZSigma(double value);
 
 	void initBeampathButtons();
 

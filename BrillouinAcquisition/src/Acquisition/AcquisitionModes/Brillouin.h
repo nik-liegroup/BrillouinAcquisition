@@ -9,8 +9,10 @@
 #include "src/Acquisition/Planning/OverviewSchedule.h"
 #include "ResumeRecord.h"
 #include "ResumeFile.h"
+#include <atomic>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <limits>
 #include <optional>
 #include <set>
@@ -534,6 +536,12 @@ public slots:
 	// The operator's answer to the question about the surface scan of an earlier repetition (see s_askSurfacePrior()):
 	// 0 new scan from scratch (as always), 1 new scan that starts from the earlier one, 2 no new scan, the earlier surface is used
 	void setSurfacePriorAnswer(int choice);
+	// Exposure and gain of the overview camera can be changed while a measurement runs: the GUI sets them here for an objective, every capture
+	// of that objective reads them (an objective without an entry uses the settings the measurement started with)
+	void setLiveOverviewCamera(int slot, int exposureMs, double gain);
+	bool liveOverviewCamera(int slot, int* exposureMs, double* gain) const;
+	// The objective that measures while a measurement runs with the overview engine, -1 otherwise (the GUI shows it as the measuring objective)
+	int runningMeasurementObjectiveSlot() const { return m_runningMeasurementObjectiveSlot; }
 	// The order the axes are scanned in (saved with the settings, in the file and in the application settings)
 	SCAN_ORDER scanOrder() const { return m_scanOrder; }
 	void setScanOrder(const SCAN_ORDER& order);
@@ -923,6 +931,9 @@ private:
 	void writeLivePreview(const std::string& name, const std::vector<std::byte>& image, const CAMERA_SETTINGS& settings);
 	void appendLiveLog(const std::string& line);
 	bool m_livePreviewFailed{ false };
+	mutable std::mutex m_liveCameraMutex;
+	std::map<int, std::pair<int, double>> m_liveCamera;		// objective slot -> exposure [ms], gain
+	std::atomic<int> m_runningMeasurementObjectiveSlot{ -1 };
 	std::shared_ptr<LivePreviewWorker> m_livePreviewWorker;		// writes the previews in the background
 	void writeSurfaceCheckpointReference(double mediumReference, size_t columnsX, size_t columnsY);
 	void writeSurfaceCheckpointColumn(gsl::index xi, gsl::index yi, bool valid, double z, int order, double metric,

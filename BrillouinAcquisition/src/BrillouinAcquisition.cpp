@@ -839,6 +839,8 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 
 			connect(m_useSurfaceFollowCheckbox, &QCheckBox::toggled, this, [this](bool enabled) {
 				m_Brillouin->settings.useSurfaceFollow = enabled;
+				// the repeat of the surface scan during the measurement (Surface scanning tab) depends on it
+				updateOverviewTab();
 				if (m_preScanXYBinSpinBox) m_preScanXYBinSpinBox->setEnabled(enabled);
 				if (m_additionalBoundaryPointsSpinBox) m_additionalBoundaryPointsSpinBox->setEnabled(enabled);
 				if (m_preScanZStepSpinBox) m_preScanZStepSpinBox->setEnabled(enabled);
@@ -2340,6 +2342,8 @@ void BrillouinAcquisition::on_fluoRedExposure_valueChanged(int exposure) {
 void BrillouinAcquisition::on_fluoBrightfieldExposure_valueChanged(int exposure) {
 	m_Fluorescence->setExposure(FLUORESCENCE_MODE::BRIGHTFIELD, exposure);
 	m_Brillouin->settings.overviewBrightfieldExposureMs = exposure;
+	m_Brillouin->setLiveOverviewCamera(overviewMeasuringSlot(), exposure, ui->fluoBrightfieldGain->value());
+	updateOverviewTab();
 }
 
 void BrillouinAcquisition::on_fluoBlueGain_valueChanged(double gain) {
@@ -2357,6 +2361,8 @@ void BrillouinAcquisition::on_fluoRedGain_valueChanged(double gain) {
 void BrillouinAcquisition::on_fluoBrightfieldGain_valueChanged(double gain) {
 	m_Fluorescence->setGain(FLUORESCENCE_MODE::BRIGHTFIELD, gain);
 	m_Brillouin->settings.overviewBrightfieldGain = gain;
+	m_Brillouin->setLiveOverviewCamera(overviewMeasuringSlot(), ui->fluoBrightfieldExposure->value(), gain);
+	updateOverviewTab();
 }
 
 void BrillouinAcquisition::updateFluorescenceSettings(const FLUORESCENCE_SETTINGS& settings) {
@@ -4211,6 +4217,25 @@ void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 			this,
 			[this](double value) { setFovOffsetSigma(value); }
 		);
+		// the focus (z) offset of the objective, measured during the same automated cycles
+		connection = QWidget::connect(
+			m_scaleCalibrationDialogUi.hasFocusOffsetCheckbox,
+			&QCheckBox::toggled,
+			this,
+			[this](bool checked) { setHasFocusOffset(checked); }
+		);
+		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+			m_scaleCalibrationDialogUi.focusOffsetZ,
+			&QDoubleSpinBox::valueChanged,
+			this,
+			[this](double value) { setFocusOffsetZ(value); }
+		);
+		connection = QWidget::connect<void(QDoubleSpinBox::*)(double)>(
+			m_scaleCalibrationDialogUi.focusOffsetZSigma,
+			&QDoubleSpinBox::valueChanged,
+			this,
+			[this](double value) { setFocusOffsetZSigma(value); }
+		);
 		// Automated multi-cycle FOV-offset calibration
 		connection = QWidget::connect(
 			m_scaleCalibrationDialogUi.button_startObjectiveCycle,
@@ -4291,11 +4316,17 @@ void BrillouinAcquisition::updateObjectiveCalibrationData(ObjectiveCalibrationDa
 	const QSignalBlocker blocker7(m_scaleCalibrationDialogUi.fovOffsetSigma);
 	const QSignalBlocker blocker8(m_scaleCalibrationDialogUi.objectiveCycleFovOffsetSigma);
 	const QSignalBlocker blocker9(m_scaleCalibrationDialogUi.scaleCalibrationSigma);
+	const QSignalBlocker blocker10(m_scaleCalibrationDialogUi.hasFocusOffsetCheckbox);
+	const QSignalBlocker blocker11(m_scaleCalibrationDialogUi.focusOffsetZ);
+	const QSignalBlocker blocker12(m_scaleCalibrationDialogUi.focusOffsetZSigma);
 
 	m_scaleCalibrationDialogUi.hasFovOffsetCheckbox->setChecked(calibration.hasFovOffset);
 	m_scaleCalibrationDialogUi.fovOffsetX->setValue(calibration.fovOffsetUm.x);
 	m_scaleCalibrationDialogUi.fovOffsetY->setValue(calibration.fovOffsetUm.y);
 	m_scaleCalibrationDialogUi.fovOffsetSigma->setValue(calibration.fovOffsetSigmaUm);
+	m_scaleCalibrationDialogUi.hasFocusOffsetCheckbox->setChecked(calibration.hasFocusOffset);
+	m_scaleCalibrationDialogUi.focusOffsetZ->setValue(calibration.focusOffsetUm);
+	m_scaleCalibrationDialogUi.focusOffsetZSigma->setValue(calibration.focusOffsetSigmaUm);
 	// Read-only mirror of the same FOV-offset sigma, shown inside "Automated calibration: FOV"
 	// itself so it is visible right next to Start/Continue/Abort without also scrolling up to
 	// the FOV-center offset box.
@@ -4508,6 +4539,18 @@ void BrillouinAcquisition::setFovOffsetY(double value) {
 
 void BrillouinAcquisition::setFovOffsetSigma(double value) {
 	m_scaleCalibration->setFovOffsetSigma(value);
+}
+
+void BrillouinAcquisition::setHasFocusOffset(bool hasFocusOffset) {
+	m_scaleCalibration->setHasFocusOffset(hasFocusOffset);
+}
+
+void BrillouinAcquisition::setFocusOffsetZ(double value) {
+	m_scaleCalibration->setFocusOffsetZ(value);
+}
+
+void BrillouinAcquisition::setFocusOffsetZSigma(double value) {
+	m_scaleCalibration->setFocusOffsetZSigma(value);
 }
 
 std::string BrillouinAcquisition::defaultCalibrationsFolderPath() const {
@@ -5060,6 +5103,9 @@ void BrillouinAcquisition::refreshScaleCalibrationObjectiveDisplay() {
 	m_scaleCalibrationDialogUi.fovOffsetX->setDisabled(activeIsReference);
 	m_scaleCalibrationDialogUi.fovOffsetY->setDisabled(activeIsReference);
 	m_scaleCalibrationDialogUi.fovOffsetSigma->setDisabled(activeIsReference);
+	m_scaleCalibrationDialogUi.hasFocusOffsetCheckbox->setDisabled(activeIsReference);
+	m_scaleCalibrationDialogUi.focusOffsetZ->setDisabled(activeIsReference);
+	m_scaleCalibrationDialogUi.focusOffsetZSigma->setDisabled(activeIsReference);
 	// The reference's own offset is locked at {0,0} - nothing to persist by re-saving it, and
 	// leaving Save enabled invited clicking it under the impression it did something here.
 	m_scaleCalibrationDialogUi.button_save->setDisabled(activeIsReference);
@@ -5441,6 +5487,7 @@ void BrillouinAcquisition::initODT() {
 		// Fluorescence order. insertTab() clamps out-of-range indices to "append", so
 		// this stays correct even if Surface scanning were ever removed too.
 		ui->acquisitionModeTabs->insertTab(2, ui->ODT, "ODT");
+		arrangeAcquisitionTabs();
 
 		static QMetaObject::Connection connection;
 		connection = QWidget::connect(
@@ -5596,6 +5643,7 @@ void BrillouinAcquisition::initFluorescence() {
 		// clamps out-of-range indices to "append", so this still lands right after
 		// whichever of those tabs actually exist.
 		ui->acquisitionModeTabs->insertTab(3, ui->Fluorescence, "Fluorescence");
+		arrangeAcquisitionTabs();
 
 		static QMetaObject::Connection connection;
 		connection = QWidget::connect(
@@ -6209,7 +6257,16 @@ void BrillouinAcquisition::updateFilename(const std::string& filename) {
 }
 
 void BrillouinAcquisition::updateBrillouinSettings() {
-	updateOverviewTab();
+	struct SlowLog {
+		QElapsedTimer timer;
+		SlowLog() { timer.start(); }
+		~SlowLog() {
+			if (timer.elapsed() > 40) {
+				qWarning(logWarning()) << "updateBrillouinSettings took" << timer.elapsed() << "ms";
+			}
+		}
+	} slowLog;
+	scheduleOverviewTabUpdate();
 	ui->acquisitionFilename->setText(QString::fromStdString(m_storagePath.filename));
 
 	// AOI settings

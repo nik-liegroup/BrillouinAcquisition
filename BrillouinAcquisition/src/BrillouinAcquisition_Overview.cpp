@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "BrillouinAcquisition.h"
+#include "helper/logger.h"
 
 #include <algorithm>
 
@@ -12,6 +13,8 @@
 #include <QSettings>
 #include <QSpinBox>
 #include <QStandardItemModel>
+#include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 /*
@@ -103,7 +106,7 @@ void BrillouinAcquisition::setupOverviewTab() {
 	layout->addWidget(m_overviewSummaryLabel);
 
 	// ---- objectives
-	auto* objectiveGroup = new QGroupBox("Overview objectives", content);
+	auto* objectiveGroup = new QGroupBox("Per objective", content);
 	auto* objectiveGrid = new QGridLayout(objectiveGroup);
 	objectiveGrid->setContentsMargins(4, 6, 4, 6);
 	objectiveGrid->setHorizontalSpacing(4);
@@ -144,7 +147,7 @@ void BrillouinAcquisition::setupOverviewTab() {
 	layout->addWidget(objectiveGroup);
 
 	// ---- when
-	auto* whenGroup = new QGroupBox("When", content);
+	auto* whenGroup = new QGroupBox("When (all objectives)", content);
 	auto* whenGrid = new QGridLayout(whenGroup);
 	whenGrid->setContentsMargins(4, 6, 4, 6);
 	whenGrid->setHorizontalSpacing(4);
@@ -187,31 +190,51 @@ void BrillouinAcquisition::setupOverviewTab() {
 	shrinkableCombo(m_driftObjectiveCombo);
 	m_driftObjectiveCombo->setToolTip("Only objectives that take overviews can be chosen. The centre slice of a z stack is used.");
 	driftGrid->addWidget(m_driftObjectiveCombo, 1, 0, 1, 2);
-	driftGrid->addWidget(new QLabel("Min. corr.", driftGroup), 2, 0);
-	m_driftMinNccSpinBox = new QDoubleSpinBox(driftGroup);
+	// the limits of what is believed: the defaults are fine, so they are folded away
+	auto* advancedToggle = new QToolButton(driftGroup);
+	advancedToggle->setText("Advanced");
+	advancedToggle->setCheckable(true);
+	advancedToggle->setAutoRaise(true);
+	advancedToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+	advancedToggle->setArrowType(Qt::RightArrow);
+	advancedToggle->setToolTip("When a measured drift step is believed: correlation, largest step, fastest drift. The defaults are fine for most samples.");
+	driftGrid->addWidget(advancedToggle, 2, 0, 1, 2);
+	auto* driftAdvanced = new QWidget(driftGroup);
+	auto* advancedGrid = new QGridLayout(driftAdvanced);
+	advancedGrid->setContentsMargins(0, 0, 0, 0);
+	advancedGrid->setHorizontalSpacing(4);
+	advancedGrid->setVerticalSpacing(2);
+	driftAdvanced->setVisible(false);
+	driftGrid->addWidget(driftAdvanced, 3, 0, 1, 2);
+	connect(advancedToggle, &QToolButton::toggled, driftAdvanced, [driftAdvanced, advancedToggle](bool open) {
+		driftAdvanced->setVisible(open);
+		advancedToggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
+	});
+	advancedGrid->addWidget(new QLabel("Min. corr.", driftAdvanced), 0, 0);
+	m_driftMinNccSpinBox = new QDoubleSpinBox(driftAdvanced);
 	m_driftMinNccSpinBox->setRange(0.05, 0.99);
 	m_driftMinNccSpinBox->setSingleStep(0.05);
 	m_driftMinNccSpinBox->setDecimals(2);
 	m_driftMinNccSpinBox->setToolTip("Normalised cross-correlation of the overviews below which a step is not applied (unrelated images give up to about 0.2).");
-	driftGrid->addWidget(m_driftMinNccSpinBox, 2, 1);
-	driftGrid->addWidget(new QLabel("Max. step", driftGroup), 3, 0);
-	m_driftMaxStepSpinBox = new QDoubleSpinBox(driftGroup);
+	advancedGrid->addWidget(m_driftMinNccSpinBox, 0, 1);
+	advancedGrid->addWidget(new QLabel("Max. step", driftAdvanced), 1, 0);
+	m_driftMaxStepSpinBox = new QDoubleSpinBox(driftAdvanced);
 	m_driftMaxStepSpinBox->setSuffix(" µm");
 	m_driftMaxStepSpinBox->setRange(1.0, 1000.0);
 	m_driftMaxStepSpinBox->setDecimals(0);
-	driftGrid->addWidget(m_driftMaxStepSpinBox, 3, 1);
-	driftGrid->addWidget(new QLabel("Max. speed", driftGroup), 4, 0);
-	m_driftMaxSpeedSpinBox = new QDoubleSpinBox(driftGroup);
+	advancedGrid->addWidget(m_driftMaxStepSpinBox, 1, 1);
+	advancedGrid->addWidget(new QLabel("Max. speed", driftAdvanced), 2, 0);
+	m_driftMaxSpeedSpinBox = new QDoubleSpinBox(driftAdvanced);
 	m_driftMaxSpeedSpinBox->setSuffix(" µm/min");
 	m_driftMaxSpeedSpinBox->setRange(1.0, 1000.0);
 	m_driftMaxSpeedSpinBox->setDecimals(0);
-	driftGrid->addWidget(m_driftMaxSpeedSpinBox, 4, 1);
-	m_driftExtrapolateCheckbox = new QCheckBox("Keep last drift speed", driftGroup);
+	advancedGrid->addWidget(m_driftMaxSpeedSpinBox, 2, 1);
+	m_driftExtrapolateCheckbox = new QCheckBox("Keep last drift speed", driftAdvanced);
 	m_driftExtrapolateCheckbox->setToolTip("Between two overviews the grid keeps moving at the speed of the last accepted step (limited to twice the interval).");
-	driftGrid->addWidget(m_driftExtrapolateCheckbox, 5, 0, 1, 2);
+	advancedGrid->addWidget(m_driftExtrapolateCheckbox, 3, 0, 1, 2);
 	m_driftStatusLabel = new QLabel(driftGroup);
 	m_driftStatusLabel->setWordWrap(true);
-	driftGrid->addWidget(m_driftStatusLabel, 6, 0, 1, 2);
+	driftGrid->addWidget(m_driftStatusLabel, 4, 0, 1, 2);
 	layout->addWidget(driftGroup);
 	m_livePreviewsCheckbox = new QCheckBox("Live PNG previews", content);
 	m_livePreviewsCheckbox->setToolTip("Saves the centre slice of every overview as a PNG (contrast stretched) in a folder next to the file "
@@ -221,6 +244,14 @@ void BrillouinAcquisition::setupOverviewTab() {
 	layout->addStretch(1);
 
 	ui->acquisitionModeTabs->addTab(m_overviewTabPage, "Overview");
+	// The overview of the objective that measures is set here now (the same settings, coupled): its rows in the Fluorescence tab are folded
+	// away, only the brightfield image at each point stays there
+	for (QWidget* legacy : std::initializer_list<QWidget*>{ ui->saveOverviewBrightfieldPerZCheckbox, ui->overviewSingleImageRadio,
+		ui->overviewFullGridRadio, ui->overviewFullStackCheckbox }) {
+		legacy->hide();
+	}
+	ui->bfOverviewGroupBox->setTitle("BF at each point");
+	arrangeAcquisitionTabs();
 
 	// ---- the repeat of the surface scan, in the Surface scanning tab below its group (the group has a fixed height of 380, the tab 456)
 	if (ui->scrollAreaWidgetContents_4) {
@@ -252,7 +283,7 @@ void BrillouinAcquisition::setupOverviewTab() {
 		if (m_updatingOverviewTab) {
 			return;
 		}
-		if (m_overviewSelectedSlot == (m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1)) {
+		if (m_overviewSelectedSlot == overviewMeasuringSlot()) {
 			// the measuring objective: through the checkbox of the BF overview box, which also asks about a scan order without z outermost
 			if (m_saveOverviewBrightfieldPerZCheckbox) {
 				m_saveOverviewBrightfieldPerZCheckbox->setChecked(checked);
@@ -267,23 +298,37 @@ void BrillouinAcquisition::setupOverviewTab() {
 		if (m_updatingOverviewTab) {
 			return;
 		}
-		if (auto* entry = findOverviewObjectiveEntry(m_overviewSelectedSlot, true)) {
+		if (m_overviewSelectedSlot == overviewMeasuringSlot()) {
+			// the objective that measures: the same exposure as the BF exposure of the Fluorescence tab (one setting, changed in either place)
+			m_Brillouin->settings.overviewBrightfieldExposureMs = value;
+			if (ui->fluoBrightfieldExposure->value() != value) {
+				ui->fluoBrightfieldExposure->setValue(value);
+			}
+		} else if (auto* entry = findOverviewObjectiveEntry(m_overviewSelectedSlot, true)) {
 			entry->exposureMs = value;
 		}
+		// also while a measurement runs: the next overview is taken with it
+		m_Brillouin->setLiveOverviewCamera(m_overviewSelectedSlot, value, m_overviewObjectiveGainSpinBox->value());
 	});
 	connect(m_overviewObjectiveGainSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
 		if (m_updatingOverviewTab) {
 			return;
 		}
-		if (auto* entry = findOverviewObjectiveEntry(m_overviewSelectedSlot, true)) {
+		if (m_overviewSelectedSlot == overviewMeasuringSlot()) {
+			m_Brillouin->settings.overviewBrightfieldGain = value;
+			if (std::abs(ui->fluoBrightfieldGain->value() - value) > 1e-9) {
+				ui->fluoBrightfieldGain->setValue(value);
+			}
+		} else if (auto* entry = findOverviewObjectiveEntry(m_overviewSelectedSlot, true)) {
 			entry->gain = value;
 		}
+		m_Brillouin->setLiveOverviewCamera(m_overviewSelectedSlot, m_overviewObjectiveExposureSpinBox->value(), value);
 	});
 	connect(m_overviewObjectiveMosaicCheckbox, &QCheckBox::toggled, this, [this](bool checked) {
 		if (m_updatingOverviewTab) {
 			return;
 		}
-		if (m_overviewSelectedSlot == (m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1)) {
+		if (m_overviewSelectedSlot == overviewMeasuringSlot()) {
 			if (checked && m_overviewFullGridRadio) {
 				m_overviewFullGridRadio->setChecked(true);
 			} else if (!checked && m_overviewSingleImageRadio) {
@@ -298,7 +343,7 @@ void BrillouinAcquisition::setupOverviewTab() {
 		if (m_updatingOverviewTab) {
 			return;
 		}
-		if (m_overviewSelectedSlot == (m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1)) {
+		if (m_overviewSelectedSlot == overviewMeasuringSlot()) {
 			if (m_overviewFullStackCheckbox) {
 				m_overviewFullStackCheckbox->setChecked(checked);
 			}
@@ -407,10 +452,58 @@ void BrillouinAcquisition::setupOverviewTab() {
 	updateOverviewTab();
 }
 
+int BrillouinAcquisition::overviewMeasuringSlot() const {
+	const auto running = m_Brillouin ? m_Brillouin->runningMeasurementObjectiveSlot() : -1;
+	if (running >= 0) {
+		return running;
+	}
+	return m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1;
+}
+
+void BrillouinAcquisition::arrangeAcquisitionTabs() {
+	auto* tabs = ui->acquisitionModeTabs;
+	if (!tabs) {
+		return;
+	}
+	const QStringList order{ "Grid", "Fluorescence", "Overview", "Surface scanning", "ODT" };
+	auto target = 0;
+	for (const auto& name : order) {
+		for (int i = 0; i < tabs->count(); i++) {
+			if (tabs->tabText(i) == name) {
+				if (i != target) {
+					tabs->tabBar()->moveTab(i, target);
+				}
+				target++;
+				break;
+			}
+		}
+	}
+}
+
+void BrillouinAcquisition::scheduleOverviewTabUpdate() {
+	if (m_overviewTabUpdatePending) {
+		return;
+	}
+	m_overviewTabUpdatePending = true;
+	QTimer::singleShot(30, this, [this]() {
+		m_overviewTabUpdatePending = false;
+		updateOverviewTab();
+	});
+}
+
 void BrillouinAcquisition::updateOverviewTab() {
 	if (!m_overviewTabPage || !m_Brillouin) {
 		return;
 	}
+	struct SlowLog {
+		QElapsedTimer timer;
+		SlowLog() { timer.start(); }
+		~SlowLog() {
+			if (timer.elapsed() > 30) {
+				qWarning(logWarning()) << "updateOverviewTab took" << timer.elapsed() << "ms";
+			}
+		}
+	} slowLog;
 	struct Updating {
 		bool& flag;
 		explicit Updating(bool& f) : flag(f) { flag = true; }
@@ -418,7 +511,7 @@ void BrillouinAcquisition::updateOverviewTab() {
 	} updating{ m_updatingOverviewTab };
 
 	auto& settings = m_Brillouin->settings;
-	const auto activeSlot = m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1;
+	const auto activeSlot = overviewMeasuringSlot();
 	const auto cameraConnected = m_brightfieldCamera != nullptr && m_brightfieldCamera->getConnectionStatus();
 	// the same condition the BF overview box of the Fluorescence tab uses
 	const auto overviewPossible = m_hasFluorescence && cameraConnected;
@@ -446,7 +539,7 @@ void BrillouinAcquisition::updateOverviewTab() {
 			m_overviewObjectiveCombo->addItem(text, slot);
 			const auto index = m_overviewObjectiveCombo->count() - 1;
 			if (slot == activeSlot) {
-				setItemEnabled(m_overviewObjectiveCombo, index, true, "The objective that measures; its settings are those of the BF overview box of the Fluorescence tab.");
+				setItemEnabled(m_overviewObjectiveCombo, index, true, "The objective that measures: the one in the beam when the measurement starts.");
 			} else {
 				std::string reason;
 				const auto usable = m_scanControl && m_scanControl->hasObjectiveChanger()
@@ -490,10 +583,11 @@ void BrillouinAcquisition::updateOverviewTab() {
 		m_overviewObjectiveExposureSpinBox->setValue(shown.exposureMs);
 		m_overviewObjectiveGainSpinBox->setValue(shown.gain);
 		// the exposure and gain of the measuring objective's overview are those of the brightfield camera panel
-		m_overviewObjectiveExposureSpinBox->setEnabled(overviewPossible && shown.active && !measuring);
-		m_overviewObjectiveGainSpinBox->setEnabled(overviewPossible && shown.active && !measuring);
-		m_overviewObjectiveExposureSpinBox->setToolTip(measuring ? "Set in the brightfield camera panel." : "");
-		m_overviewObjectiveGainSpinBox->setToolTip(measuring ? "Set in the brightfield camera panel." : "");
+		// the measuring objective's are the BF exposure and gain of the Fluorescence tab (coupled); all can be changed during a measurement
+		m_overviewObjectiveExposureSpinBox->setEnabled(overviewPossible && (shown.active || measuring));
+		m_overviewObjectiveGainSpinBox->setEnabled(overviewPossible && (shown.active || measuring));
+		m_overviewObjectiveExposureSpinBox->setToolTip(measuring ? "The same setting as the BF exposure of the Fluorescence tab. Can be changed during a measurement." : "Can be changed during a measurement.");
+		m_overviewObjectiveGainSpinBox->setToolTip(measuring ? "The same setting as the BF gain of the Fluorescence tab. Can be changed during a measurement." : "Can be changed during a measurement.");
 		m_overviewObjectiveMosaicCheckbox->setChecked(shown.fullGrid);
 		m_overviewObjectiveMosaicCheckbox->setEnabled(overviewPossible && shown.active);
 		m_overviewObjectiveStackCheckbox->setChecked(shown.fullStack);

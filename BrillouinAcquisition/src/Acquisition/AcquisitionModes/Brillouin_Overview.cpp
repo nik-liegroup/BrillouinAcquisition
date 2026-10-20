@@ -274,6 +274,7 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	m_surfaceRescanCount = 0;
 	m_seriesStartSeconds = steadySeconds();
 	m_measurementObjectiveSlot = m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1;
+	m_runningMeasurementObjectiveSlot = m_measurementObjectiveSlot;
 	const auto nan = std::numeric_limits<double>::quiet_NaN();
 	m_pointOffsetX.assign(m_orderedPositions.size(), nan);
 	m_pointOffsetY.assign(m_orderedPositions.size(), nan);
@@ -380,6 +381,22 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 		putDatasetDirect(storage, prefix + "focus-offset-um", { calibration.hasFocusOffset ? 1.0 : 0.0, calibration.focusOffsetUm, calibration.focusOffsetSigmaUm });
 		putDatasetDirect(storage, prefix + "is-reference-objective", { calibration.isReferenceObjective ? 1.0 : 0.0 });
 	}
+}
+
+void Brillouin::setLiveOverviewCamera(int slot, int exposureMs, double gain) {
+	std::lock_guard<std::mutex> lock(m_liveCameraMutex);
+	m_liveCamera[slot] = std::make_pair(std::max(1, exposureMs), gain);
+}
+
+bool Brillouin::liveOverviewCamera(int slot, int* exposureMs, double* gain) const {
+	std::lock_guard<std::mutex> lock(m_liveCameraMutex);
+	const auto found = m_liveCamera.find(slot);
+	if (found == m_liveCamera.end()) {
+		return false;
+	}
+	*exposureMs = found->second.first;
+	*gain = found->second.second;
+	return true;
 }
 
 void Brillouin::refreshGridOffset() {
@@ -565,7 +582,11 @@ bool Brillouin::captureObjectiveOverview(
 
 			std::vector<std::byte> image;
 			CAMERA_SETTINGS used;
-			if (!grabBrightfieldFrame(plan.settings.exposureMs, plan.settings.gain, &image, &used)) {
+			// exposure and gain as the operator has them now (they can be changed during the measurement)
+			auto exposureMs = plan.settings.exposureMs;
+			auto gain = plan.settings.gain;
+			liveOverviewCamera(plan.slot, &exposureMs, &gain);
+			if (!grabBrightfieldFrame(exposureMs, gain, &image, &used)) {
 				qWarning(logWarning()) << "Brillouin: overview frame could not be captured (objective" << plan.slot << ")";
 				continue;
 			}

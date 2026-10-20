@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>441</width>
-    <height>1020</height>
+    <height>1042</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -17,7 +17,7 @@
    <property name="geometry">
     <rect>
      <x>178</x>
-     <y>982</y>
+     <y>1004</y>
      <width>85</width>
      <height>23</height>
     </rect>
@@ -473,11 +473,11 @@
      <x>8</x>
      <y>446</y>
      <width>425</width>
-     <height>250</height>
+     <height>272</height>
     </rect>
    </property>
    <property name="title">
-    <string>FOV-center offset (relative to the shared reference objective)</string>
+    <string>FOV (xy) and focus (z) offset, relative to the reference objective</string>
    </property>
    <layout class="QVBoxLayout" name="fovOffsetVerticalLayout">
     <property name="spacing">
@@ -498,7 +498,7 @@
     <item>
      <layout class="QFormLayout" name="fovOffsetFormLayout">
       <property name="verticalSpacing">
-       <number>10</number>
+       <number>6</number>
       </property>
       <property name="horizontalSpacing">
        <number>6</number>
@@ -553,12 +553,62 @@
       <item row="3" column="0">
        <widget class="QLabel" name="fovOffsetSigma_label">
         <property name="text">
-         <string>FOV offset sigma [µm]</string>
+         <string>FOV offset sigma (xy) [µm]</string>
         </property>
        </widget>
       </item>
       <item row="3" column="1">
        <widget class="QDoubleSpinBox" name="fovOffsetSigma">
+        <property name="decimals">
+         <number>3</number>
+        </property>
+        <property name="minimum">
+         <double>0.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100000.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="0" colspan="2">
+       <widget class="QCheckBox" name="hasFocusOffsetCheckbox">
+        <property name="toolTip">
+         <string>The z (focus) offset of this objective relative to the reference objective, measured during the automated FOV calibration (the focus you set at every switch). Needed for the software to switch objectives by itself.</string>
+        </property>
+        <property name="text">
+         <string>This objective's focus (z) offset is calibrated</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0">
+       <widget class="QLabel" name="focusOffsetZ_label">
+        <property name="text">
+         <string>Focus offset z [µm]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="1">
+       <widget class="QDoubleSpinBox" name="focusOffsetZ">
+        <property name="decimals">
+         <number>3</number>
+        </property>
+        <property name="minimum">
+         <double>-100000.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100000.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="6" column="0">
+       <widget class="QLabel" name="focusOffsetZSigma_label">
+        <property name="text">
+         <string>Focus offset sigma (z) [µm]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="6" column="1">
+       <widget class="QDoubleSpinBox" name="focusOffsetZSigma">
         <property name="decimals">
          <number>3</number>
         </property>
@@ -585,7 +635,7 @@
    <property name="geometry">
     <rect>
      <x>8</x>
-     <y>706</y>
+     <y>728</y>
      <width>425</width>
      <height>266</height>
     </rect>
@@ -683,7 +733,7 @@
       <item row="4" column="0">
        <widget class="QLabel" name="objectiveCycleFovOffsetSigma_label">
         <property name="text">
-         <string>FOV offset sigma [µm]</string>
+         <string>FOV offset sigma (xy) [µm]</string>
         </property>
        </widget>
       </item>
