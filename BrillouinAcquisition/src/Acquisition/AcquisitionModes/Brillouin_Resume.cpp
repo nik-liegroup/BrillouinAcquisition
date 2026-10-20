@@ -320,7 +320,7 @@ void Brillouin::endResumeMode(std::unique_ptr<StorageWrapper>& storage) {
 
 namespace {
 
-	constexpr int kSurfacePriorTimeoutS = 20;
+	constexpr int kSurfacePriorTimeoutS = 6;
 
 }
 

@@ -72,7 +72,15 @@ void BrillouinAcquisition::applyContinueAvailability(const std::string& state, b
 		running = true;
 	}
 	const auto resumable = !running && (state == "measuring" || state == "stopped" || state == "surface-scan" || state == "surface-scan-stopped");
-	m_brillouinContinueButton->setEnabled(resumable);
+	// a finished repetition: Continue starts the next one with the drift carried over, as in an automatic series (needs the drift measured in
+	// this session)
+	m_continueIsNextRepetition = !running && state == "finished" && m_Brillouin->canCarryDriftToNextStart();
+	m_brillouinContinueButton->setEnabled(resumable || m_continueIsNextRepetition);
+	m_brillouinContinueButton->setToolTip(m_continueIsNextRepetition
+		? "Start the next repetition in this file with the drift measured so far carried over, as the repetitions of an automatic series do. "
+			"Start begins without any drift."
+		: "Continue the last Brillouin measurement of the open file where it stopped (cancelled, or the software stopped). Not available before "
+			"a measurement was started; after it finished only to go on with the drift correction (same session).");
 	if (resumable) {
 		// Start makes a new repetition in the same file, as it always did; Continue appends to the one that was interrupted
 		ui->BrillouinStart->setText("Restart");
@@ -113,6 +121,25 @@ void BrillouinAcquisition::onBrillouinContinueClicked() {
 			[&m_Brillouin = m_Brillouin]() { m_Brillouin->continueAfterSurfaceReview(false); },
 			Qt::AutoConnection
 		);
+		return;
+	}
+	if (m_continueIsNextRepetition) {
+		bool sameStart = true;
+		if (!m_Brillouin->canCarryDriftToNextStart(&sameStart)) {
+			updateContinueAvailability();
+			return;
+		}
+		if (!sameStart) {
+			const auto answer = QMessageBox::question(this, "Drift correction",
+				"The grid is relative to the start position, and the stage is not at the start of the last repetition (more than 5 \u00b5m away), so "
+				"the drift cannot be carried over.\n\nStart the next repetition without it?",
+				QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+			if (answer != QMessageBox::Yes) {
+				return;
+			}
+		}
+		m_Brillouin->setCarryDriftOnStart(sameStart);
+		on_BrillouinStart_clicked();
 		return;
 	}
 	auto* storage = m_acquisition ? m_acquisition->m_storage.get() : nullptr;

@@ -312,11 +312,15 @@ void Brillouin::startRepetitions() {
 
 	m_currentRepetition = 0;
 	m_startOfLastRepetition.start();
-	// a new start begins without any drift measured before
-	m_driftController.reset();
-	m_driftReferenceTiles.clear();
-	m_driftReferenceSlot = -1;
-	m_gridOffset = POINT2{ 0.0, 0.0 };
+	// a new start begins without any drift measured before - except the "Continue" of a finished repetition, which goes on as the next repetition
+	// of an automatic series would (beginOverviewSeries() carries the drift over if the start fits)
+	if (!(m_carryDriftOnStart && m_driftController.hasReference())) {
+		m_driftController.reset();
+		m_driftReferenceTiles.clear();
+		m_driftReferenceSlot = -1;
+		m_gridOffset = POINT2{ 0.0, 0.0 };
+	}
+	m_carryDriftOnStart = false;
 
 	m_repetitionTimer = new QTimer();
 	QMetaObject::Connection connection = QWidget::connect(

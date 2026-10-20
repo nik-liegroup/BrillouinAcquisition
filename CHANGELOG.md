@@ -1,6 +1,11 @@
 ## Unreleased
 
 ### Fixed
+- Overview images are centred on the centre of gravity of the active grid points (one tile or a mosaic), the image centre now being the
+  planned point: the targets are shifted by the scanner offset, the pixel-to-um conversion of the image centre and the FOV offset of the
+  measuring objective (the laser, not the image centre, sits on a target). With a surface scan the overview z starts at the median of the
+  found surface, the planes spaced as the grid has them; the z stack of every overview objective follows the grid (own stack steps/range
+  removed). The brightfield preset is set after the objective has turned. Drift limits: min. correlation default 0.6, max. speed removed.
 - Progress bar: fixed an off-by-two error that overestimated remaining time
   by ~2 points' worth throughout a run.
 - Dose-protection shutter is now guaranteed to close on every abort path

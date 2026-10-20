@@ -543,6 +543,11 @@ public slots:
 	void setScanOrder(const SCAN_ORDER& order);
 	// What the operator allowed for the next continueRepetition(): move the stage to the saved start position (relative mode), turn the
 	// nosepiece back to the objective of the measurement (after retracting z) if another one is in the beam
+	// The "Continue" of a finished repetition: the next repetition of the file, started by hand, keeps the drift measured so far as the next
+	// repetition of an automatic series does. Possible if drift correction is on and a reference overview is held; in a relative grid the
+	// stage has to be at the start of the earlier repetition as well (sameStart tells), in an absolute grid the position does not matter.
+	bool canCarryDriftToNextStart(bool* sameStart = nullptr);
+	void setCarryDriftOnStart(bool carry) { m_carryDriftOnStart = carry; }
 	void setResumeOptions(bool moveToStart, bool switchObjective) {
 		m_resumeMoveToStart = moveToStart;
 		m_resumeSwitchObjective = switchObjective;
@@ -916,6 +921,7 @@ private:
 	void writeResumePlan(std::unique_ptr<StorageWrapper>& storage, bool direct);
 	void setStorageState(const std::string& state);
 	bool m_resuming{ false };
+	bool m_carryDriftOnStart{ false };
 	// true while a measurement is in its measuring phase: what is written to the file as its state, see setStorageState()
 	bool m_measuringState{ false };
 	// true from the surface scan on until the measuring phase starts: the surface scan writes what a continue needs (checkpoint per column)

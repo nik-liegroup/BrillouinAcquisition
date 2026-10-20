@@ -268,6 +268,21 @@ bool Brillouin::checkOverviewSetup(std::string* problem) const {
 	return true;
 }
 
+bool Brillouin::canCarryDriftToNextStart(bool* sameStart) {
+	if (sameStart) {
+		*sameStart = true;
+	}
+	if (!m_settings.driftCorrectionEnabled || !m_driftController.hasReference() || m_driftReferenceTiles.empty()
+		|| m_driftReferenceSlot != m_settings.driftObjectiveSlot) {
+		return false;
+	}
+	if (sameStart && m_scanControl && !m_settings.gridCoordinatesAbsolute) {
+		const auto position = m_scanControl->getPosition();
+		*sameStart = std::hypot(position.x - m_driftSeriesStart.x, position.y - m_driftSeriesStart.y) < kSeriesCarryOverDistanceUm;
+	}
+	return true;
+}
+
 void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	m_overviewPlans = planOverviewObjectives();
 	m_overviewEventCount = 0;
@@ -288,7 +303,9 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 
 	// The next repetition of a series starts where the sample was at the end of the previous one (the stage went back to the start
 	// position, but the sample did not): carry the drift over if the repetition starts at the same place and with the same objective.
-	const auto sameStart = std::hypot(m_startPosition.x - m_driftSeriesStart.x, m_startPosition.y - m_driftSeriesStart.y) < kSeriesCarryOverDistanceUm;
+	// (an absolute grid hangs on the stage coordinates, not on where the repetition starts)
+	const auto sameStart = m_settings.gridCoordinatesAbsolute
+		|| std::hypot(m_startPosition.x - m_driftSeriesStart.x, m_startPosition.y - m_driftSeriesStart.y) < kSeriesCarryOverDistanceUm;
 	if (m_settings.driftCorrectionEnabled && m_driftController.hasReference() && sameStart && m_driftReferenceSlot == m_settings.driftObjectiveSlot
 		&& !m_driftReferenceTiles.empty()) {
 		m_gridOffset = m_driftController.totalUm();

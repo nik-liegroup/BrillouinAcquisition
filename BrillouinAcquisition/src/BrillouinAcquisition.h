@@ -477,7 +477,7 @@ private:
 	// (ui->progressBar) rather than adding a dedicated widget. Stopped/reset whenever the
 	// status leaves WAITFORSURFACEREVIEW, from whichever path caused that (manual Continue/
 	// Full grid click, or this same timeout).
-	static constexpr int kSurfaceReviewTimeoutS{ 15 };
+	static constexpr int kSurfaceReviewTimeoutS{ 6 };
 	QTimer* m_surfaceReviewTimer{ nullptr };
 	int m_surfaceReviewSecondsRemaining{ 0 };
 	void onSurfaceReviewTimerTick();
@@ -529,6 +529,7 @@ private:
 
 	// Continue of an interrupted measurement (BrillouinAcquisition_Resume.cpp)
 	QPushButton* m_brillouinContinueButton{ nullptr };
+	bool m_continueIsNextRepetition{ false };
 	void setupContinueButton();
 	void updateContinueAvailability();
 	void applyContinueAvailability(const std::string& state, bool running);
