@@ -114,7 +114,7 @@ namespace resume {
 
 		// the names of the settings of one overview objective: stored as one array per property over all objectives
 		struct OverviewArrays {
-			std::vector<double> slot, active, exposureMs, gain, fullGrid, fullStack, stackSteps, stackRangeUm;
+			std::vector<double> slot, active, exposureMs, gain, fullGrid, fullStack;
 		};
 
 		template <typename V>
@@ -236,8 +236,6 @@ namespace resume {
 				arrays.gain.push_back(entry.gain);
 				arrays.fullGrid.push_back(entry.fullGrid ? 1.0 : 0.0);
 				arrays.fullStack.push_back(entry.fullStack ? 1.0 : 0.0);
-				arrays.stackSteps.push_back(entry.stackSteps);
-				arrays.stackRangeUm.push_back(entry.stackRangeUm);
 			}
 			// the arrays are applied together when the slot array arrives (it defines how many objectives there are)
 			v.numbers("overviewObjectives.slot", arrays.slot, [&](const std::vector<double>& values) {
@@ -258,8 +256,6 @@ namespace resume {
 			objectiveProperty("overviewObjectives.gain", arrays.gain, [](OVERVIEW_OBJECTIVE_SETTINGS& e, double x) { e.gain = x; });
 			objectiveProperty("overviewObjectives.fullGrid", arrays.fullGrid, [](OVERVIEW_OBJECTIVE_SETTINGS& e, double x) { e.fullGrid = x != 0.0; });
 			objectiveProperty("overviewObjectives.fullStack", arrays.fullStack, [](OVERVIEW_OBJECTIVE_SETTINGS& e, double x) { e.fullStack = x != 0.0; });
-			objectiveProperty("overviewObjectives.stackSteps", arrays.stackSteps, [](OVERVIEW_OBJECTIVE_SETTINGS& e, double x) { e.stackSteps = (int)std::llround(x); });
-			objectiveProperty("overviewObjectives.stackRangeUm", arrays.stackRangeUm, [](OVERVIEW_OBJECTIVE_SETTINGS& e, double x) { e.stackRangeUm = x; });
 #undef FIELD
 
 			// the camera of the Brillouin measurement

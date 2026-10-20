@@ -132,30 +132,20 @@ void BrillouinAcquisition::setupOverviewTab() {
 	m_overviewObjectiveMosaicCheckbox->setToolTip("Tile camera-sized images (20 % overlap) over the whole grid instead of one image at the grid center.");
 	objectiveGrid->addWidget(m_overviewObjectiveMosaicCheckbox, 4, 0, 1, 2);
 	m_overviewObjectiveStackCheckbox = new QCheckBox("Z stack", objectiveGroup);
-	m_overviewObjectiveStackCheckbox->setToolTip("A brightfield z stack instead of one image (the centre slice is used for drift correction).");
+	m_overviewObjectiveStackCheckbox->setToolTip("A brightfield z stack instead of one image, over the z planes of the measurement grid (z min to z max, z steps; with surface following the range of the found surface). The centre slice is used for drift correction.");
 	objectiveGrid->addWidget(m_overviewObjectiveStackCheckbox, 5, 0, 1, 2);
-	objectiveGrid->addWidget(new QLabel("Images", objectiveGroup), 6, 0);
-	m_overviewObjectiveStackStepsSpinBox = new QSpinBox(objectiveGroup);
-	m_overviewObjectiveStackStepsSpinBox->setRange(2, 99);
-	objectiveGrid->addWidget(m_overviewObjectiveStackStepsSpinBox, 6, 1);
-	objectiveGrid->addWidget(new QLabel("Range", objectiveGroup), 7, 0);
-	m_overviewObjectiveStackRangeSpinBox = new QDoubleSpinBox(objectiveGroup);
-	m_overviewObjectiveStackRangeSpinBox->setSuffix(" µm");
-	m_overviewObjectiveStackRangeSpinBox->setRange(1.0, 2000.0);
-	m_overviewObjectiveStackRangeSpinBox->setDecimals(1);
-	objectiveGrid->addWidget(m_overviewObjectiveStackRangeSpinBox, 7, 1);
 	// a brightfield image at the measured points: with the objective that measures (another one would turn the nosepiece at every point)
 	m_overviewPerPointCheckbox = new QCheckBox("BF image at points", objectiveGroup);
 	m_overviewPerPointCheckbox->setToolTip("A brightfield image at every N-th measured point, with the objective that measures. Not available for the other "
 		"objectives: they would have to turn the nosepiece at every point.");
-	objectiveGrid->addWidget(m_overviewPerPointCheckbox, 8, 0, 1, 2);
-	objectiveGrid->addWidget(new QLabel("Every N points", objectiveGroup), 9, 0);
+	objectiveGrid->addWidget(m_overviewPerPointCheckbox, 6, 0, 1, 2);
+	objectiveGrid->addWidget(new QLabel("Every N points", objectiveGroup), 7, 0);
 	m_overviewPerPointEverySpinBox = new QSpinBox(objectiveGroup);
 	m_overviewPerPointEverySpinBox->setRange(1, 100000);
-	objectiveGrid->addWidget(m_overviewPerPointEverySpinBox, 9, 1);
+	objectiveGrid->addWidget(m_overviewPerPointEverySpinBox, 7, 1);
 	m_overviewPerPointDuringCheckbox = new QCheckBox("During the exposure", objectiveGroup);
 	m_overviewPerPointDuringCheckbox->setToolTip("Take the image while the Brillouin spectrum is exposed (no extra time), instead of after it.");
-	objectiveGrid->addWidget(m_overviewPerPointDuringCheckbox, 10, 0, 1, 2);
+	objectiveGrid->addWidget(m_overviewPerPointDuringCheckbox, 8, 0, 1, 2);
 	layout->addWidget(objectiveGroup);
 
 	// ---- when
@@ -341,22 +331,6 @@ void BrillouinAcquisition::setupOverviewTab() {
 			entry->fullStack = checked;
 		}
 		updateOverviewTab();
-	});
-	connect(m_overviewObjectiveStackStepsSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
-		if (m_updatingOverviewTab) {
-			return;
-		}
-		if (auto* entry = findOverviewObjectiveEntry(m_overviewSelectedSlot, true)) {
-			entry->stackSteps = value;
-		}
-	});
-	connect(m_overviewObjectiveStackRangeSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-		if (m_updatingOverviewTab) {
-			return;
-		}
-		if (auto* entry = findOverviewObjectiveEntry(m_overviewSelectedSlot, true)) {
-			entry->stackRangeUm = value;
-		}
 	});
 	connect(m_overviewPerPointCheckbox, &QCheckBox::toggled, this, [this](bool checked) {
 		if (!m_updatingOverviewTab && m_capturePerPointBrightfieldCheckbox) {
@@ -593,11 +567,6 @@ void BrillouinAcquisition::updateOverviewTab() {
 		m_overviewObjectiveMosaicCheckbox->setEnabled(overviewPossible && shown.active);
 		m_overviewObjectiveStackCheckbox->setChecked(shown.fullStack);
 		m_overviewObjectiveStackCheckbox->setEnabled(overviewPossible && shown.active);
-		m_overviewObjectiveStackStepsSpinBox->setValue(shown.stackSteps);
-		m_overviewObjectiveStackRangeSpinBox->setValue(shown.stackRangeUm);
-		// the stack of the measuring objective spans the grid's z range (zMin to zMax, zSteps images)
-		m_overviewObjectiveStackStepsSpinBox->setEnabled(overviewPossible && shown.active && shown.fullStack && !measuring);
-		m_overviewObjectiveStackRangeSpinBox->setEnabled(overviewPossible && shown.active && shown.fullStack && !measuring);
 		// brightfield images at the points: only the objective that measures has them
 		const auto perPointOn = settings.capturePerPointBrightfield;
 		m_overviewPerPointCheckbox->setChecked(measuring && perPointOn);
@@ -606,9 +575,6 @@ void BrillouinAcquisition::updateOverviewTab() {
 		m_overviewPerPointEverySpinBox->setEnabled(overviewPossible && measuring && perPointOn);
 		m_overviewPerPointDuringCheckbox->setChecked(settings.perPointBrightfieldDuringAcquisition);
 		m_overviewPerPointDuringCheckbox->setEnabled(overviewPossible && measuring && perPointOn);
-		const auto* stackTip = measuring ? "The stack of the measuring objective spans the grid's z range." : "";
-		m_overviewObjectiveStackStepsSpinBox->setToolTip(stackTip);
-		m_overviewObjectiveStackRangeSpinBox->setToolTip(stackTip);
 	}
 
 	// ---- when
@@ -792,8 +758,6 @@ void BrillouinAcquisition::writeOverviewSettings(QSettings& settings) {
 		settings.setValue(key + "gain", entry.gain);
 		settings.setValue(key + "full-grid", entry.fullGrid);
 		settings.setValue(key + "full-stack", entry.fullStack);
-		settings.setValue(key + "stack-steps", entry.stackSteps);
-		settings.setValue(key + "stack-range-um", entry.stackRangeUm);
 	}
 }
 
@@ -829,8 +793,6 @@ void BrillouinAcquisition::readOverviewSettings(QSettings& settings) {
 		entry.gain = settings.value(key + "gain", entry.gain).toDouble();
 		entry.fullGrid = settings.value(key + "full-grid", false).toBool();
 		entry.fullStack = settings.value(key + "full-stack", false).toBool();
-		entry.stackSteps = std::clamp(settings.value(key + "stack-steps", entry.stackSteps).toInt(), 2, 99);
-		entry.stackRangeUm = std::max(1.0, settings.value(key + "stack-range-um", entry.stackRangeUm).toDouble());
 		s.overviewObjectives.push_back(entry);
 	}
 }

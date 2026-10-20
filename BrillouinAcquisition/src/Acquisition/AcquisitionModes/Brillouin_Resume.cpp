@@ -427,6 +427,12 @@ void Brillouin::applyPreviousSurface(const PreviousSurface& previous) {
 		const auto minMax = std::minmax_element(centreByXY.begin(), centreByXY.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
 		m_surfaceZMinAbs = minMax.first->second;
 		m_surfaceZMaxAbs = minMax.second->second;
+		std::vector<double> found;
+		for (const auto& entry : centreByXY) {
+			found.push_back(entry.second);
+		}
+		std::sort(found.begin(), found.end());
+		m_surfaceZMedianAbs = found.size() % 2 ? found[found.size() / 2] : 0.5 * (found[found.size() / 2 - 1] + found[found.size() / 2]);
 	}
 	// the coarse scan the file keeps for this repetition is the one that was reused (so a later repetition can start from it as well)
 	const auto [xSamples, ySamples] = coarseXYSamples(m_settings.preScanXYBin);

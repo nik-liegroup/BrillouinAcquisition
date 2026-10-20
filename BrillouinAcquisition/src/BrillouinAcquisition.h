@@ -494,8 +494,6 @@ private:
 	QDoubleSpinBox* m_overviewObjectiveGainSpinBox{ nullptr };
 	QCheckBox* m_overviewObjectiveMosaicCheckbox{ nullptr };
 	QCheckBox* m_overviewObjectiveStackCheckbox{ nullptr };
-	QSpinBox* m_overviewObjectiveStackStepsSpinBox{ nullptr };
-	QDoubleSpinBox* m_overviewObjectiveStackRangeSpinBox{ nullptr };
 	QComboBox* m_overviewTriggerCombo{ nullptr };
 	QCheckBox* m_overviewBeforeCheckbox{ nullptr };
 	QCheckBox* m_overviewAfterCheckbox{ nullptr };

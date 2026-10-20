@@ -41,19 +41,32 @@ int overviewRequiredTileCount(double extent, double fov, double overlap) {
  * the tiled span and the point extent overshoots symmetrically on both ends rather than landing
  * exactly on the outermost points.
  */
-std::vector<double> overviewTileCentersAlongAxis(double minEdge, double extent, double fov, double overlap, int count) {
+std::vector<double> overviewTileCentersAlongAxis(double minEdge, double extent, double fov, double overlap, int count, double focus = std::numeric_limits<double>::quiet_NaN()) {
 	std::vector<double> centers(count);
 	const auto center = minEdge + 0.5 * extent;
-	if (count <= 1) {
-		centers[0] = center;
-		return centers;
-	}
-	const auto pitch = fov * (1.0 - overlap);
+	const auto pitch = count <= 1 ? 0.0 : fov * (1.0 - overlap);
 	const auto start = center - 0.5 * (count - 1) * pitch;
 	for (int i = 0; i < count; i++) {
 		centers[i] = start + i * pitch;
 	}
+	// The mosaic is moved so that its centre lies on the centre of gravity of the points (focus) - as far as every point stays inside
+	// the tiled area.
+	if (std::isfinite(focus)) {
+		const auto slack = std::max(0.0, 0.5 * ((count - 1) * pitch + fov - extent));
+		const auto shift = std::clamp(focus - center, -slack, slack);
+		for (auto& c : centers) {
+			c += shift;
+		}
+	}
 	return centers;
+}
+
+double overviewMeanCoordinate(const std::vector<POINT2>& points, bool useX) {
+	auto sum = 0.0;
+	for (const auto& p : points) {
+		sum += useX ? p.x : p.y;
+	}
+	return points.empty() ? std::numeric_limits<double>::quiet_NaN() : sum / (double)points.size();
 }
 
 bool isPointInPolygonUm(const POINT2& point, const std::vector<POINT2>& polygon) {
@@ -2121,6 +2134,12 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		);
 		m_surfaceZMinAbs = minMax.first->second;
 		m_surfaceZMaxAbs = minMax.second->second;
+		std::vector<double> found;
+		for (const auto& entry : zCenterByXYIndex) {
+			found.push_back(entry.second);
+		}
+		std::sort(found.begin(), found.end());
+		m_surfaceZMedianAbs = found.size() % 2 ? found[found.size() / 2] : 0.5 * (found[found.size() / 2 - 1] + found[found.size() / 2]);
 	}
 
 	// zOrigin here must match the one used above to compute centerZAbs (zOrigin + zInterp) -
@@ -2189,8 +2208,12 @@ void Brillouin::applySurfaceFollowPlan() {
  * always uses this flat value directly, never a stack.
  */
 double Brillouin::overviewFlatZAbs(int zIndex, const std::vector<double>& directionsZ) const {
-	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
 	const auto clampedZIndex = std::clamp(zIndex, 0, (int)directionsZ.size() - 1);
+	// with the surface scan: starting at the median z of the found surface, the planes spaced as the grid has them
+	if (m_settings.useSurfaceFollow && m_surfaceZRangeValid) {
+		return m_surfaceZMedianAbs + (directionsZ[clampedZIndex] - directionsZ.front());
+	}
+	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
 	return origin.z + directionsZ[clampedZIndex];
 }
 
@@ -2227,6 +2250,10 @@ std::vector<double> Brillouin::overviewStackZAbs(int zIndex, const std::vector<d
 	const auto fullStackActive = m_settings.overviewBrightfieldFullGrid
 		? m_settings.overviewBrightfieldFullStackMosaic
 		: m_settings.overviewBrightfieldFullStackSingle;
+	return overviewStackZAbsFor(fullStackActive, zIndex, directionsZ);
+}
+
+std::vector<double> Brillouin::overviewStackZAbsFor(bool fullStackActive, int zIndex, const std::vector<double>& directionsZ) const {
 	if (!fullStackActive) {
 		return { overviewFlatZAbs(zIndex, directionsZ) };
 	}
@@ -2234,8 +2261,8 @@ std::vector<double> Brillouin::overviewStackZAbs(int zIndex, const std::vector<d
 	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
 	if (m_settings.useSurfaceFollow && m_surfaceZRangeValid) {
 		return simplemath::linspace(
-			m_surfaceZMinAbs + m_settings.zMin,
-			m_surfaceZMaxAbs + m_settings.zMax,
+			m_surfaceZMedianAbs,
+			m_surfaceZMedianAbs + (m_settings.zMax - m_settings.zMin),
 			m_settings.zSteps
 		);
 	}
@@ -2428,8 +2455,8 @@ std::vector<POINT2> Brillouin::overviewTileCentersXYForFootprint(POINT2 fov) con
 		}
 		const auto tileCountX = overviewRequiredTileCount(clusterXMax - clusterXMin, fovWidthUm, kOverviewTileOverlapFraction);
 		const auto tileCountY = overviewRequiredTileCount(clusterYMax - clusterYMin, fovHeightUm, kOverviewTileOverlapFraction);
-		const auto centersX = overviewTileCentersAlongAxis(clusterXMin, clusterXMax - clusterXMin, fovWidthUm, kOverviewTileOverlapFraction, tileCountX);
-		const auto centersY = overviewTileCentersAlongAxis(clusterYMin, clusterYMax - clusterYMin, fovHeightUm, kOverviewTileOverlapFraction, tileCountY);
+		const auto centersX = overviewTileCentersAlongAxis(clusterXMin, clusterXMax - clusterXMin, fovWidthUm, kOverviewTileOverlapFraction, tileCountX, overviewMeanCoordinate(clusterPoints, true));
+		const auto centersY = overviewTileCentersAlongAxis(clusterYMin, clusterYMax - clusterYMin, fovHeightUm, kOverviewTileOverlapFraction, tileCountY, overviewMeanCoordinate(clusterPoints, false));
 		for (const auto y : centersY) {
 			for (const auto x : centersX) {
 				tiles.push_back(POINT2{ x, y });
@@ -2445,12 +2472,39 @@ std::vector<POINT2> Brillouin::overviewTileCentersXYForFootprint(POINT2 fov) con
  * grid offset for relative mode) - used by the "single image" overview coverage mode.
  */
 POINT2 Brillouin::overviewGridCenterXY() const {
+	return overviewGridCenterXYForFootprint(overviewTileFootprintUm());
+}
+
+POINT2 Brillouin::overviewGridCenterXYForFootprint(POINT2 fov) const {
 	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : POINT3{};
 	const auto gridXMin = m_settings.xMin + origin.x;
 	const auto gridXMax = m_settings.xMax + origin.x;
 	const auto gridYMin = m_settings.yMin + origin.y;
 	const auto gridYMax = m_settings.yMax + origin.y;
-	return POINT2{ 0.5 * (gridXMin + gridXMax), 0.5 * (gridYMin + gridYMax) };
+	const auto boxCentre = POINT2{ 0.5 * (gridXMin + gridXMax), 0.5 * (gridYMin + gridYMax) };
+
+	// the centre of gravity of the active grid points (the ROI mask can make it differ from the middle of the box)
+	const auto& positions = m_settings.gridCoordinatesAbsolute ? m_orderedPositions : m_orderedPositionsRelative;
+	std::set<std::pair<int, int>> seen;
+	std::vector<POINT2> active;
+	const auto count = std::min(m_orderedIndices.size(), positions.size());
+	for (size_t i = 0; i < count; i++) {
+		if (seen.insert(std::make_pair(m_orderedIndices[i].x, m_orderedIndices[i].y)).second) {
+			active.push_back(POINT2{ positions[i].x, positions[i].y });
+		}
+	}
+	if (active.empty()) {
+		return boxCentre;
+	}
+	auto centre = POINT2{ overviewMeanCoordinate(active, true), overviewMeanCoordinate(active, false) };
+	// keep the grid inside the image where the field of view allows it
+	if (fov.x > 0.0 && fov.y > 0.0) {
+		const auto slackX = std::max(0.0, 0.5 * (fov.x - (gridXMax - gridXMin)));
+		const auto slackY = std::max(0.0, 0.5 * (fov.y - (gridYMax - gridYMin)));
+		centre.x = boxCentre.x + std::clamp(centre.x - boxCentre.x, -slackX, slackX);
+		centre.y = boxCentre.y + std::clamp(centre.y - boxCentre.y, -slackY, slackY);
+	}
+	return centre;
 }
 
 /*
@@ -2584,8 +2638,8 @@ std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUm() const
 		// rather than hugging the outermost points.
 		const auto tileCountX = overviewRequiredTileCount(clusterXMax - clusterXMin, fovWidthUm, kOverviewTileOverlapFraction);
 		const auto tileCountY = overviewRequiredTileCount(clusterYMax - clusterYMin, fovHeightUm, kOverviewTileOverlapFraction);
-		const auto centersX = overviewTileCentersAlongAxis(clusterXMin, clusterXMax - clusterXMin, fovWidthUm, kOverviewTileOverlapFraction, tileCountX);
-		const auto centersY = overviewTileCentersAlongAxis(clusterYMin, clusterYMax - clusterYMin, fovHeightUm, kOverviewTileOverlapFraction, tileCountY);
+		const auto centersX = overviewTileCentersAlongAxis(clusterXMin, clusterXMax - clusterXMin, fovWidthUm, kOverviewTileOverlapFraction, tileCountX, overviewMeanCoordinate(clusterPoints, true));
+		const auto centersY = overviewTileCentersAlongAxis(clusterYMin, clusterYMax - clusterYMin, fovHeightUm, kOverviewTileOverlapFraction, tileCountY, overviewMeanCoordinate(clusterPoints, false));
 		const auto outlineXMin = centersX.front() - 0.5 * fovWidthUm;
 		const auto outlineXMax = centersX.back() + 0.5 * fovWidthUm;
 		const auto outlineYMin = centersY.front() - 0.5 * fovHeightUm;

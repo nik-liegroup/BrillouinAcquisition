@@ -43,9 +43,7 @@ struct OVERVIEW_OBJECTIVE_SETTINGS {
 	int exposureMs{ 4 };			// [ms]	brightfield exposure
 	double gain{ 0.0 };				// camera gain
 	bool fullGrid{ false };			// tile the whole grid (mosaic of camera-sized images, 20 % overlap) instead of one image at the grid centre
-	bool fullStack{ false };		// a z stack instead of one image (the centre slice is used for drift correction)
-	int stackSteps{ 5 };			// [1]	images of the stack
-	double stackRangeUm{ 20.0 };	// [um]	z range of the stack, centred on the objective's focus
+	bool fullStack{ false };		// a z stack instead of one image, over the z planes of the measurement grid (the centre slice is used for drift correction)
 };
 
 struct BRILLOUIN_SETTINGS {
@@ -610,6 +608,8 @@ public slots:
 	std::vector<std::pair<POINT2, POINT2>> overviewTileOutlinesUm() const;
 	// The single grid-center point used by the "single image" coverage mode.
 	POINT2 overviewGridCenterXY() const;
+	// centre of gravity of the active grid points, kept so that an image of this field of view still covers the grid where it can
+	POINT2 overviewGridCenterXYForFootprint(POINT2 fov) const;
 	// Coarse xy points (preScanXYBin) the surface pre-scan will actually measure, in the
 	// same frame overviewTileCentersXY() uses - the GUI live-view "proposed" preview
 	// reuses this instead of independently reconstructing an approximation of the coarse
@@ -766,6 +766,8 @@ private:
 	// lowest-to-highest found surface offset by zMin/zMax (surface-follow on, see
 	// m_surfaceZMinAbs/m_surfaceZMaxAbs).
 	std::vector<double> overviewStackZAbs(int zIndex, const std::vector<double>& directionsZ) const;
+	// the same for a given choice of stack or single plane (the overview objectives each have their own)
+	std::vector<double> overviewStackZAbsFor(bool fullStack, int zIndex, const std::vector<double>& directionsZ) const;
 	// One xy/z target per image actually captured for this z-index: the overview image's
 	// xy point(s) (see overviewImageXY()) each paired with overviewStackZAbs() (so a full
 	// stack, if enabled, only ever applies here).
@@ -865,6 +867,7 @@ private:
 	bool useOverviewEngine() const;
 	// The objectives that take overviews in this repetition (measuring objective first), from the settings.
 	std::vector<OverviewObjectivePlan> planOverviewObjectives() const;
+	bool m_overviewBrightfieldPresetSet{ false };
 	// Whether the overview/drift/rescan settings can be run: other objectives need calibrations (scale, FOV offset, focus offset), a z
 	// retract, brightfield camera; the drift objective must take overviews. `problem` says what is missing.
 	bool checkOverviewSetup(std::string* problem) const;
@@ -975,6 +978,8 @@ private:
 	// one point.
 	double m_surfaceZMinAbs{ 0.0 };
 	double m_surfaceZMaxAbs{ 0.0 };
+	// median of the found surface: the overviews are centred on it
+	double m_surfaceZMedianAbs{ 0.0 };
 	bool m_surfaceZRangeValid{ false };
 
 	// Populated at the end of runSurfacePreScan() - the coarse (binned) grid the pre-scan

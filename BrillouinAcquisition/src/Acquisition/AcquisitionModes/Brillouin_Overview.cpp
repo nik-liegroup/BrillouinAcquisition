@@ -339,7 +339,7 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	scalar("drift-carried-over-y-um", m_gridOffset.y);
 	scalar("surface-rescan-used", (double)(int)m_settings.surfaceRescan);
 
-	std::vector<double> objectiveSlots, active, measuring, exposures, gains, fullGrids, fullStacks, stackSteps, stackRanges;
+	std::vector<double> objectiveSlots, active, measuring, exposures, gains, fullGrids, fullStacks;
 	for (const auto& plan : m_overviewPlans) {
 		objectiveSlots.push_back((double)plan.slot);
 		active.push_back(1.0);
@@ -348,8 +348,6 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 		gains.push_back(plan.settings.gain);
 		fullGrids.push_back(plan.settings.fullGrid ? 1.0 : 0.0);
 		fullStacks.push_back(plan.settings.fullStack ? 1.0 : 0.0);
-		stackSteps.push_back((double)plan.settings.stackSteps);
-		stackRanges.push_back(plan.settings.stackRangeUm);
 	}
 	putDatasetDirect(storage, "overview-objectives-slot-used", objectiveSlots);
 	putDatasetDirect(storage, "overview-objectives-is-measurement-objective", measuring);
@@ -357,8 +355,6 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	putDatasetDirect(storage, "overview-objectives-gain-used", gains);
 	putDatasetDirect(storage, "overview-objectives-full-grid-used", fullGrids);
 	putDatasetDirect(storage, "overview-objectives-full-stack-used", fullStacks);
-	putDatasetDirect(storage, "overview-objectives-stack-steps-used", stackSteps);
-	putDatasetDirect(storage, "overview-objectives-stack-range-um-used", stackRanges);
 
 	if (!m_scanControl) {
 		return;
@@ -500,11 +496,11 @@ bool Brillouin::captureObjectiveOverview(
 			return true;
 		}
 		const auto footprint = overviewTileFootprintUmFor(scale);
-		const auto centres = plan.settings.fullGrid ? overviewTileCentersXYForFootprint(footprint) : std::vector<POINT2>{ overviewGridCenterXY() };
-		const auto z0 = overviewFlatZAbs(zIndex, directionsZ) + focusDelta;
-		std::vector<double> stackZ{ z0 };
-		if (plan.settings.fullStack && plan.settings.stackSteps > 1) {
-			stackZ = simplemath::linspace(z0 - 0.5 * plan.settings.stackRangeUm, z0 + 0.5 * plan.settings.stackRangeUm, plan.settings.stackSteps);
+		const auto centres = plan.settings.fullGrid ? overviewTileCentersXYForFootprint(footprint) : std::vector<POINT2>{ overviewGridCenterXYForFootprint(footprint) };
+		// the z planes of the measurement grid (the grid's z range, or the range of the found surface), at this objective's focus
+		auto stackZ = overviewStackZAbsFor(plan.settings.fullStack, zIndex, directionsZ);
+		for (auto& z : stackZ) {
+			z += focusDelta;
 		}
 		for (const auto& centre : centres) {
 			std::vector<POINT3> stack;
@@ -554,6 +550,11 @@ bool Brillouin::captureObjectiveOverview(
 		}
 		guard.switched = true;
 		log->switchToSeconds = steadySeconds() - t0;
+	}
+
+	if (!m_overviewBrightfieldPresetSet) {
+		m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
+		m_overviewBrightfieldPresetSet = true;
 	}
 
 	// per-image bookkeeping shared by all images of this overview
@@ -729,7 +730,8 @@ bool Brillouin::runOverviewEvent(
 	const auto eventSeconds = steadySeconds();
 
 	// brightfield for the whole event: one preset switch, the laser shutter closed
-	m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
+	// (the brightfield preset is set by the first objective, once it is the one in the beam)
+	m_overviewBrightfieldPresetSet = false;
 	m_scanControl->setRLShutterOpen(false);
 
 	std::vector<OverviewCaptureLog> captures;
