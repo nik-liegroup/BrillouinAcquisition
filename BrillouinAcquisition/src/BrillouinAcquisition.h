@@ -485,6 +485,51 @@ private:
 
 	bool m_hasFluorescence{ false };
 
+	// Overview tab (BrillouinAcquisition_Overview.cpp): overview objectives, schedule, drift correction, repeated surface scan
+	QWidget* m_overviewTabPage{ nullptr };
+	QLabel* m_overviewSummaryLabel{ nullptr };
+	QComboBox* m_overviewObjectiveCombo{ nullptr };
+	QCheckBox* m_overviewObjectiveActiveCheckbox{ nullptr };
+	QSpinBox* m_overviewObjectiveExposureSpinBox{ nullptr };
+	QDoubleSpinBox* m_overviewObjectiveGainSpinBox{ nullptr };
+	QCheckBox* m_overviewObjectiveMosaicCheckbox{ nullptr };
+	QCheckBox* m_overviewObjectiveStackCheckbox{ nullptr };
+	QSpinBox* m_overviewObjectiveStackStepsSpinBox{ nullptr };
+	QDoubleSpinBox* m_overviewObjectiveStackRangeSpinBox{ nullptr };
+	QComboBox* m_overviewTriggerCombo{ nullptr };
+	QCheckBox* m_overviewBeforeCheckbox{ nullptr };
+	QCheckBox* m_overviewAfterCheckbox{ nullptr };
+	QDoubleSpinBox* m_overviewRetractSpinBox{ nullptr };
+	QCheckBox* m_driftEnabledCheckbox{ nullptr };
+	QComboBox* m_driftObjectiveCombo{ nullptr };
+	QDoubleSpinBox* m_driftMinNccSpinBox{ nullptr };
+	QDoubleSpinBox* m_driftMaxStepSpinBox{ nullptr };
+	QDoubleSpinBox* m_driftMaxSpeedSpinBox{ nullptr };
+	QCheckBox* m_driftExtrapolateCheckbox{ nullptr };
+	QLabel* m_driftStatusLabel{ nullptr };
+	QCheckBox* m_livePreviewsCheckbox{ nullptr };
+	QGroupBox* m_surfaceRescanGroup{ nullptr };
+	QComboBox* m_surfaceRescanCombo{ nullptr };
+	int m_overviewSelectedSlot{ -1 };
+	// the objective whose BF overview settings were taken over from the previous one when the nosepiece was turned, and what they were then
+	int m_overviewInheritedSlot{ -1 };
+	OVERVIEW_OBJECTIVE_SETTINGS m_overviewInheritedSnapshot;
+	bool m_updatingOverviewTab{ false };
+	void setupOverviewTab();
+	void updateOverviewTab();
+	OVERVIEW_OBJECTIVE_SETTINGS* findOverviewObjectiveEntry(int slot, bool create);
+	void syncOverviewObjectiveSettingsOnSwitch(int previousSlot, int newSlot);
+
+	// Continue of an interrupted measurement (BrillouinAcquisition_Resume.cpp)
+	QPushButton* m_brillouinContinueButton{ nullptr };
+	void setupContinueButton();
+	void updateContinueAvailability();
+	void onBrillouinContinueClicked();
+	void applyRestoredBrillouinSettings(const BRILLOUIN_SETTINGS& restored);
+	void showSurfacePriorQuestion(const QString& text, bool offerReuse, int timeoutSeconds);
+	void writeOverviewSettings(QSettings& settings);
+	void readOverviewSettings(QSettings& settings);
+
 	TableModel* tableModel = new TableModel(0);
 	ButtonDelegate buttonDelegate;
 

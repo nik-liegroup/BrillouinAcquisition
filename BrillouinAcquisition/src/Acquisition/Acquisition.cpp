@@ -65,6 +65,7 @@ void Acquisition::openFile(const StoragePath& path, int flag, bool forceOpen) {
 		this,
 		&Acquisition::s_writeError
 	);
+	emit(s_fileOpened());
 }
 
 void Acquisition::openFile(std::string filename, bool forceOpen) {

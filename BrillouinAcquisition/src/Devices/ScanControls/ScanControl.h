@@ -233,6 +233,23 @@ public slots:
 	void setObjectiveCalibration(int slot, const ObjectiveCalibrationData& calibration);
 	bool hasObjectiveCalibration(int slot) const;
 	ObjectiveCalibrationData getObjectiveCalibration(int slot) const;
+	// z to add when moving the focus found with the objective in slot `fromSlot` to the focus of the objective in slot `toSlot`:
+	// focusOffsetUm(to) - focusOffsetUm(from) (see ObjectiveCalibrationData). False, with *deltaUm untouched, if either slot has no
+	// measured focus offset - the caller must then not move z by an invented amount.
+	bool getFocusOffsetBetweenSlots(int fromSlot, int toSlot, double* deltaUm) const;
+	// The focus offset of one slot as a validated number: 0 for the reference objective (even in a calibration file written
+	// before focus offsets existed), the measured value where hasFocusOffset is set, otherwise false with *offsetUm untouched.
+	bool getValidFocusOffset(int slot, double* offsetUm) const;
+	// Whether the software may switch from `fromSlot` to `toSlot` on its own (an overview at another objective during a
+	// measurement): both objectives need a scale calibration, an FOV offset and a focus offset (z), because the switch moves
+	// z to the other objective's focus and xy to its field of view. Same slot: always true. `reason` (if given) says what is
+	// missing. Manual switching by the operator is never blocked by this.
+	bool canSwitchObjectiveAutomatically(int fromSlot, int toSlot, std::string* reason = nullptr) const;
+	// Moves the nosepiece to `slot` and checks that the changer reports it (the call returns once the switch is done). False, with the
+	// reason in *error if given, if the device has no motorized "Objective" element or the changer ends up elsewhere. Does not check
+	// calibrations (see canSwitchObjectiveAutomatically()) and does not move z: the caller retracts first.
+	bool switchObjectiveSlot(int slot, std::string* error = nullptr);
+	bool hasObjectiveChanger() const;
 	int getActiveObjectiveSlot() const;
 	// Empty/default (hasFovOffset == false) if the active slot has no registered calibration.
 	ObjectiveCalibrationData getActiveObjectiveCalibration() const;
@@ -335,6 +352,8 @@ private:
 	// switch-detection/calibration-lookup/signal-emission logic, common to both the
 	// software-commanded and the physically-polled change path.
 	void handleObjectiveSlotObserved(int newSlot);
+	// True while switchObjectiveSlot() turns the nosepiece: s_objectiveSwitched() is not emitted then (software-initiated switch)
+	bool m_quietObjectiveSwitch{ false };
 
 	std::map<int, ObjectiveCalibrationData> m_objectiveCalibrations;
 	// -1 until the first "Objective" element position is observed (see

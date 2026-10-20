@@ -400,3 +400,257 @@ void H5BM::closeDataset(hid_t& dataset) {
 		}
 	}
 }
+int H5BM::lastRepetition(ACQUISITION_MODE mode) {
+	auto handle = getModeHandle(mode);
+	if (!handle || handle->rootHandle < 0) {
+		return -1;
+	}
+	auto last = -1;
+	for (auto n = 0; H5Lexists(handle->rootHandle, std::to_string(n).c_str(), H5P_DEFAULT) > 0; n++) {
+		last = n;
+	}
+	return last;
+}
+
+bool H5BM::openRepetition(ACQUISITION_MODE mode, int repetition) {
+	auto handle = getModeHandle(mode);
+	if (!handle || handle->rootHandle < 0 || repetition < 0) {
+		return false;
+	}
+	const auto name = std::to_string(repetition);
+	if (H5Lexists(handle->rootHandle, name.c_str(), H5P_DEFAULT) <= 0) {
+		return false;
+	}
+	closeGroup(handle->currentRepetitionHandle);
+	handle->currentRepetitionHandle = H5Gopen2(handle->rootHandle, name.c_str(), H5P_DEFAULT);
+	if (handle->currentRepetitionHandle < 0) {
+		return false;
+	}
+	handle->repetitionCount = repetition;
+	handle->groups = std::make_unique<RepetitionHandles>(handle->mode, handle->currentRepetitionHandle, false);
+	return true;
+}
+
+void H5BM::setRepetitionState(ACQUISITION_MODE mode, const std::string& state) {
+	if (!m_fileWritable) {
+		return;
+	}
+	auto handle = getModeHandle(mode);
+	if (!handle || handle->currentRepetitionHandle < 0) {
+		return;
+	}
+	setAttribute("acquisition_state", state, handle->currentRepetitionHandle);
+	setAttribute("acquisition_state_time", getNow(), handle->currentRepetitionHandle);
+	setAttribute("last-modified", getNow());
+	H5Fflush(m_file, H5F_SCOPE_GLOBAL);
+}
+
+std::string H5BM::getRepetitionState(ACQUISITION_MODE mode, int repetition) {
+	auto handle = getModeHandle(mode);
+	if (!handle || handle->rootHandle < 0 || repetition < 0) {
+		return "";
+	}
+	const auto name = std::to_string(repetition);
+	if (H5Lexists(handle->rootHandle, name.c_str(), H5P_DEFAULT) <= 0) {
+		return "";
+	}
+	auto group = H5Gopen2(handle->rootHandle, name.c_str(), H5P_DEFAULT);
+	if (group < 0) {
+		return "";
+	}
+	std::string state;
+	if (H5Aexists(group, "acquisition_state") > 0) {
+		state = getAttribute<std::string>("acquisition_state", group);
+	}
+	H5Gclose(group);
+	return state;
+}
+
+void H5BM::setResumeNumbers(const std::string& name, const std::vector<double>& values) {
+	if (!m_fileWritable || !m_Brillouin.groups) {
+		return;
+	}
+	// stored with its length in front: a vector can be empty, a dataset of no elements is not written or read reliably
+	std::vector<double> stored;
+	stored.reserve(values.size() + 1);
+	stored.push_back((double)values.size());
+	stored.insert(stored.end(), values.begin(), values.end());
+	const hsize_t dims[1] = { (hsize_t)stored.size() };
+	setPositions("resume-" + name, stored, 1, dims);
+}
+
+bool H5BM::getResumeNumbers(const std::string& name, std::vector<double>* values) {
+	if (!m_Brillouin.groups || m_Brillouin.groups->payload < 0) {
+		return false;
+	}
+	const auto dataset = "positions-resume-" + name;
+	if (H5Lexists(m_Brillouin.groups->payload, dataset.c_str(), H5P_DEFAULT) <= 0) {
+		return false;
+	}
+	std::vector<double> stored;
+	try {
+		getDataset(&stored, m_Brillouin.groups->payload, dataset);
+	} catch (int) {
+		return false;
+	}
+	if (stored.empty() || (size_t)std::llround(stored.front()) + 1 != stored.size()) {
+		return false;
+	}
+	values->assign(stored.begin() + 1, stored.end());
+	return true;
+}
+
+void H5BM::setResumeText(const std::string& name, const std::string& value) {
+	if (!m_fileWritable || !m_Brillouin.groups) {
+		return;
+	}
+	// never empty (an empty HDF5 string attribute is not possible), the prefix is removed again when it is read
+	setAttribute("resume_" + name, "s:" + value, m_Brillouin.groups->payload);
+}
+
+bool H5BM::getResumeText(const std::string& name, std::string* value) {
+	if (!m_Brillouin.groups || m_Brillouin.groups->payload < 0) {
+		return false;
+	}
+	const auto attribute = "resume_" + name;
+	if (H5Aexists(m_Brillouin.groups->payload, attribute.c_str()) <= 0) {
+		return false;
+	}
+	const auto text = getAttribute<std::string>(attribute, m_Brillouin.groups->payload);
+	if (text.size() < 2 || text.compare(0, 2, "s:") != 0) {
+		return false;
+	}
+	*value = text.substr(2);
+	return true;
+}
+
+namespace {
+
+	std::vector<std::string> groupMembers(hid_t group) {
+		std::vector<std::string> names;
+		if (group < 0) {
+			return names;
+		}
+		H5G_info_t info;
+		if (H5Gget_info(group, &info) < 0) {
+			return names;
+		}
+		for (hsize_t i = 0; i < info.nlinks; i++) {
+			const auto length = H5Lget_name_by_idx(group, ".", H5_INDEX_NAME, H5_ITER_NATIVE, i, nullptr, 0, H5P_DEFAULT);
+			if (length < 0) {
+				continue;
+			}
+			std::string name((size_t)length + 1, '\0');
+			H5Lget_name_by_idx(group, ".", H5_INDEX_NAME, H5_ITER_NATIVE, i, &name[0], (size_t)length + 1, H5P_DEFAULT);
+			name.resize((size_t)length);
+			names.push_back(name);
+		}
+		return names;
+	}
+
+}
+
+void H5BM::listPayloadPoints(std::vector<int>* complete, std::vector<int>* incomplete) {
+	complete->clear();
+	incomplete->clear();
+	if (!m_Brillouin.groups || m_Brillouin.groups->payloadData < 0) {
+		return;
+	}
+	for (const auto& name : groupMembers(m_Brillouin.groups->payloadData)) {
+		if (name.empty() || name.find_first_not_of("0123456789") != std::string::npos) {
+			continue;
+		}
+		auto dataset = H5Dopen2(m_Brillouin.groups->payloadData, name.c_str(), H5P_DEFAULT);
+		if (dataset < 0) {
+			incomplete->push_back(std::stoi(name));
+			continue;
+		}
+		// position_z_um is among the last attributes a point gets (see setData()): without it the write was cut short
+		const auto isComplete = H5Aexists(dataset, "date") > 0 && H5Aexists(dataset, "position_z_um") > 0;
+		H5Dclose(dataset);
+		(isComplete ? complete : incomplete)->push_back(std::stoi(name));
+	}
+}
+
+bool H5BM::deletePayloadPoint(int index) {
+	if (!m_fileWritable || !m_Brillouin.groups || m_Brillouin.groups->payloadData < 0) {
+		return false;
+	}
+	return H5Ldelete(m_Brillouin.groups->payloadData, std::to_string(index).c_str(), H5P_DEFAULT) >= 0;
+}
+
+std::string H5BM::getPayloadDateByIndex(int index) {
+	if (!m_Brillouin.groups || m_Brillouin.groups->payloadData < 0) {
+		return "";
+	}
+	return getDate(std::to_string(index), m_Brillouin.groups->payloadData);
+}
+
+int H5BM::countCalibrationData() {
+	if (!m_Brillouin.groups) {
+		return 0;
+	}
+	return (int)groupMembers(m_Brillouin.groups->calibrationData).size();
+}
+
+int H5BM::countBackgroundData() {
+	if (!m_Brillouin.groups) {
+		return 0;
+	}
+	return (int)groupMembers(m_Brillouin.groups->backgroundData).size();
+}
+
+int H5BM::payloadIndex(int indX, int indY, int indZ) {
+	const auto resolutionX = getResolution("x");
+	const auto resolutionY = getResolution("y");
+	return indZ * (resolutionX * resolutionY) + indY * resolutionX + indX;
+}
+
+bool H5BM::readPositions(const std::string& name, std::vector<double>* values) {
+	if (!m_Brillouin.groups || m_Brillouin.groups->payload < 0) {
+		return false;
+	}
+	const auto dataset = "positions-" + name;
+	if (H5Lexists(m_Brillouin.groups->payload, dataset.c_str(), H5P_DEFAULT) <= 0) {
+		return false;
+	}
+	values->clear();
+	getDataset(values, m_Brillouin.groups->payload, dataset);
+	return true;
+}
+
+bool H5BM::readPositionsOfRepetition(ACQUISITION_MODE mode, int repetition, const std::string& name, std::vector<double>* values) {
+	auto handle = getModeHandle(mode);
+	if (!handle || handle->rootHandle < 0 || repetition < 0) {
+		return false;
+	}
+	const auto repetitionName = std::to_string(repetition);
+	if (H5Lexists(handle->rootHandle, repetitionName.c_str(), H5P_DEFAULT) <= 0) {
+		return false;
+	}
+	auto group = H5Gopen2(handle->rootHandle, repetitionName.c_str(), H5P_DEFAULT);
+	if (group < 0) {
+		return false;
+	}
+	auto found = false;
+	if (H5Lexists(group, "payload", H5P_DEFAULT) > 0) {
+		auto payload = H5Gopen2(group, "payload", H5P_DEFAULT);
+		const auto dataset = "positions-" + name;
+		if (payload >= 0) {
+			if (H5Lexists(payload, dataset.c_str(), H5P_DEFAULT) > 0) {
+				values->clear();
+				getDataset(values, payload, dataset);
+				found = true;
+			}
+			H5Gclose(payload);
+		}
+	}
+	H5Gclose(group);
+	return found;
+}
+
+void H5BM::flushFile() {
+	if (m_fileWritable && m_file > -1) {
+		H5Fflush(m_file, H5F_SCOPE_GLOBAL);
+	}
+}

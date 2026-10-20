@@ -134,6 +134,10 @@
     </ClCompile>
     <ClCompile Include="NIDAQ_PositionVoltage.cpp" />
     <ClCompile Include="phase.cpp" />
+    <ClCompile Include="RegistrationTest.cpp" />
+    <ClCompile Include="DriftTest.cpp" />
+    <ClCompile Include="OverviewScheduleTest.cpp" />
+    <ClCompile Include="ResumeSettingsTest.cpp" />
     <ClCompile Include="POINT2Test.cpp" />
     <ClCompile Include="POINT3Test.cpp" />
     <ClCompile Include="ScanControlProjectionTest.cpp" />
@@ -158,6 +162,7 @@
     <ClInclude Include="..\BrillouinAcquisition\external\unwrap\unwrap2D.h" />
     <ClInclude Include="BrillouinAcquisitionUnitTest.h" />
     <ClInclude Include="brillouinacquisitionunittest_global.h" />
+    <ClInclude Include="TestScenes.h" />
     <QtMoc Include="MockMicroscope.h" />
     <ClInclude Include="stdafx.h" />
   </ItemGroup>
@@ -172,6 +177,10 @@
     <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\filtermount.obj" />
     <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\h5bm.obj" />
     <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\logger.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\registration.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\drift.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\OverviewSchedule.obj" />
+    <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\BrillouinResume.obj" />
     <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_Acquisition.obj" />
     <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_AcquisitionMode.obj" />
     <Object Include="..\BrillouinAcquisition\x64\$(Configuration)\moc_camera.obj" />

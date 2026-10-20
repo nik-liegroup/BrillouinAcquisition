@@ -40,6 +40,46 @@
   the same per-step detail throughout.
 
 ### Added
+- Overview tab: overviews with several objectives (each with its own exposure/gain, mosaic and z-stack settings, chosen by a dropdown of the
+  calibrated objectives and an "active" tick; a summary lists the active ones). The software retracts z, turns the nosepiece, applies the
+  calibrated FOV and focus offsets, takes the overview and returns. Overviews can additionally be taken before the measurement (after the surface
+  scan) and after it (before the background spectra), and the trigger is selectable (after every z plane, once per repetition, not during).
+- Drift correction (xy only, centre slice of a z stack): the overview of the chosen objective is registered against the previous accepted one with
+  the same masked cross-correlation as the offline drift analysis; the grid, the overview tiles and the surface scan follow the measured drift
+  (absolute and relative grid mode). A step with low correlation or implausible size/speed is not applied. Independent of the overview on/off.
+- Surface scan: optional repeat during the measurement (with every overview or after every z plane): new medium reference and threshold from the
+  same start position, remaining points move to the new surface, every round is saved.
+  The previous scan is the prior: the offset between the scans found in the first columns moves the old surface of all other columns, so the search
+  starts next to the new surface. Start is refused with a message (nothing created or saved) if the overview/drift/rescan settings cannot run.
+- Continue: a Brillouin measurement that was cancelled or interrupted (crash, power loss) can be continued from the open file with the new
+  Continue button next to Start (Start reads "Restart" while there is something to continue and starts a new repetition as before; Continue
+  is greyed out before a measurement and after it finished). It restores ALL settings from the file (every Brillouin and camera setting is
+  now written to the file at the start of a repetition), moves the stage back to the start position in relative mode, removes points whose
+  write was cut short, and appends to the same repetition from the first point that is not in the file. If the measurement stopped during
+  its surface scan, the scan continues with the columns that are done (checkpoint per column, same medium reference). Every continue is noted
+  in the file (resume-event-N-*: point, time, cancelled or crash, last point date). Overview events, drift offset and rescan numbering go on.
+- Live check: the centre slice of every overview is also saved as a PNG (contrast stretched) in a folder next to the file (<file>_live) with
+  events.csv (one line per overview event, surface rescan and continue: drift step, correlation, offsets, objective switch times). Switch
+  "Live PNG previews" in the Overview tab; it switches itself off if the folder cannot be written.
+- Continue: asks before the stage goes back to the saved start position (relative mode), turns the nosepiece back to the objective of the
+  measurement (after retracting z) if the software stopped during an overview with another objective, and also replaces Start after the
+  surface review (Start is greyed out then). An earlier surface is only offered for the same grid (extent, steps, bin, mode; for reuse also the
+  same z planes).
+- Surface scan of an earlier repetition: a new repetition asks (popup with a timer, default: new scan as always) whether to start the scan
+  from the earlier one (the offset found in the first columns moves the old surface of the others: faster) or, if that repetition has its plan
+  in the file, to reuse its surface without a new scan.
+- Everything is saved in the file (settings, events, per-tile positions and offsets, drift decisions, surface scans of every round). Automatic
+  objective switching is blocked without a z (focus) calibration; manual switching, the calibration cycles and measurements/overviews with a
+  single objective are unchanged.
+- Objective focus offset: the objective calibration now also stores this objective's focal-plane z relative to the reference
+  objective (`hasFocusOffset`, `focusOffsetUm`, `focusOffsetSigmaUm`; optional attributes, older files load without them). It is measured in
+  the same automated switch-and-refocus cycles as the FOV offset: the z at the end of the operator's refocus at the reference and at the
+  target objective is recorded each cycle, the offset and its sigma accumulate over the cycles, are composed through the reference's own
+  stored offset, and are saved with the FOV offset. `ScanControl::getFocusOffsetBetweenSlots()` gives the z to add when going from one
+  objective's focus to another's. The reference objective counts as a validated focus offset of 0 (also in files written before this
+  existed). `ScanControl::canSwitchObjectiveAutomatically()` is false unless both objectives have a scale calibration, an FOV offset and a
+  focus offset; it is meant for every switch the software makes on its own (never for manual switching or the calibration cycles).
+  Not yet used by any acquisition mode and not shown in the calibration dialog.
 - Adaptive frame extension: an optional per-point acquisition extension
   (BM Camera tab, "Adaptive frame extension" group) that reuses the
   existing spectral proxy-ROI boxes (already used for surface-follow

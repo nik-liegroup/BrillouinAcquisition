@@ -270,6 +270,19 @@ void Brillouin::startRepetitions() {
 		}
 	}
 
+	// Overviews with other objectives, drift correction and repeated surface scans need their calibrations and settings complete: refuse to
+	// start rather than fail halfway through (nothing of this is checked, and nothing is different, if none of it is switched on).
+	{
+		std::string problem;
+		if (!checkOverviewSetup(&problem)) {
+			qWarning(logWarning()) << "Brillouin::startRepetitions: refusing to start - " << problem.c_str();
+			emit(s_surfaceScanProgress(0.0, QString::fromStdString("Not started: " + problem)));
+			m_acquisition->disableMode(ACQUISITION_MODE::BRILLOUIN);
+			setAcquisitionStatus(ACQUISITION_STATUS::ABORTED);
+			return;
+		}
+	}
+
 	// If the repetition timer is running already, we stop the next repetition
 	if (m_repetitionTimer != nullptr && m_repetitionTimer->isActive()) {
 		m_repetitionTimer->stop();
@@ -286,6 +299,11 @@ void Brillouin::startRepetitions() {
 
 	m_currentRepetition = 0;
 	m_startOfLastRepetition.start();
+	// a new start begins without any drift measured before
+	m_driftController.reset();
+	m_driftReferenceTiles.clear();
+	m_driftReferenceSlot = -1;
+	m_gridOffset = POINT2{ 0.0, 0.0 };
 
 	m_repetitionTimer = new QTimer();
 	QMetaObject::Connection connection = QWidget::connect(
@@ -325,11 +343,13 @@ void Brillouin::waitForNextRepetition() {
 		// newRepetition() above blocks until the storage thread has created the group, which
 		// leaves its key in repetitionCount (see H5BM::getRepetitionHandle()).
 		m_fileRepetition = m_acquisition->m_storage->getModeHandle(ACQUISITION_MODE::BRILLOUIN)->repetitionCount;
-		if (m_settings.saveOverviewBrightfieldPerZ) {
+		if (overviewImagesExpected()) {
 			m_acquisition->newRepetition(ACQUISITION_MODE::FLUORESCENCE);
 		}
 
 		setAcquisitionStatus(ACQUISITION_STATUS::STARTED);
+		// not continuable until the measuring phase has started (see runMeasurementPhase())
+		setStorageState("preparing");
 		// An uncaught exception here (a hardware call throwing, a std:: container access
 		// failing, ...) would otherwise propagate out of this Qt slot and terminate the
 		// application with whatever data was written so far and the hardware left in whatever
@@ -559,6 +579,13 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 	}
 
 	if (m_scanControl) {
+		// An abort during an overview with another objective: away from the sample and back to the objective that measures, before anything
+		// else moves (the stage returns to the start position below).
+		if (m_measurementObjectiveSlot >= 0 && m_scanControl->getActiveObjectiveSlot() != m_measurementObjectiveSlot) {
+			returnToMeasurementObjective(m_measurementObjectiveSlot, m_startPosition, false);
+		}
+		writePointGridOffsets(storage);
+		m_measurementObjectiveSlot = -1;
 		m_scanControl->setPreset(ScanPreset::SCAN_LASEROFF);
 		// Acquisition is aborting - don't leave the RL shutter forced open.
 		m_scanControl->setRLShutterOpen(false);
@@ -592,6 +619,18 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 	);
 	loop.exec();
 
+	if (m_measuringState) {
+		// everything that was queued is in the file now: the measurement can be continued from here
+		m_measuringState = false;
+		setStorageState("stopped");
+	} else if (m_surfacePhaseState) {
+		// cancelled during the surface scan: continues with the columns that are done
+		m_surfacePhaseState = false;
+		setStorageState("surface-scan-stopped");
+	}
+	m_checkpointSurface = false;
+	m_resumeSurface = false;
+	endResumeMode(storage);
 	setAcquisitionStatus(ACQUISITION_STATUS::ABORTED);
 	emit(s_positionChanged({ 0 , 0, 0 }, 0));
 	emit(s_timeToCalibration(0));
@@ -1251,6 +1290,18 @@ std::optional<double> Brillouin::measureBoundarySurfaceZ(
 	return std::nullopt;
 }
 
+bool Brillouin::overviewImagesExpected() const {
+	if (m_settings.saveOverviewBrightfieldPerZ) {
+		return true;
+	}
+	for (const auto& entry : m_settings.overviewObjectives) {
+		if (entry.active) {
+			return true;
+		}
+	}
+	return false;
+}
+
 POINT3 Brillouin::planPositionToGridFrame(const POINT3& planPosition) const {
 	if (m_settings.gridCoordinatesAbsolute) {
 		return planPosition;
@@ -1331,6 +1382,21 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	m_surfacePreScanXUm = xSamples;
 	m_surfacePreScanYUm = ySamples;
 
+	// Prior scan (repeated surface scan only, see m_surfacePriorZUm): usable if it was taken on the same coarse grid.
+	const auto priorUsable = m_surfacePriorZUm.size() == xSamples.size() * ySamples.size() && m_surfacePriorValid.size() == m_surfacePriorZUm.size();
+	std::vector<double> priorOffsets;
+	m_surfacePriorOffsetUm = std::numeric_limits<double>::quiet_NaN();
+	m_surfacePriorOffsetCount = 0;
+	auto medianPriorOffset = [&]() {
+		if (priorOffsets.empty()) {
+			return 0.0;
+		}
+		auto sorted = priorOffsets;
+		std::sort(sorted.begin(), sorted.end());
+		const auto n = sorted.size();
+		return n % 2 == 1 ? sorted[n / 2] : 0.5 * (sorted[n / 2 - 1] + sorted[n / 2]);
+	};
+
 	std::vector<std::vector<double>> zMetric(ySamples.size(),
 		std::vector<double>(xSamples.size(), std::numeric_limits<double>::quiet_NaN()));
 	// Full (z, metric) trace per column, in measurement order - see recordMetricSample()
@@ -1381,6 +1447,25 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	int totalColumns = 0;
 	int processCounter = 0;
 
+	// A surface scan that is continued after the software stopped: the medium reference and every column that was finished are in the file
+	std::set<std::pair<int, int>> restoredColumns;
+	const auto restoringSurface = m_resumeSurface && std::isfinite(m_resumeInfo.surfaceReference);
+	if (restoringSurface) {
+		for (const auto& column : m_resumeInfo.surfaceColumns) {
+			if (column.xi < 0 || column.yi < 0 || column.xi >= (int)xSamples.size() || column.yi >= (int)ySamples.size()) {
+				continue;
+			}
+			zSurface[column.yi][column.xi] = column.z;
+			zSurfaceValid[column.yi][column.xi] = column.valid;
+			processOrder[column.yi][column.xi] = column.valid ? column.order : -1;
+			zMetric[column.yi][column.xi] = column.metric;
+			curveZ[column.yi][column.xi] = column.curveZ;
+			curveMetric[column.yi][column.xi] = column.curveMetric;
+			processCounter = std::max(processCounter, column.order + 1);
+			restoredColumns.insert(std::make_pair(column.xi, column.yi));
+		}
+	}
+
 	// Measure medium reference before scanning - this is the only threshold source for
 	// surface detection, so it always runs (not user-optional).
 	// x/y: wherever the stage was when the acquisition started (not the first grid point, which
@@ -1395,7 +1480,8 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	// (Brillouin.cpp: "move stage to first position, wait 50 ms for it to finish") -
 	// this is the equivalent one-time first move here, before the per-column loop
 	// below settles into the same move-with-no-extra-wait pattern that loop uses too.
-	approachGridPosition(referencePosition);
+	if (!restoringSurface) {
+	approachGridPosition(referencePosition, false);
 	std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	const int refFrames = std::max(1, m_settings.mediumReferenceFrameCount);
 	double refSum = 0.0;
@@ -1436,6 +1522,19 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		QString("Surface reference measured: %1")
 			.arg(m_settings.mediumReferenceValue, 0, 'f', 3)
 	));
+	if (m_checkpointSurface) {
+		writeSurfaceCheckpointReference(m_settings.mediumReferenceValue, xSamples.size(), ySamples.size());
+	}
+	} else {
+		// continued scan: the reference of the first part is used for the rest (the medium and the threshold stay the same)
+		m_settings.mediumReferenceValue = m_resumeInfo.surfaceReference;
+		emit(s_surfaceScanProgress(
+			0.0,
+			QString("Surface scan continued: %1 columns are in the file, medium reference %2")
+				.arg((int)restoredColumns.size())
+				.arg(m_settings.mediumReferenceValue, 0, 'f', 3)
+		));
+	}
 
 	const auto dropFraction = std::clamp(m_settings.surfaceDropFraction, 0.0, 0.99);
 	const auto referenceThreshold = (m_settings.mediumReferenceValue > 1e-12)
@@ -1560,7 +1659,13 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 	// to keep this simple). Returns false if aborted (caller bails out immediately).
 	auto searchColumn = [&](gsl::index xi, gsl::index yi) -> bool {
 		totalColumns++;
-		const auto seed = findSeedZRel(xi, yi).value_or(0.0);
+		auto seed = findSeedZRel(xi, yi).value_or(0.0);
+		const auto priorFlat = (size_t)xi * ySamples.size() + (size_t)yi;
+		const auto columnHasPrior = priorUsable && m_surfacePriorValid[priorFlat] > 0.0;
+		if (columnHasPrior) {
+			// the surface of the last scan, moved by the offset between the scans found so far (none yet for the first column)
+			seed = m_surfacePriorZUm[priorFlat] + medianPriorOffset();
+		}
 		auto zRel = std::clamp(seed, -std::max(0.0, m_settings.surfaceSearchBelowZeroUm), zTravel);
 
 		auto metric = measureAt(xi, yi, zRel, 1);
@@ -1643,6 +1748,11 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 						zSurface[yi][xi] = candidateZ;
 						zSurfaceValid[yi][xi] = true;
 						processOrder[yi][xi] = processCounter++;
+						if (columnHasPrior) {
+							priorOffsets.push_back(candidateZ - m_surfacePriorZUm[priorFlat]);
+							m_surfacePriorOffsetUm = medianPriorOffset();
+							m_surfacePriorOffsetCount = (int)priorOffsets.size();
+						}
 						// The metric at the found surface itself, not whatever the
 						// verification loop above last measured deeper into the tissue. Not
 						// recordMetricSample() - candidateZ's sample is already in the curve
@@ -1692,8 +1802,16 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 			if (m_settings.useRoiMask && !isPointInPolygonUm(coarsePoint, m_settings.roiPolygonUm)) {
 				continue;
 			}
+			if (restoredColumns.count(std::make_pair((int)xi, (int)yi)) > 0) {
+				totalColumns++;
+				pointsMapped++;
+				continue;
+			}
 			if (!searchColumn(xi, yi)) {
 				return {};
+			}
+			if (m_checkpointSurface) {
+				writeSurfaceCheckpointColumn(xi, yi, zSurfaceValid[yi][xi], zSurface[yi][xi], processOrder[yi][xi], zMetric[yi][xi], curveZ[yi][xi], curveMetric[yi][xi]);
 			}
 			// Advances only once this point's search has actually concluded - see
 			// emitSurfaceProgress()'s comment for why this, not a per-z-step count, drives
@@ -2172,7 +2290,13 @@ POINT2 Brillouin::overviewTileFootprintUm() const {
 	if (!m_scanControl || !m_brightfieldCamera) {
 		return POINT2{ 0.0, 0.0 };
 	}
-	const auto scaleCalibration = m_scanControl->getScaleCalibration();
+	return overviewTileFootprintUmFor(m_scanControl->getScaleCalibration());
+}
+
+POINT2 Brillouin::overviewTileFootprintUmFor(const ScaleCalibrationData& scaleCalibration) const {
+	if (!m_brightfieldCamera) {
+		return POINT2{ 0.0, 0.0 };
+	}
 	const auto brightfieldSettings = m_brightfieldCamera->getSettings();
 	const auto width = (double)brightfieldSettings.roi.width_binned;
 	const auto height = (double)brightfieldSettings.roi.height_binned;
@@ -2192,6 +2316,10 @@ POINT2 Brillouin::overviewTileFootprintUm() const {
 }
 
 std::vector<POINT2> Brillouin::overviewTileCentersXY() const {
+	return overviewTileCentersXYForFootprint(overviewTileFootprintUm());
+}
+
+std::vector<POINT2> Brillouin::overviewTileCentersXYForFootprint(POINT2 fov) const {
 	// Everything here must live in the same frame the live preview actually draws crosses
 	// in: absolute-mode positions have absoluteGridOriginUm baked in, but relative-mode
 	// positions are pure grid offsets with NO origin added (m_orderedPositionsRelative
@@ -2212,7 +2340,6 @@ std::vector<POINT2> Brillouin::overviewTileCentersXY() const {
 		return { gridCenter };
 	}
 
-	const auto fov = overviewTileFootprintUm();
 	const auto fovWidthUm = fov.x;
 	const auto fovHeightUm = fov.y;
 	if (fovWidthUm <= 0.0 || fovHeightUm <= 0.0) {
@@ -2754,6 +2881,7 @@ void Brillouin::captureOverviewBrightfield(
 	}
 
 	if (queuedImage) {
+		writeLivePreview("z" + std::to_string(zIndex) + "_image" + std::to_string(imageNumber), image, brightfieldSettings);
 		emit(s_surfaceScanProgress(
 			100.0 * (double)(zIndex + 1) / std::max(1, m_settings.zSteps),
 			QString("Saved brightfield overview for z slice %1/%2").arg(zIndex + 1).arg(m_settings.zSteps)
@@ -2955,6 +3083,14 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 		// The same display-only FOV translation is applied before and after Start.
 		auto stagePosition = m_scanControl->getPosition();
 		m_startPosition = POINT3{ stagePosition.x, stagePosition.y, stagePosition.z };
+		if (m_resumeSurface) {
+			// a continued surface scan: the measurement starts from where the first part started (relative mode: back to it)
+			m_startPosition = m_resumeInfo.startPosition;
+			if (!m_settings.gridCoordinatesAbsolute && m_resumeMoveToStart) {
+				m_scanControl->setPositionCompensated(m_startPosition);
+				std::this_thread::sleep_for(std::chrono::milliseconds(300));
+			}
+		}
 		// Enable measurement mode (so the AOI display is correct) - reuse the position just
 		// read above instead of letting this re-query hardware.
 		m_scanControl->enableMeasurementMode(true, m_startPosition);
@@ -2976,16 +3112,47 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 			storagePtr->setResolution("z", zSteps);
 		}, Qt::BlockingQueuedConnection);
 
-	writeScaleCalibration(storage, ACQUISITION_MODE::BRILLOUIN);
-	if (m_settings.saveOverviewBrightfieldPerZ) {
-		writeScaleCalibration(storage, ACQUISITION_MODE::FLUORESCENCE);
+	if (!m_resumeSurface) {
+		writeScaleCalibration(storage, ACQUISITION_MODE::BRILLOUIN);
+		if (overviewImagesExpected()) {
+			writeScaleCalibration(storage, ACQUISITION_MODE::FLUORESCENCE);
+		}
+	}
+
+	// What a continue needs from the start on (settings, start position, objective): a crash during the surface scan can be continued
+	if (m_settings.useSurfaceFollow) {
+		QMetaObject::invokeMethod(storagePtr, [this, &storage]() { writeResumeBasics(storage); }, Qt::BlockingQueuedConnection);
+		setStorageState("surface-scan");
+		m_surfacePhaseState = true;
+		m_checkpointSurface = true;
 	}
 
 	/*
 	 * Update the positions vector
 	 */
 	updatePositions();
-	applySurfaceFollowPlan();
+	// A surface scan of an earlier repetition of this file: the operator decides (popup with a timer, default new scan as always)
+	PreviousSurface previousSurface;
+	const auto surfaceStrategy = (m_abort || m_resumeSurface) ? SURFACE_STRATEGY::NEW_SCAN : chooseSurfaceStrategy(storage, &previousSurface);
+	if (m_abort) {
+		// aborted while the question was open: nothing is scanned (handled below)
+	} else if (surfaceStrategy == SURFACE_STRATEGY::REUSE) {
+		applyPreviousSurface(previousSurface);
+	} else {
+		if (surfaceStrategy == SURFACE_STRATEGY::PRIOR) {
+			m_surfacePriorZUm = previousSurface.z;
+			m_surfacePriorValid = previousSurface.found;
+		}
+		applySurfaceFollowPlan();
+		m_surfacePriorZUm.clear();
+		m_surfacePriorValid.clear();
+	}
+	m_checkpointSurface = false;
+	if (m_resumeSurface) {
+		// the continued part is done: everything from here on is written as in any other measurement
+		m_resumeSurface = false;
+		endResumeMode(storage);
+	}
 
 	// applySurfaceFollowPlan() can come back early (aborted mid-interpolation, see
 	// runSurfacePreScan()) - check for that here, or an abort during that pass would go
@@ -3161,9 +3328,16 @@ void Brillouin::closeDoseProtectionShutter() {
 	m_scanControl->setRLShutterOpen(false);
 }
 
-void Brillouin::approachGridPosition(const POINT3& position) {
+void Brillouin::approachGridPosition(const POINT3& positionPlanned, bool applyGridOffset) {
 	if (!m_scanControl) {
 		return;
+	}
+	// The drift measured from the overviews moves every target with the sample (0 unless drift correction is on).
+	auto position = positionPlanned;
+	if (applyGridOffset && m_settings.driftCorrectionEnabled) {
+		refreshGridOffset();
+		position.x += m_gridOffset.x;
+		position.y += m_gridOffset.y;
 	}
 	// Dose protection does NOT hook in here - closing the RL shutter only around a move would
 	// protect against travel time but not every other non-integrating moment (between two
@@ -3194,7 +3368,14 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		m_abort = true;
 		return;
 	}
+	// a continued measurement starts at the first point that is not in the file yet
+	const gsl::index firstIndex = m_resuming ? std::min<gsl::index>(m_resumeStartIndex, nrPositions) : 0;
 	const auto gridPositionCount = m_settings.xSteps * m_settings.ySteps * m_settings.zSteps;
+	// Whether the overview engine (Brillouin_Overview.cpp) runs the overviews, the drift correction and the repeated surface scans, or the
+	// measurement loop is the one that has always run. The per-z overview metadata of the file exists only if per-plane overviews are taken.
+	const auto engine = useOverviewEngine();
+	const auto legacyOverviewMetadata = m_settings.saveOverviewBrightfieldPerZ
+		&& (!engine || m_settings.overviewTrigger == OVERVIEW_TRIGGER::PER_PLANE);
 	auto positionsX = std::vector<double>(gridPositionCount);
 	auto positionsY = std::vector<double>(gridPositionCount);
 	auto positionsZ = std::vector<double>(gridPositionCount);
@@ -3474,7 +3655,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	// BF overview coverage settings actually used (their effect on shape is already visible
 	// in overview-brightfield-x/y/z + point-count/point-stack-counts, but the flags
 	// themselves weren't recorded, unlike useSurfaceFollow/useRoiMask above).
-	storage->setPositions("overview-brightfield-save-per-z-used", std::vector<double>{ m_settings.saveOverviewBrightfieldPerZ ? 1.0 : 0.0 }, 1, originDims);
+	storage->setPositions("overview-brightfield-save-per-z-used", std::vector<double>{ legacyOverviewMetadata ? 1.0 : 0.0 }, 1, originDims);
 	storage->setPositions("overview-brightfield-full-grid-used", std::vector<double>{ m_settings.overviewBrightfieldFullGrid ? 1.0 : 0.0 }, 1, originDims);
 	storage->setPositions("overview-brightfield-full-stack-single-used", std::vector<double>{ m_settings.overviewBrightfieldFullStackSingle ? 1.0 : 0.0 }, 1, originDims);
 	storage->setPositions("overview-brightfield-full-stack-mosaic-used", std::vector<double>{ m_settings.overviewBrightfieldFullStackMosaic ? 1.0 : 0.0 }, 1, originDims);
@@ -3485,7 +3666,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	// each batch was captured right after its own z-plane finished (or overviews are off).
 	// Downstream code registering overviews to the spectra needs to know which one applies.
 	storage->setPositions("overview-brightfield-spread-across-scan-used",
-		std::vector<double>{ (m_settings.saveOverviewBrightfieldPerZ && !isZOutermostInPlan()) ? 1.0 : 0.0 }, 1, originDims);
+		std::vector<double>{ (legacyOverviewMetadata && !isZOutermostInPlan()) ? 1.0 : 0.0 }, 1, originDims);
 	// Loop level per axis (0 = innermost ... 2 = outermost), as actually planned.
 	const hsize_t scanOrderDims[1] = { 3 };
 	storage->setPositions("grid-scan-order-used",
@@ -3541,7 +3722,12 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	storage->setPositions("sampled-y", sampledY, sampledRank, sampledDims);
 	storage->setPositions("sampled-z", sampledZ, sampledRank, sampledDims);
 
-	if (m_settings.saveOverviewBrightfieldPerZ) {
+	// settings used and calibrations of the overview objectives (only written when the feature is on)
+	if (engine) {
+		beginOverviewSeries(storage);
+	}
+
+	if (legacyOverviewMetadata) {
 		// Flattened as [z0_point0_stack0, z0_point0_stack1, ..., z0_point1_stack0, ...,
 		// z1_point0_stack0, ...]; both the number of capture points (the overview image's
 		// own xy point(s)) and each point's own stack depth are constant across z (each only
@@ -3596,6 +3782,17 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	}
 	delete[] dims;
 
+	// Everything a continue needs (settings, plan, start position) and the state of the repetition. A continued measurement leaves what is in
+	// the file as it is (see H5BM::setSkipExistingDatasets()), writes what is new, and then goes back to writing normally.
+	writeResumeRecord(storage);
+	setStorageState("measuring");
+	m_measuringState = true;
+	m_surfacePhaseState = false;
+	if (m_resuming) {
+		auto* storageObject = storage.get();
+		QMetaObject::invokeMethod(storageObject, [storageObject]() { storageObject->setSkipExistingDatasets(false); }, Qt::BlockingQueuedConnection);
+	}
+
 	// do actual measurement
 	QMetaObject::invokeMethod(
 		storage.get(),
@@ -3629,9 +3826,9 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	};
 
 	// reset number of calibrations
-	nrCalibrations = 1;
-	// do pre calibration
-	if (m_settings.preCalibration) {
+	nrCalibrations = m_resuming ? m_resumeInfo.calibrations + 1 : 1;
+	// do pre calibration (not in a continued measurement: it has its calibrations)
+	if (m_settings.preCalibration && !m_resuming) {
 		calibrate(storage);
 	}
 
@@ -3657,7 +3854,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	//    right after that plane's own measurement.
 	const auto pointCountU = (size_t)std::max(0, nrPositions);
 	auto overviewZAfterPoint = std::vector<std::vector<int>>(pointCountU);
-	if (m_settings.saveOverviewBrightfieldPerZ && pointCountU > 0) {
+	if (m_settings.saveOverviewBrightfieldPerZ && pointCountU > 0 && !engine) {
 		const auto zCount = (size_t)std::max(1, m_settings.zSteps);
 		if (isZOutermostInPlan()) {
 			auto lastIndexForZ = std::vector<gsl::index>(zCount, -1);
@@ -3679,12 +3876,31 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		}
 	}
 
+	// The overview engine's schedule: overviews before the first point, after z planes or the repetition, after the last point, and repeated
+	// surface scans (OverviewSchedule.h).
+	OverviewSchedule schedule;
+	if (engine) {
+		std::vector<int> zIndexOfPoint((size_t)nrPositions);
+		for (gsl::index ll{ 0 }; ll < (gsl::index)nrPositions; ll++) {
+			zIndexOfPoint[(size_t)ll] = m_orderedIndices[ll].z;
+		}
+		schedule = planOverviewSchedule(
+			m_settings.overviewTrigger, m_settings.overviewBeforeMeasurement, m_settings.overviewAfterMeasurement, m_settings.surfaceRescan,
+			zIndexOfPoint, m_settings.zSteps, isZOutermostInPlan());
+		// before the first point, after the surface scan
+		if (!schedule.before.empty() && !(m_resuming && m_resumeStartIndex > 0) && !runOverviewMoments(storage, schedule.before, directionsZ, -1)) {
+			return;
+		}
+	}
+
 	// move stage to first position, wait 50 ms for it to finish
 	if (m_scanControl) {
 		// Approach from a consistent direction to compensate for stage hysteresis (unless
 		// useGridHysteresisCompensation is off), so the grid is reached reproducibly
 		// regardless of where the stage was before.
-		approachGridPosition(m_orderedPositions[0]);
+		if (firstIndex < (gsl::index)nrPositions) {
+			approachGridPosition(m_orderedPositions[firstIndex]);
+		}
 		// The periodic position-announcer is stopped for the whole acquisition (see
 		// stopAnnouncing() in acquire()), and a translation stage's setPosition() doesn't
 		// announce as a side effect the way the galvo's does - so without this, the laser-
@@ -3696,7 +3912,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	}
 	std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-	for (gsl::index ll{ 0 }; ll < (gsl::index)nrPositions; ll++) {
+	for (gsl::index ll{ firstIndex }; ll < (gsl::index)nrPositions; ll++) {
 
 		// do live calibration if required and possible at the moment
 		if (m_settings.conCalibration && m_calibrationAllowed[ll]) {
@@ -3727,6 +3943,10 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		const auto stagePositionForPoint = m_scanControl
 			? rawPositionToGridFrame(m_scanControl->getPosition())
 			: targetPositionForPoint;
+		if (engine && (size_t)ll < m_pointOffsetX.size()) {
+			m_pointOffsetX[(size_t)ll] = m_gridOffset.x;
+			m_pointOffsetY[(size_t)ll] = m_gridOffset.y;
+		}
 
 		// Pre-allocated up front for the padded maximum (framesAllocatedPerPoint, see
 		// dims_data's own comment above) - never resized mid-loop, even when adaptive frame
@@ -4024,6 +4244,18 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 			}
 		}
 
+		if (engine) {
+			if (!runOverviewMoments(storage, schedule.afterPoint[(size_t)ll], directionsZ, ll)) {
+				return;
+			}
+			if (schedule.rescanAfterPoint[(size_t)ll]) {
+				repeatSurfaceScan(storage, ll, directionsZ);
+				if (m_abort) {
+					return;
+				}
+			}
+		}
+
 		// move stage to next position
 		if (ll < ((gsl::index)nrPositions - 1)) {
 			if (m_scanControl) {
@@ -4041,16 +4273,22 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 		// nrPositions - (ll + 1). This previously read "- ll + 1" (off by 2 vs. the correct
 		// "- ll - 1"), which overestimated remaining time by ~2 points' worth on every point -
 		// most visible as a nonzero "remaining" still showing at 100% complete.
-		auto remaining{ (int)(1e-3 * measurementTimer.elapsed() / (ll + 1) * ((int64_t)nrPositions - ll - 1)) };
+		auto remaining{ (int)(1e-3 * measurementTimer.elapsed() / (ll + 1 - firstIndex) * ((int64_t)nrPositions - ll - 1)) };
 		emit(s_repetitionProgress(percentage, remaining));
 		emit(s_measurementElapsed((int)(1e-3 * measurementTimer.elapsed())));
+	}
+
+	if (engine) {
+		writePointGridOffsets(storage);
 	}
 
 	// Background reference points, if configured - a separate pass, after the main grid
 	// finishes and before post-calibration, using whatever optics preset/shutter state the
 	// main loop already left active (SCAN_BRILLOUIN, shutter open) - see its own header
 	// comment for why this never touches overview/per-point-brightfield/surface-follow logic.
-	captureBackgroundPoints(storage);
+	if (!(m_resuming && m_resumeInfo.backgrounds > 0)) {
+		captureBackgroundPoints(storage);
+	}
 	if (m_abort) {
 		return;
 	}
@@ -4104,6 +4342,10 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	);
 	loop.exec();
 
+	m_measurementObjectiveSlot = -1;
+	m_measuringState = false;
+	setStorageState("finished");
+	endResumeMode(storage);
 	auto info = std::string{ "Acquisition finished." };
 	qInfo(logInfo()) << info.c_str();
 	emit(s_calibrationRunning(false));

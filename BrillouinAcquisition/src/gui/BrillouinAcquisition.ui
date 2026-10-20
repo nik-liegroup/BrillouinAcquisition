@@ -4066,7 +4066,7 @@ QTabBar::tab:!selected {
                        <string>Save a brightfield overview for each finished z slice. If z is not the outermost scan axis, the same number of overview images/stacks is taken at points spread evenly across the whole scan instead (the last one after all grid points).</string>
                       </property>
                       <property name="text">
-                       <string>Save BF overview per z slice</string>
+                       <string>Take BF overview</string>
                       </property>
                      </widget>
                     </item>

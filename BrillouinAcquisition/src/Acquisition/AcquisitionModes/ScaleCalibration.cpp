@@ -232,6 +232,9 @@ void ScaleCalibration::createEmptyCalibrationFile(int slot, std::string objectiv
 		writeAttribute(root, "fovOffsetX", data.fovOffsetUm.x);
 		writeAttribute(root, "fovOffsetY", data.fovOffsetUm.y);
 		writeAttribute(root, "fovOffsetSigma", data.fovOffsetSigmaUm);
+		writeAttribute(root, "hasFocusOffset", data.hasFocusOffset ? 1.0 : 0.0);
+		writeAttribute(root, "focusOffsetUm", data.focusOffsetUm);
+		writeAttribute(root, "focusOffsetSigmaUm", data.focusOffsetSigmaUm);
 		writeAttribute(root, "scaleCalibrationSigma", data.scaleCalibrationSigmaUm);
 		writeAttribute(root, "objectiveSlot", (double)data.objectiveSlot);
 		writeAttribute(root, "isReferenceObjective", data.isReferenceObjective ? 1.0 : 0.0);
@@ -275,6 +278,9 @@ void ScaleCalibration::writeCalibrationToSlot(int slot, std::string filepath, Ob
 			writeAttribute(root, "fovOffsetX", data.fovOffsetUm.x);
 			writeAttribute(root, "fovOffsetY", data.fovOffsetUm.y);
 			writeAttribute(root, "fovOffsetSigma", data.fovOffsetSigmaUm);
+			writeAttribute(root, "hasFocusOffset", data.hasFocusOffset ? 1.0 : 0.0);
+			writeAttribute(root, "focusOffsetUm", data.focusOffsetUm);
+			writeAttribute(root, "focusOffsetSigmaUm", data.focusOffsetSigmaUm);
 			writeAttribute(root, "scaleCalibrationSigma", data.scaleCalibrationSigmaUm);
 			writeAttribute(root, "objectiveSlot", (double)data.objectiveSlot);
 			writeAttribute(root, "isReferenceObjective", data.isReferenceObjective ? 1.0 : 0.0);
@@ -359,6 +365,17 @@ void ScaleCalibration::readCalibrationFile(const std::string& filepath, Objectiv
 	readAttribute(root, "fovOffsetX", &out->fovOffsetUm.x);
 	readAttribute(root, "fovOffsetY", &out->fovOffsetUm.y);
 	readAttribute(root, "fovOffsetSigma", &out->fovOffsetSigmaUm);
+	// Focus offset: added later, optional (an older file has none: hasFocusOffset stays false, nothing is applied).
+	out->hasFocusOffset = false;
+	out->focusOffsetUm = 0.0;
+	out->focusOffsetSigmaUm = 0.0;
+	if (root.attrExists("hasFocusOffset") && root.attrExists("focusOffsetUm") && root.attrExists("focusOffsetSigmaUm")) {
+		auto hasFocusOffsetValue = 0.0;
+		readAttribute(root, "hasFocusOffset", &hasFocusOffsetValue);
+		out->hasFocusOffset = hasFocusOffsetValue != 0.0;
+		readAttribute(root, "focusOffsetUm", &out->focusOffsetUm);
+		readAttribute(root, "focusOffsetSigmaUm", &out->focusOffsetSigmaUm);
+	}
 	// Added after the fields above - kept optional (existence-checked) rather than required, so
 	// calibration files created just before this field existed don't also need recreating: a
 	// missing sigma is non-critical QC metadata, not something that can silently misapply a
@@ -410,6 +427,9 @@ void ScaleCalibration::writeCalibrationMetadata(H5::Group& root) {
 	writeAttribute(root, "fovOffsetX", m_scaleCalibration.fovOffsetUm.x);
 	writeAttribute(root, "fovOffsetY", m_scaleCalibration.fovOffsetUm.y);
 	writeAttribute(root, "fovOffsetSigma", m_scaleCalibration.fovOffsetSigmaUm);
+	writeAttribute(root, "hasFocusOffset", m_scaleCalibration.hasFocusOffset ? 1.0 : 0.0);
+	writeAttribute(root, "focusOffsetUm", m_scaleCalibration.focusOffsetUm);
+	writeAttribute(root, "focusOffsetSigmaUm", m_scaleCalibration.focusOffsetSigmaUm);
 	writeAttribute(root, "scaleCalibrationSigma", m_scaleCalibration.scaleCalibrationSigmaUm);
 	writeAttribute(root, "objectiveSlot", (double)m_scaleCalibration.objectiveSlot);
 	writeAttribute(root, "isReferenceObjective", m_scaleCalibration.isReferenceObjective ? 1.0 : 0.0);
@@ -464,6 +484,9 @@ void ScaleCalibration::persistPartial(bool includeScale, bool includeFov) {
 		data.hasFovOffset = m_scaleCalibration.hasFovOffset;
 		data.fovOffsetUm = m_scaleCalibration.fovOffsetUm;
 		data.fovOffsetSigmaUm = m_scaleCalibration.fovOffsetSigmaUm;
+		data.hasFocusOffset = m_scaleCalibration.hasFocusOffset;
+		data.focusOffsetUm = m_scaleCalibration.focusOffsetUm;
+		data.focusOffsetSigmaUm = m_scaleCalibration.focusOffsetSigmaUm;
 		data.referenceObjectiveName = m_scaleCalibration.referenceObjectiveName;
 	}
 
@@ -834,6 +857,9 @@ void ScaleCalibration::initialize() {
 	m_scaleCalibration.hasFovOffset = activeCalibration.hasFovOffset;
 	m_scaleCalibration.fovOffsetUm = activeCalibration.fovOffsetUm;
 	m_scaleCalibration.fovOffsetSigmaUm = activeCalibration.fovOffsetSigmaUm;
+	m_scaleCalibration.hasFocusOffset = activeCalibration.hasFocusOffset;
+	m_scaleCalibration.focusOffsetUm = activeCalibration.focusOffsetUm;
+	m_scaleCalibration.focusOffsetSigmaUm = activeCalibration.focusOffsetSigmaUm;
 	m_scaleCalibration.referenceObjectiveName = activeCalibration.referenceObjectiveName;
 	m_scaleCalibration.calibrationDate = activeCalibration.calibrationDate;
 	m_scaleCalibration.scaleCalibrationSigmaUm = activeCalibration.scaleCalibrationSigmaUm;
@@ -1364,6 +1390,7 @@ void ScaleCalibration::captureFovOffsetReferenceImage(bool resetAccumulatedSampl
 		// does not also wipe the mean/sigma being built up across all M cycles.
 		m_fovOffsetTargetSlot = -1;
 		m_fovOffsetSamplesUm.clear();
+		m_focusOffsetSamplesUm.clear();
 	}
 }
 
@@ -1547,6 +1574,8 @@ void ScaleCalibration::continueObjectiveCycle() {
 	if (m_objectiveCycleState == ObjectiveCycleState::WaitingForReferenceFocus) {
 		// The operator has refocused at the reference objective - capture it now, at (hopefully)
 		// good focus, then move on to the target phase.
+		// The z the operator focused at (reference objective on the sample): the zero of this cycle's focus offset.
+		m_cycleReferenceFocusZ = m_scanControl->getPosition().z;
 		captureFovOffsetReferenceImage(m_objectiveCycleIndex == 1);
 		if (m_fovReferenceImage.empty()) {
 			emit(s_scaleCalibrationStatus("Objective cycle aborted", "Could not capture the reference image."));
@@ -1563,7 +1592,13 @@ void ScaleCalibration::continueObjectiveCycle() {
 		// measureFovOffset()'s own "different target than last time, reset samples" guard never
 		// fires mid-run, and repeated calls accumulate into m_fovOffsetSamplesUm exactly as
 		// repeated manual clicks already do (see its class-level doc comment).
+		auto samplesBefore = m_fovOffsetSamplesUm.size();
 		measureFovOffset();
+		// The same round trip also gives the focus offset: z now (refocused at the target objective) minus the reference z of this
+		// cycle. Only if the xy measurement worked, so both offsets always rest on the same cycles.
+		if (m_fovOffsetSamplesUm.size() > samplesBefore) {
+			recordFocusOffsetSample();
+		}
 
 		if (m_objectiveCycleIndex >= m_objectiveCycleCount) {
 			finishObjectiveCycle(false);
@@ -1574,6 +1609,39 @@ void ScaleCalibration::continueObjectiveCycle() {
 		return;
 	}
 }
+
+void ScaleCalibration::recordFocusOffsetSample() {
+	m_focusOffsetSamplesUm.push_back(m_scanControl->getPosition().z - m_cycleReferenceFocusZ);
+
+	auto mean = 0.0;
+	for (const auto& sample : m_focusOffsetSamplesUm) {
+		mean += sample;
+	}
+	mean /= m_focusOffsetSamplesUm.size();
+	auto sigma = 0.0;
+	if (m_focusOffsetSamplesUm.size() > 1) {
+		auto sumSq = 0.0;
+		for (const auto& sample : m_focusOffsetSamplesUm) {
+			sumSq += (sample - mean) * (sample - mean);
+		}
+		sigma = std::sqrt(sumSq / (m_focusOffsetSamplesUm.size() - 1));
+	}
+
+	// Compose through the reference objective's own stored focus offset, exactly like the xy offset in measureFovOffset(), so the
+	// stored value is always relative to the same baseline objective.
+	auto referenceCalibration = m_scanControl->getObjectiveCalibration(m_fovReferenceObjectiveSlot);
+	auto referenceOffsetUm = referenceCalibration.hasFocusOffset ? referenceCalibration.focusOffsetUm : 0.0;
+	auto referenceSigmaUm = referenceCalibration.hasFocusOffset ? referenceCalibration.focusOffsetSigmaUm : 0.0;
+	m_scaleCalibration.hasFocusOffset = true;
+	m_scaleCalibration.focusOffsetUm = referenceOffsetUm + mean;
+	m_scaleCalibration.focusOffsetSigmaUm = std::sqrt(sigma * sigma + referenceSigmaUm * referenceSigmaUm);
+
+	emit(s_objectiveCalibrationChanged(m_scaleCalibration));
+	emit(s_scaleCalibrationStatus("Focus offset", "Sample " + std::to_string(m_focusOffsetSamplesUm.size()) + ": focus offset vs. reference "
+		+ std::to_string(mean) + " um, sigma " + std::to_string(sigma) + " um (relative to baseline: "
+		+ std::to_string(m_scaleCalibration.focusOffsetUm) + " um). Saved together with the FOV offset."));
+}
+
 
 void ScaleCalibration::abortObjectiveCycle() {
 	if (m_objectiveCycleState == ObjectiveCycleState::Idle) {

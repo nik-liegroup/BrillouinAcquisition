@@ -57,6 +57,7 @@ signals:
 	void s_enabledModes(ACQUISITION_MODE);	// which acquisition mode is running
 	void s_filenameChanged(std::string);
 	void s_openFileFailed();
+	void s_fileOpened();					// the file is open and its storage runs (new or existing file)
 	void s_writeError(QString message);
 };
 
