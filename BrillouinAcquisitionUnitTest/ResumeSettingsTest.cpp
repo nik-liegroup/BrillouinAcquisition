@@ -55,8 +55,6 @@ namespace BrillouinAcquisitionUnitTest {
 			entry.gain = 1.5;
 			entry.fullGrid = true;
 			entry.fullStack = true;
-			entry.stackSteps = 7;
-			entry.stackRangeUm = 33.0;
 			OVERVIEW_OBJECTIVE_SETTINGS second;
 			second.slot = 4;
 			second.exposureMs = 3;
@@ -120,8 +118,6 @@ namespace BrillouinAcquisitionUnitTest {
 			Assert::AreEqual((size_t)2, restored.overviewObjectives.size());
 			Assert::AreEqual(2, restored.overviewObjectives[0].slot);
 			Assert::IsTrue(restored.overviewObjectives[0].active);
-			Assert::AreEqual(7, restored.overviewObjectives[0].stackSteps);
-			Assert::AreEqual(33.0, restored.overviewObjectives[0].stackRangeUm, 1e-12);
 			Assert::AreEqual(4, restored.overviewObjectives[1].slot);
 			Assert::IsFalse(restored.overviewObjectives[1].active);
 			Assert::AreEqual(-2000.0, restored.overviewObjectiveRetractUm, 1e-12);

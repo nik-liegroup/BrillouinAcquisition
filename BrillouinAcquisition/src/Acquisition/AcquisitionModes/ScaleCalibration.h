@@ -133,6 +133,9 @@ public slots:
 	void setFovOffsetX(double value);
 	void setFovOffsetY(double value);
 	void setFovOffsetSigma(double value);
+	void setHasFocusOffset(bool hasFocusOffset);
+	void setFocusOffsetZ(double value);
+	void setFocusOffsetZSigma(double value);
 
 	// FOV-center offset auto-measurement, driven only by the automated multi-cycle run now (see
 	// startObjectiveCycleCalibration() below) - captureFovOffsetReferenceImage() (private) takes

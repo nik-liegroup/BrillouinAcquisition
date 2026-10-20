@@ -263,6 +263,9 @@
     <ClInclude Include="src\Acquisition\AcquisitionModes\ResumeRecord.h">
       <Filter>Header Files\Acquisition</Filter>
     </ClInclude>
+    <ClInclude Include="src\Acquisition\AcquisitionModes\ResumeFile.h">
+      <Filter>Header Files\Acquisition</Filter>
+    </ClInclude>
     <ClInclude Include="src\lib\math\drift.h">
       <Filter>Header Files\lib\math</Filter>
     </ClInclude>

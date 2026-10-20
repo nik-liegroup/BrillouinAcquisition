@@ -477,7 +477,7 @@ private:
 	// (ui->progressBar) rather than adding a dedicated widget. Stopped/reset whenever the
 	// status leaves WAITFORSURFACEREVIEW, from whichever path caused that (manual Continue/
 	// Full grid click, or this same timeout).
-	static constexpr int kSurfaceReviewTimeoutS{ 15 };
+	static constexpr int kSurfaceReviewTimeoutS{ 6 };
 	QTimer* m_surfaceReviewTimer{ nullptr };
 	int m_surfaceReviewSecondsRemaining{ 0 };
 	void onSurfaceReviewTimerTick();
@@ -494,8 +494,6 @@ private:
 	QDoubleSpinBox* m_overviewObjectiveGainSpinBox{ nullptr };
 	QCheckBox* m_overviewObjectiveMosaicCheckbox{ nullptr };
 	QCheckBox* m_overviewObjectiveStackCheckbox{ nullptr };
-	QSpinBox* m_overviewObjectiveStackStepsSpinBox{ nullptr };
-	QDoubleSpinBox* m_overviewObjectiveStackRangeSpinBox{ nullptr };
 	QComboBox* m_overviewTriggerCombo{ nullptr };
 	QCheckBox* m_overviewBeforeCheckbox{ nullptr };
 	QCheckBox* m_overviewAfterCheckbox{ nullptr };
@@ -504,9 +502,11 @@ private:
 	QComboBox* m_driftObjectiveCombo{ nullptr };
 	QDoubleSpinBox* m_driftMinNccSpinBox{ nullptr };
 	QDoubleSpinBox* m_driftMaxStepSpinBox{ nullptr };
-	QDoubleSpinBox* m_driftMaxSpeedSpinBox{ nullptr };
 	QCheckBox* m_driftExtrapolateCheckbox{ nullptr };
 	QLabel* m_driftStatusLabel{ nullptr };
+	QCheckBox* m_overviewPerPointCheckbox{ nullptr };
+	QSpinBox* m_overviewPerPointEverySpinBox{ nullptr };
+	QCheckBox* m_overviewPerPointDuringCheckbox{ nullptr };
 	QCheckBox* m_livePreviewsCheckbox{ nullptr };
 	QGroupBox* m_surfaceRescanGroup{ nullptr };
 	QComboBox* m_surfaceRescanCombo{ nullptr };
@@ -516,17 +516,26 @@ private:
 	OVERVIEW_OBJECTIVE_SETTINGS m_overviewInheritedSnapshot;
 	bool m_updatingOverviewTab{ false };
 	void setupOverviewTab();
+	// the objective that measures as the Overview tab shows it: the one a running measurement was started with, else the one in the beam
+	int overviewMeasuringSlot() const;
+	// Grid, Fluorescence, Overview, Surface scanning, ODT (the tabs that exist, in this order)
+	void arrangeAcquisitionTabs();
+	// updateOverviewTab() soon, once, however often it is asked for in between
+	void scheduleOverviewTabUpdate();
+	bool m_overviewTabUpdatePending{ false };
 	void updateOverviewTab();
 	OVERVIEW_OBJECTIVE_SETTINGS* findOverviewObjectiveEntry(int slot, bool create);
 	void syncOverviewObjectiveSettingsOnSwitch(int previousSlot, int newSlot);
 
 	// Continue of an interrupted measurement (BrillouinAcquisition_Resume.cpp)
 	QPushButton* m_brillouinContinueButton{ nullptr };
+	bool m_continueIsNextRepetition{ false };
 	void setupContinueButton();
 	void updateContinueAvailability();
+	void applyContinueAvailability(const std::string& state, bool running);
 	void onBrillouinContinueClicked();
 	void applyRestoredBrillouinSettings(const BRILLOUIN_SETTINGS& restored);
-	void showSurfacePriorQuestion(const QString& text, bool offerReuse, int timeoutSeconds);
+	void showSurfacePriorQuestion(const QString& text, bool offerPrior, bool offerReuse, int timeoutSeconds);
 	void writeOverviewSettings(QSettings& settings);
 	void readOverviewSettings(QSettings& settings);
 
@@ -726,6 +735,9 @@ private slots:
 	void setFovOffsetX(double value);
 	void setFovOffsetY(double value);
 	void setFovOffsetSigma(double value);
+	void setHasFocusOffset(bool hasFocusOffset);
+	void setFocusOffsetZ(double value);
+	void setFocusOffsetZSigma(double value);
 
 	void initBeampathButtons();
 

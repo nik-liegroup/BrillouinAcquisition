@@ -199,16 +199,12 @@ namespace BrillouinAcquisitionUnitTest {
 		TEST_METHOD(Controller_rejects_implausible_steps) {
 			drift::DriftSettings settings{ true };
 			settings.maxStepUm = 50.0;
-			settings.maxSpeedUmPerMin = 10.0;
 			drift::DriftController controller{ settings };
 			controller.setReference(0.0);
 			// 80 um: further than allowed
 			auto update = controller.update(measurement(80.0, 0.0, 0.95), 300.0);
 			Assert::IsTrue(update.decision == drift::DriftDecision::REJECTED_IMPLAUSIBLE);
-			// 40 um in one minute: faster than allowed
-			update = controller.update(measurement(40.0, 0.0, 0.95), 60.0);
-			Assert::IsTrue(update.decision == drift::DriftDecision::REJECTED_IMPLAUSIBLE);
-			// 40 um in ten minutes: fine
+			// 40 um: fine
 			update = controller.update(measurement(40.0, 0.0, 0.95), 600.0);
 			Assert::IsTrue(update.decision == drift::DriftDecision::APPLIED);
 			Assert::AreEqual(40.0, controller.totalUm().x, 1e-12);

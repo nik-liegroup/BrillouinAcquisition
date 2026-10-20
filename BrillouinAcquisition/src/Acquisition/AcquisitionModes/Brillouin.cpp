@@ -41,19 +41,32 @@ int overviewRequiredTileCount(double extent, double fov, double overlap) {
  * the tiled span and the point extent overshoots symmetrically on both ends rather than landing
  * exactly on the outermost points.
  */
-std::vector<double> overviewTileCentersAlongAxis(double minEdge, double extent, double fov, double overlap, int count) {
+std::vector<double> overviewTileCentersAlongAxis(double minEdge, double extent, double fov, double overlap, int count, double focus = std::numeric_limits<double>::quiet_NaN()) {
 	std::vector<double> centers(count);
 	const auto center = minEdge + 0.5 * extent;
-	if (count <= 1) {
-		centers[0] = center;
-		return centers;
-	}
-	const auto pitch = fov * (1.0 - overlap);
+	const auto pitch = count <= 1 ? 0.0 : fov * (1.0 - overlap);
 	const auto start = center - 0.5 * (count - 1) * pitch;
 	for (int i = 0; i < count; i++) {
 		centers[i] = start + i * pitch;
 	}
+	// The mosaic is moved so that its centre lies on the centre of gravity of the points (focus) - as far as every point stays inside
+	// the tiled area.
+	if (std::isfinite(focus)) {
+		const auto slack = std::max(0.0, 0.5 * ((count - 1) * pitch + fov - extent));
+		const auto shift = std::clamp(focus - center, -slack, slack);
+		for (auto& c : centers) {
+			c += shift;
+		}
+	}
 	return centers;
+}
+
+double overviewMeanCoordinate(const std::vector<POINT2>& points, bool useX) {
+	auto sum = 0.0;
+	for (const auto& p : points) {
+		sum += useX ? p.x : p.y;
+	}
+	return points.empty() ? std::numeric_limits<double>::quiet_NaN() : sum / (double)points.size();
 }
 
 bool isPointInPolygonUm(const POINT2& point, const std::vector<POINT2>& polygon) {
@@ -299,11 +312,15 @@ void Brillouin::startRepetitions() {
 
 	m_currentRepetition = 0;
 	m_startOfLastRepetition.start();
-	// a new start begins without any drift measured before
-	m_driftController.reset();
-	m_driftReferenceTiles.clear();
-	m_driftReferenceSlot = -1;
-	m_gridOffset = POINT2{ 0.0, 0.0 };
+	// a new start begins without any drift measured before - except the "Continue" of a finished repetition, which goes on as the next repetition
+	// of an automatic series would (beginOverviewSeries() carries the drift over if the start fits)
+	if (!(m_carryDriftOnStart && m_driftController.hasReference())) {
+		m_driftController.reset();
+		m_driftReferenceTiles.clear();
+		m_driftReferenceSlot = -1;
+		m_gridOffset = POINT2{ 0.0, 0.0 };
+	}
+	m_carryDriftOnStart = false;
 
 	m_repetitionTimer = new QTimer();
 	QMetaObject::Connection connection = QWidget::connect(
@@ -387,6 +404,7 @@ void Brillouin::waitForNextRepetition() {
 }
 
 void Brillouin::finishRepetition() {
+	m_seriesActive = false;
 	m_currentRepetition++;
 	// Check if this was the last repetition
 	if (m_currentRepetition < m_settings.repetitions.count) {
@@ -515,6 +533,19 @@ void Brillouin::setScanOrderAuto(bool automatical) {
 	determineScanOrder();
 }
 
+void Brillouin::setScanOrder(const SCAN_ORDER& order) {
+	// a permutation of the loop levels 0, 1, 2 only
+	const auto valid = order.x >= 0 && order.x <= 2 && order.y >= 0 && order.y <= 2 && order.z >= 0 && order.z <= 2
+		&& order.x != order.y && order.x != order.z && order.y != order.z;
+	m_scanOrder.automatical = order.automatical;
+	if (valid) {
+		m_scanOrder.x = order.x;
+		m_scanOrder.y = order.y;
+		m_scanOrder.z = order.z;
+	}
+	determineScanOrder();
+}
+
 bool Brillouin::isZOutermostInPlan() const {
 	for (size_t ii{ 1 }; ii < m_orderedIndices.size(); ii++) {
 		if (m_orderedIndices[ii].z < m_orderedIndices[ii - 1].z) {
@@ -565,6 +596,7 @@ std::set<std::pair<int, int>> Brillouin::getSurfaceInterpolatedXYIndices() const
  */
 
 void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
+	m_seriesActive = false;
 	m_repetitionTimer->stop();
 	m_startOfLastRepetition.invalidate();
 	if (m_andor) {
@@ -619,6 +651,7 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 	);
 	loop.exec();
 
+	m_runningMeasurementObjectiveSlot = -1;
 	if (m_measuringState) {
 		// everything that was queued is in the file now: the measurement can be continued from here
 		m_measuringState = false;
@@ -2107,6 +2140,12 @@ Brillouin::SurfaceScanResult Brillouin::runSurfacePreScan() {
 		);
 		m_surfaceZMinAbs = minMax.first->second;
 		m_surfaceZMaxAbs = minMax.second->second;
+		std::vector<double> found;
+		for (const auto& entry : zCenterByXYIndex) {
+			found.push_back(entry.second);
+		}
+		std::sort(found.begin(), found.end());
+		m_surfaceZMedianAbs = found.size() % 2 ? found[found.size() / 2] : 0.5 * (found[found.size() / 2 - 1] + found[found.size() / 2]);
 	}
 
 	// zOrigin here must match the one used above to compute centerZAbs (zOrigin + zInterp) -
@@ -2175,8 +2214,12 @@ void Brillouin::applySurfaceFollowPlan() {
  * always uses this flat value directly, never a stack.
  */
 double Brillouin::overviewFlatZAbs(int zIndex, const std::vector<double>& directionsZ) const {
-	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
 	const auto clampedZIndex = std::clamp(zIndex, 0, (int)directionsZ.size() - 1);
+	// with the surface scan: starting at the median z of the found surface, the planes spaced as the grid has them
+	if (useSurfaceFollowActive() && m_surfaceZRangeValid) {
+		return m_surfaceZMedianAbs + (directionsZ[clampedZIndex] - directionsZ.front());
+	}
+	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
 	return origin.z + directionsZ[clampedZIndex];
 }
 
@@ -2213,15 +2256,19 @@ std::vector<double> Brillouin::overviewStackZAbs(int zIndex, const std::vector<d
 	const auto fullStackActive = m_settings.overviewBrightfieldFullGrid
 		? m_settings.overviewBrightfieldFullStackMosaic
 		: m_settings.overviewBrightfieldFullStackSingle;
+	return overviewStackZAbsFor(fullStackActive, zIndex, directionsZ);
+}
+
+std::vector<double> Brillouin::overviewStackZAbsFor(bool fullStackActive, int zIndex, const std::vector<double>& directionsZ) const {
 	if (!fullStackActive) {
 		return { overviewFlatZAbs(zIndex, directionsZ) };
 	}
 
 	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
-	if (m_settings.useSurfaceFollow && m_surfaceZRangeValid) {
+	if (useSurfaceFollowActive() && m_surfaceZRangeValid) {
 		return simplemath::linspace(
-			m_surfaceZMinAbs + m_settings.zMin,
-			m_surfaceZMaxAbs + m_settings.zMax,
+			m_surfaceZMedianAbs,
+			m_surfaceZMedianAbs + (m_settings.zMax - m_settings.zMin),
 			m_settings.zSteps
 		);
 	}
@@ -2414,8 +2461,8 @@ std::vector<POINT2> Brillouin::overviewTileCentersXYForFootprint(POINT2 fov) con
 		}
 		const auto tileCountX = overviewRequiredTileCount(clusterXMax - clusterXMin, fovWidthUm, kOverviewTileOverlapFraction);
 		const auto tileCountY = overviewRequiredTileCount(clusterYMax - clusterYMin, fovHeightUm, kOverviewTileOverlapFraction);
-		const auto centersX = overviewTileCentersAlongAxis(clusterXMin, clusterXMax - clusterXMin, fovWidthUm, kOverviewTileOverlapFraction, tileCountX);
-		const auto centersY = overviewTileCentersAlongAxis(clusterYMin, clusterYMax - clusterYMin, fovHeightUm, kOverviewTileOverlapFraction, tileCountY);
+		const auto centersX = overviewTileCentersAlongAxis(clusterXMin, clusterXMax - clusterXMin, fovWidthUm, kOverviewTileOverlapFraction, tileCountX, overviewMeanCoordinate(clusterPoints, true));
+		const auto centersY = overviewTileCentersAlongAxis(clusterYMin, clusterYMax - clusterYMin, fovHeightUm, kOverviewTileOverlapFraction, tileCountY, overviewMeanCoordinate(clusterPoints, false));
 		for (const auto y : centersY) {
 			for (const auto x : centersX) {
 				tiles.push_back(POINT2{ x, y });
@@ -2431,12 +2478,39 @@ std::vector<POINT2> Brillouin::overviewTileCentersXYForFootprint(POINT2 fov) con
  * grid offset for relative mode) - used by the "single image" overview coverage mode.
  */
 POINT2 Brillouin::overviewGridCenterXY() const {
+	return overviewGridCenterXYForFootprint(overviewTileFootprintUm());
+}
+
+POINT2 Brillouin::overviewGridCenterXYForFootprint(POINT2 fov) const {
 	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : POINT3{};
 	const auto gridXMin = m_settings.xMin + origin.x;
 	const auto gridXMax = m_settings.xMax + origin.x;
 	const auto gridYMin = m_settings.yMin + origin.y;
 	const auto gridYMax = m_settings.yMax + origin.y;
-	return POINT2{ 0.5 * (gridXMin + gridXMax), 0.5 * (gridYMin + gridYMax) };
+	const auto boxCentre = POINT2{ 0.5 * (gridXMin + gridXMax), 0.5 * (gridYMin + gridYMax) };
+
+	// the centre of gravity of the active grid points (the ROI mask can make it differ from the middle of the box)
+	const auto& positions = m_settings.gridCoordinatesAbsolute ? m_orderedPositions : m_orderedPositionsRelative;
+	std::set<std::pair<int, int>> seen;
+	std::vector<POINT2> active;
+	const auto count = std::min(m_orderedIndices.size(), positions.size());
+	for (size_t i = 0; i < count; i++) {
+		if (seen.insert(std::make_pair(m_orderedIndices[i].x, m_orderedIndices[i].y)).second) {
+			active.push_back(POINT2{ positions[i].x, positions[i].y });
+		}
+	}
+	if (active.empty()) {
+		return boxCentre;
+	}
+	auto centre = POINT2{ overviewMeanCoordinate(active, true), overviewMeanCoordinate(active, false) };
+	// keep the grid inside the image where the field of view allows it
+	if (fov.x > 0.0 && fov.y > 0.0) {
+		const auto slackX = std::max(0.0, 0.5 * (fov.x - (gridXMax - gridXMin)));
+		const auto slackY = std::max(0.0, 0.5 * (fov.y - (gridYMax - gridYMin)));
+		centre.x = boxCentre.x + std::clamp(centre.x - boxCentre.x, -slackX, slackX);
+		centre.y = boxCentre.y + std::clamp(centre.y - boxCentre.y, -slackY, slackY);
+	}
+	return centre;
 }
 
 /*
@@ -2570,8 +2644,8 @@ std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUm() const
 		// rather than hugging the outermost points.
 		const auto tileCountX = overviewRequiredTileCount(clusterXMax - clusterXMin, fovWidthUm, kOverviewTileOverlapFraction);
 		const auto tileCountY = overviewRequiredTileCount(clusterYMax - clusterYMin, fovHeightUm, kOverviewTileOverlapFraction);
-		const auto centersX = overviewTileCentersAlongAxis(clusterXMin, clusterXMax - clusterXMin, fovWidthUm, kOverviewTileOverlapFraction, tileCountX);
-		const auto centersY = overviewTileCentersAlongAxis(clusterYMin, clusterYMax - clusterYMin, fovHeightUm, kOverviewTileOverlapFraction, tileCountY);
+		const auto centersX = overviewTileCentersAlongAxis(clusterXMin, clusterXMax - clusterXMin, fovWidthUm, kOverviewTileOverlapFraction, tileCountX, overviewMeanCoordinate(clusterPoints, true));
+		const auto centersY = overviewTileCentersAlongAxis(clusterYMin, clusterYMax - clusterYMin, fovHeightUm, kOverviewTileOverlapFraction, tileCountY, overviewMeanCoordinate(clusterPoints, false));
 		const auto outlineXMin = centersX.front() - 0.5 * fovWidthUm;
 		const auto outlineXMax = centersX.back() + 0.5 * fovWidthUm;
 		const auto outlineYMin = centersY.front() - 0.5 * fovHeightUm;
@@ -2847,8 +2921,12 @@ void Brillouin::captureOverviewBrightfield(
 	// Deliberately no ROI override here - the overview capture always uses whatever ROI the
 	// camera is currently at (full sensor unless something else cropped it), giving it the
 	// widest field of view of any capture path on purpose.
-	brightfieldSettings.exposureTime = 1e-3 * std::max(1, m_settings.overviewBrightfieldExposureMs);
-	brightfieldSettings.gain = m_settings.overviewBrightfieldGain;
+	// exposure and gain as the operator has them now (they can be changed during the measurement)
+	auto overviewExposureMs = m_settings.overviewBrightfieldExposureMs;
+	auto overviewGain = m_settings.overviewBrightfieldGain;
+	liveOverviewCamera(m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1, &overviewExposureMs, &overviewGain);
+	brightfieldSettings.exposureTime = 1e-3 * std::max(1, overviewExposureMs);
+	brightfieldSettings.gain = overviewGain;
 	brightfieldSettings.frameCount = 1;
 	brightfieldSettings.readout.triggerMode = L"Software";
 	brightfieldSettings.readout.cycleMode = L"Fixed";
@@ -2926,8 +3004,12 @@ void Brillouin::capturePerPointBrightfieldImage(
 	const auto stagePosition = rawPositionToGridFrame(m_scanControl->getPosition());
 
 	auto brightfieldSettings = m_brightfieldCamera->getSettings();
-	brightfieldSettings.exposureTime = 1e-3 * std::max(1, m_settings.overviewBrightfieldExposureMs);
-	brightfieldSettings.gain = m_settings.overviewBrightfieldGain;
+	// exposure and gain as the operator has them now (they can be changed during the measurement)
+	auto overviewExposureMs = m_settings.overviewBrightfieldExposureMs;
+	auto overviewGain = m_settings.overviewBrightfieldGain;
+	liveOverviewCamera(m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1, &overviewExposureMs, &overviewGain);
+	brightfieldSettings.exposureTime = 1e-3 * std::max(1, overviewExposureMs);
+	brightfieldSettings.gain = overviewGain;
 	brightfieldSettings.frameCount = 1;
 	brightfieldSettings.readout.triggerMode = L"Software";
 	brightfieldSettings.readout.cycleMode = L"Fixed";
@@ -2975,8 +3057,12 @@ std::optional<CAMERA_SETTINGS> Brillouin::startPerPointBrightfieldDuring() {
 		return std::nullopt;
 	}
 	auto brightfieldSettings = m_brightfieldCamera->getSettings();
-	brightfieldSettings.exposureTime = 1e-3 * std::max(1, m_settings.overviewBrightfieldExposureMs);
-	brightfieldSettings.gain = m_settings.overviewBrightfieldGain;
+	// exposure and gain as the operator has them now (they can be changed during the measurement)
+	auto overviewExposureMs = m_settings.overviewBrightfieldExposureMs;
+	auto overviewGain = m_settings.overviewBrightfieldGain;
+	liveOverviewCamera(m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1, &overviewExposureMs, &overviewGain);
+	brightfieldSettings.exposureTime = 1e-3 * std::max(1, overviewExposureMs);
+	brightfieldSettings.gain = overviewGain;
 	brightfieldSettings.frameCount = 1;
 	brightfieldSettings.readout.triggerMode = L"Software";
 	brightfieldSettings.readout.cycleMode = L"Fixed";
@@ -3046,6 +3132,7 @@ std::string Brillouin::getRepetitionFilename() {
  */
 
 void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
+	m_seriesActive = false;
 	setAcquisitionStatus(ACQUISITION_STATUS::STARTED);
 	// prepare camera for image acquisition
 
@@ -3334,7 +3421,7 @@ void Brillouin::approachGridPosition(const POINT3& positionPlanned, bool applyGr
 	}
 	// The drift measured from the overviews moves every target with the sample (0 unless drift correction is on).
 	auto position = positionPlanned;
-	if (applyGridOffset && m_settings.driftCorrectionEnabled) {
+	if (applyGridOffset && driftCorrectionActive()) {
 		refreshGridOffset();
 		position.x += m_gridOffset.x;
 		position.y += m_gridOffset.y;
@@ -3367,6 +3454,11 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	if (nrPositions <= 0) {
 		m_abort = true;
 		return;
+	}
+	{
+		// the live exposure/gain of an earlier run do not carry over: the settings the measurement starts with are the current ones
+		std::lock_guard<std::mutex> lock(m_liveCameraMutex);
+		m_liveCamera.clear();
 	}
 	// a continued measurement starts at the first point that is not in the file yet
 	const gsl::index firstIndex = m_resuming ? std::min<gsl::index>(m_resumeStartIndex, nrPositions) : 0;
@@ -4343,6 +4435,7 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 	loop.exec();
 
 	m_measurementObjectiveSlot = -1;
+	m_runningMeasurementObjectiveSlot = -1;
 	m_measuringState = false;
 	setStorageState("finished");
 	endResumeMode(storage);

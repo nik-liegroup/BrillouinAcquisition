@@ -6,7 +6,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <atomic>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
+#include <memory>
+#include <mutex>
 #include <filesystem>
 #include <fstream>
 #include <QImage>
@@ -263,12 +268,33 @@ bool Brillouin::checkOverviewSetup(std::string* problem) const {
 	return true;
 }
 
+bool Brillouin::canCarryDriftToNextStart(bool* sameStart) {
+	if (sameStart) {
+		*sameStart = true;
+	}
+	if (!m_settings.driftCorrectionEnabled || !m_driftController.hasReference() || m_driftReferenceTiles.empty()
+		|| m_driftReferenceSlot != m_settings.driftObjectiveSlot) {
+		return false;
+	}
+	if (sameStart && m_scanControl && !m_settings.gridCoordinatesAbsolute) {
+		const auto position = m_scanControl->getPosition();
+		*sameStart = std::hypot(position.x - m_driftSeriesStart.x, position.y - m_driftSeriesStart.y) < kSeriesCarryOverDistanceUm;
+	}
+	return true;
+}
+
 void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
+	m_runDriftCorrection = m_settings.driftCorrectionEnabled;
+	m_runDriftObjectiveSlot = m_settings.driftObjectiveSlot;
+	m_runRetractUm = m_settings.overviewObjectiveRetractUm;
+	m_runUseSurfaceFollow = m_settings.useSurfaceFollow;
+	m_seriesActive = true;
 	m_overviewPlans = planOverviewObjectives();
 	m_overviewEventCount = 0;
 	m_surfaceRescanCount = 0;
 	m_seriesStartSeconds = steadySeconds();
 	m_measurementObjectiveSlot = m_scanControl ? m_scanControl->getActiveObjectiveSlot() : -1;
+	m_runningMeasurementObjectiveSlot = m_measurementObjectiveSlot;
 	const auto nan = std::numeric_limits<double>::quiet_NaN();
 	m_pointOffsetX.assign(m_orderedPositions.size(), nan);
 	m_pointOffsetY.assign(m_orderedPositions.size(), nan);
@@ -277,13 +303,14 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	driftSettings.enabled = m_settings.driftCorrectionEnabled;
 	driftSettings.minNcc = m_settings.driftMinNcc;
 	driftSettings.maxStepUm = m_settings.driftMaxStepUm;
-	driftSettings.maxSpeedUmPerMin = m_settings.driftMaxSpeedUmPerMin;
 	driftSettings.extrapolate = m_settings.driftExtrapolate;
 	m_driftController.setSettings(driftSettings);
 
 	// The next repetition of a series starts where the sample was at the end of the previous one (the stage went back to the start
 	// position, but the sample did not): carry the drift over if the repetition starts at the same place and with the same objective.
-	const auto sameStart = std::hypot(m_startPosition.x - m_driftSeriesStart.x, m_startPosition.y - m_driftSeriesStart.y) < kSeriesCarryOverDistanceUm;
+	// (an absolute grid hangs on the stage coordinates, not on where the repetition starts)
+	const auto sameStart = m_settings.gridCoordinatesAbsolute
+		|| std::hypot(m_startPosition.x - m_driftSeriesStart.x, m_startPosition.y - m_driftSeriesStart.y) < kSeriesCarryOverDistanceUm;
 	if (m_settings.driftCorrectionEnabled && m_driftController.hasReference() && sameStart && m_driftReferenceSlot == m_settings.driftObjectiveSlot
 		&& !m_driftReferenceTiles.empty()) {
 		m_gridOffset = m_driftController.totalUm();
@@ -329,13 +356,12 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	scalar("drift-objective-slot-used", (double)m_settings.driftObjectiveSlot);
 	scalar("drift-min-ncc-used", m_settings.driftMinNcc);
 	scalar("drift-max-step-um-used", m_settings.driftMaxStepUm);
-	scalar("drift-max-speed-um-per-min-used", m_settings.driftMaxSpeedUmPerMin);
 	scalar("drift-extrapolate-used", m_settings.driftExtrapolate ? 1.0 : 0.0);
 	scalar("drift-carried-over-x-um", m_gridOffset.x);
 	scalar("drift-carried-over-y-um", m_gridOffset.y);
 	scalar("surface-rescan-used", (double)(int)m_settings.surfaceRescan);
 
-	std::vector<double> objectiveSlots, active, measuring, exposures, gains, fullGrids, fullStacks, stackSteps, stackRanges;
+	std::vector<double> objectiveSlots, active, measuring, exposures, gains, fullGrids, fullStacks;
 	for (const auto& plan : m_overviewPlans) {
 		objectiveSlots.push_back((double)plan.slot);
 		active.push_back(1.0);
@@ -344,8 +370,6 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 		gains.push_back(plan.settings.gain);
 		fullGrids.push_back(plan.settings.fullGrid ? 1.0 : 0.0);
 		fullStacks.push_back(plan.settings.fullStack ? 1.0 : 0.0);
-		stackSteps.push_back((double)plan.settings.stackSteps);
-		stackRanges.push_back(plan.settings.stackRangeUm);
 	}
 	putDatasetDirect(storage, "overview-objectives-slot-used", objectiveSlots);
 	putDatasetDirect(storage, "overview-objectives-is-measurement-objective", measuring);
@@ -353,8 +377,6 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	putDatasetDirect(storage, "overview-objectives-gain-used", gains);
 	putDatasetDirect(storage, "overview-objectives-full-grid-used", fullGrids);
 	putDatasetDirect(storage, "overview-objectives-full-stack-used", fullStacks);
-	putDatasetDirect(storage, "overview-objectives-stack-steps-used", stackSteps);
-	putDatasetDirect(storage, "overview-objectives-stack-range-um-used", stackRanges);
 
 	if (!m_scanControl) {
 		return;
@@ -377,8 +399,24 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	}
 }
 
+void Brillouin::setLiveOverviewCamera(int slot, int exposureMs, double gain) {
+	std::lock_guard<std::mutex> lock(m_liveCameraMutex);
+	m_liveCamera[slot] = std::make_pair(std::max(1, exposureMs), gain);
+}
+
+bool Brillouin::liveOverviewCamera(int slot, int* exposureMs, double* gain) const {
+	std::lock_guard<std::mutex> lock(m_liveCameraMutex);
+	const auto found = m_liveCamera.find(slot);
+	if (found == m_liveCamera.end()) {
+		return false;
+	}
+	*exposureMs = found->second.first;
+	*gain = found->second.second;
+	return true;
+}
+
 void Brillouin::refreshGridOffset() {
-	m_gridOffset = m_settings.driftCorrectionEnabled ? m_driftController.offsetAt(steadySeconds()) : POINT2{ 0.0, 0.0 };
+	m_gridOffset = driftCorrectionActive() ? m_driftController.offsetAt(steadySeconds()) : POINT2{ 0.0, 0.0 };
 }
 
 bool Brillouin::grabBrightfieldFrame(int exposureMs, double gain, std::vector<std::byte>* image, CAMERA_SETTINGS* usedSettings) {
@@ -412,7 +450,7 @@ void Brillouin::returnToMeasurementObjective(int measurementSlot, const POINT3& 
 	closeDoseProtectionShutter();
 	if (m_scanControl->getActiveObjectiveSlot() != measurementSlot) {
 		// away from the sample before the nosepiece turns, as on the way there
-		m_scanControl->movePosition(POINT3{ 0.0, 0.0, m_settings.overviewObjectiveRetractUm });
+		m_scanControl->movePosition(POINT3{ 0.0, 0.0, overviewRetractUmActive() });
 		std::string error;
 		if (!m_scanControl->switchObjectiveSlot(measurementSlot, &error)) {
 			qCritical(logCritical()) << "Brillouin: could not turn back to the measuring objective:" << error.c_str();
@@ -480,11 +518,11 @@ bool Brillouin::captureObjectiveOverview(
 			return true;
 		}
 		const auto footprint = overviewTileFootprintUmFor(scale);
-		const auto centres = plan.settings.fullGrid ? overviewTileCentersXYForFootprint(footprint) : std::vector<POINT2>{ overviewGridCenterXY() };
-		const auto z0 = overviewFlatZAbs(zIndex, directionsZ) + focusDelta;
-		std::vector<double> stackZ{ z0 };
-		if (plan.settings.fullStack && plan.settings.stackSteps > 1) {
-			stackZ = simplemath::linspace(z0 - 0.5 * plan.settings.stackRangeUm, z0 + 0.5 * plan.settings.stackRangeUm, plan.settings.stackSteps);
+		const auto centres = plan.settings.fullGrid ? overviewTileCentersXYForFootprint(footprint) : std::vector<POINT2>{ overviewGridCenterXYForFootprint(footprint) };
+		// the z planes of the measurement grid (the grid's z range, or the range of the found surface), at this objective's focus
+		auto stackZ = overviewStackZAbsFor(plan.settings.fullStack, zIndex, directionsZ);
+		for (auto& z : stackZ) {
+			z += focusDelta;
 		}
 		for (const auto& centre : centres) {
 			std::vector<POINT3> stack;
@@ -498,11 +536,39 @@ bool Brillouin::captureObjectiveOverview(
 		log->skippedReason = "no tiles";
 		return true;
 	}
+	// A target position puts the LASER on that point (the stage goes to target - scanner), and the laser is wherever the marker was set in the
+	// image - not in the middle of it; with the calibration's origin at pixel (0,0) a pixel p shows the stage position
+	// (target - scanner + A * (p - origin) - FOV offset). To have the planned point in the middle of the image, the target is moved by
+	// scanner - A * (centre - origin) + the FOV offset of the objective in the beam. The grid targets carry no FOV offset (it is only added when
+	// a target is projected into the image), so the offset of the measuring objective is added here and, for another objective, the
+	// difference to it is already in fovCompensation: together the absolute offset of the objective that takes the image.
+	POINT2 centreShift{ 0.0, 0.0 };
+	if (m_brightfieldCamera) {
+		const auto roi = m_brightfieldCamera->getSettings().roi;
+		const auto scanner = m_scanControl->getPosition(PositionType::SCANNER);
+		const auto homeCalibration = m_scanControl->getObjectiveCalibration(m_measurementObjectiveSlot);
+		const auto fovHome = homeCalibration.isReferenceObjective || !homeCalibration.hasFovOffset ? POINT2{ 0.0, 0.0 } : homeCalibration.fovOffsetUm;
+		const auto dx = 0.5 * (double)roi.width_binned - scale.originPix.x;
+		const auto dy = 0.5 * (double)roi.height_binned - scale.originPix.y;
+		centreShift = POINT2{
+			scanner.x - (dx * scale.pixToMicrometerX.x + dy * scale.pixToMicrometerY.x) + fovHome.x,
+			scanner.y - (dx * scale.pixToMicrometerX.y + dy * scale.pixToMicrometerY.y) + fovHome.y
+		};
+		if (!std::isfinite(centreShift.x) || !std::isfinite(centreShift.y)) {
+			centreShift = POINT2{ 0.0, 0.0 };
+		}
+		for (auto& stack : tiles) {
+			for (auto& target : stack) {
+				target.x += centreShift.x;
+				target.y += centreShift.y;
+			}
+		}
+	}
 	log->tiles = (int)tiles.size();
 	log->stackDepth = (int)tiles.front().size();
 	log->fovCompensationUm = fovCompensation;
 	log->focusDeltaUm = focusDelta;
-	log->retractUm = plan.isMeasurementObjective ? 0.0 : m_settings.overviewObjectiveRetractUm;
+	log->retractUm = plan.isMeasurementObjective ? 0.0 : overviewRetractUmActive();
 
 	// The cycle with another objective. The guard turns the nosepiece back to the measuring objective on every way out (also an abort).
 	struct ObjectiveCycleGuard {
@@ -523,7 +589,7 @@ bool Brillouin::captureObjectiveOverview(
 	if (!plan.isMeasurementObjective) {
 		closeDoseProtectionShutter();
 		const auto t0 = steadySeconds();
-		m_scanControl->movePosition(POINT3{ 0.0, 0.0, m_settings.overviewObjectiveRetractUm });
+		m_scanControl->movePosition(POINT3{ 0.0, 0.0, overviewRetractUmActive() });
 		std::string error;
 		if (!m_scanControl->switchObjectiveSlot(plan.slot, &error)) {
 			qCritical(logCritical()) << "Brillouin: could not turn to objective" << plan.slot << ":" << error.c_str();
@@ -534,6 +600,11 @@ bool Brillouin::captureObjectiveOverview(
 		}
 		guard.switched = true;
 		log->switchToSeconds = steadySeconds() - t0;
+	}
+
+	if (!m_overviewBrightfieldPresetSet) {
+		m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
+		m_overviewBrightfieldPresetSet = true;
 	}
 
 	// per-image bookkeeping shared by all images of this overview
@@ -560,7 +631,11 @@ bool Brillouin::captureObjectiveOverview(
 
 			std::vector<std::byte> image;
 			CAMERA_SETTINGS used;
-			if (!grabBrightfieldFrame(plan.settings.exposureMs, plan.settings.gain, &image, &used)) {
+			// exposure and gain as the operator has them now (they can be changed during the measurement)
+			auto exposureMs = plan.settings.exposureMs;
+			auto gain = plan.settings.gain;
+			liveOverviewCamera(plan.slot, &exposureMs, &gain);
+			if (!grabBrightfieldFrame(exposureMs, gain, &image, &used)) {
 				qWarning(logWarning()) << "Brillouin: overview frame could not be captured (objective" << plan.slot << ")";
 				continue;
 			}
@@ -585,6 +660,7 @@ bool Brillouin::captureObjectiveOverview(
 				{ "overview_seconds_since_start", steadySeconds() - m_seriesStartSeconds },
 				{ "grid_offset_x_um", offset.x }, { "grid_offset_y_um", offset.y },
 				{ "fov_compensation_x_um", fovCompensation.x }, { "fov_compensation_y_um", fovCompensation.y },
+				{ "image_centre_shift_x_um", centreShift.x }, { "image_centre_shift_y_um", centreShift.y },
 				{ "focus_delta_um", focusDelta }, { "objective_magnification", calibration.magnification },
 				{ "stage_position_raw_x_um", stageRaw.x }, { "stage_position_raw_y_um", stageRaw.y }, { "stage_position_raw_z_um", stageRaw.z },
 				{ "scale_micrometer_to_pix_x_col", scale.micrometerToPixX.x }, { "scale_micrometer_to_pix_x_row", scale.micrometerToPixX.y },
@@ -618,7 +694,7 @@ bool Brillouin::captureObjectiveOverview(
 					tile.positionUm = POINT2{ stageRaw.x, stageRaw.y };
 						// the planned position of the tile without the drift offset and (other objective) FOV compensation: the same for
 						// the same tile of every overview, however far the grid has moved since
-						tile.anchorUm = POINT2{ target.x - offset.x - fovCompensation.x, target.y - offset.y - fovCompensation.y };
+						tile.anchorUm = POINT2{ target.x - offset.x - fovCompensation.x - centreShift.x, target.y - offset.y - fovCompensation.y - centreShift.y };
 					tile.image = registration::prepare(pixels, width, height, registration::automaticFactor(width, height));
 					if (tile.image.isValid()) {
 						driftTiles->push_back(std::move(tile));
@@ -705,7 +781,8 @@ bool Brillouin::runOverviewEvent(
 	const auto eventSeconds = steadySeconds();
 
 	// brightfield for the whole event: one preset switch, the laser shutter closed
-	m_scanControl->setPreset(ScanPreset::SCAN_BRIGHTFIELD);
+	// (the brightfield preset is set by the first objective, once it is the one in the beam)
+	m_overviewBrightfieldPresetSet = false;
 	m_scanControl->setRLShutterOpen(false);
 
 	std::vector<OverviewCaptureLog> captures;
@@ -715,7 +792,7 @@ bool Brillouin::runOverviewEvent(
 	auto objectiveOrder = 0;
 	for (const auto& plan : m_overviewPlans) {
 		OverviewCaptureLog captureLog;
-		const auto isDriftObjective = m_settings.driftCorrectionEnabled && plan.slot == m_settings.driftObjectiveSlot;
+		const auto isDriftObjective = driftCorrectionActive() && plan.slot == driftObjectiveSlotActive();
 		std::vector<drift::TileFrame> tiles;
 		const auto ok = captureObjectiveOverview(
 			storage, plan, moment, directionsZ, eventIndex, objectiveOrder, pointIndex, isDriftObjective ? &tiles : nullptr, &captureLog);
@@ -732,7 +809,7 @@ bool Brillouin::runOverviewEvent(
 	m_scanControl->setPreset(ScanPreset::SCAN_BRILLOUIN);
 	setRLShutterRestingState();
 
-	if (m_settings.driftCorrectionEnabled) {
+	if (driftCorrectionActive()) {
 		if (!driftTiles.empty()) {
 			processDriftOverview(driftTiles, driftSlot, eventSeconds, &driftLog);
 		} else {
@@ -831,6 +908,102 @@ void Brillouin::writeOverviewEvent(
 	appendLiveLog(line);
 }
 
+
+// The previews are written on a thread of their own: the measurement only copies the frame and moves on. At most kMaxQueued frames wait; a
+// frame that finds the queue full is dropped (the preview is for looking at, the data is in the file).
+class LivePreviewWorker {
+public:
+	struct Job {
+		std::string path;
+		std::vector<std::byte> image;
+		CAMERA_SETTINGS settings;
+	};
+
+	LivePreviewWorker() : m_thread([this]() { run(); }) {}
+	~LivePreviewWorker() {
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			m_stop = true;
+		}
+		m_condition.notify_all();
+		m_thread.join();
+	}
+	bool enqueue(Job&& job) {
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			if (m_queue.size() >= kMaxQueued) {
+				return false;
+			}
+			m_queue.push_back(std::move(job));
+		}
+		m_condition.notify_one();
+		return true;
+	}
+	bool failed() const { return m_failed; }
+
+private:
+	static constexpr size_t kMaxQueued = 8;
+
+	void run() {
+		for (;;) {
+			Job job;
+			{
+				std::unique_lock<std::mutex> lock(m_mutex);
+				m_condition.wait(lock, [this]() { return m_stop || !m_queue.empty(); });
+				if (m_queue.empty()) {
+					return;
+				}
+				job = std::move(m_queue.front());
+				m_queue.pop_front();
+			}
+			render(job);
+		}
+	}
+
+	void render(const Job& job) {
+		try {
+			std::vector<float> pixels;
+			int width = 0;
+			int height = 0;
+			if (!frameToFloat(job.image, job.settings, &pixels, &width, &height) || width <= 0 || height <= 0) {
+				return;
+			}
+			std::filesystem::create_directories(std::filesystem::path(job.path).parent_path());
+			// contrast from a sparse sample (1 % to 99.5 %): this is only to look at
+			std::vector<float> sample;
+			for (size_t i = 0; i < pixels.size(); i += 17) {
+				sample.push_back(pixels[i]);
+			}
+			std::sort(sample.begin(), sample.end());
+			const auto low = sample[(size_t)(0.01 * (double)(sample.size() - 1))];
+			auto high = sample[(size_t)(0.995 * (double)(sample.size() - 1))];
+			if (high <= low) {
+				high = low + 1.0f;
+			}
+			QImage preview(width, height, QImage::Format_Grayscale8);
+			for (int row = 0; row < height; row++) {
+				auto* line = preview.scanLine(row);
+				for (int col = 0; col < width; col++) {
+					const auto value = (pixels[(size_t)row * (size_t)width + (size_t)col] - low) / (high - low);
+					line[col] = (uchar)std::clamp((int)std::lround(255.0f * value), 0, 255);
+				}
+			}
+			if (!preview.save(QString::fromStdString(job.path), "PNG", 80)) {
+				m_failed = true;
+			}
+		} catch (const std::exception&) {
+			m_failed = true;
+		}
+	}
+
+	std::mutex m_mutex;
+	std::condition_variable m_condition;
+	std::deque<Job> m_queue;
+	bool m_stop{ false };
+	std::atomic<bool> m_failed{ false };
+	std::thread m_thread;
+};
+
 std::string Brillouin::livePreviewFolder() const {
 	if (!m_acquisition) {
 		return {};
@@ -843,44 +1016,20 @@ void Brillouin::writeLivePreview(const std::string& name, const std::vector<std:
 	if (!m_settings.livePreviews || m_livePreviewFailed || image.empty()) {
 		return;
 	}
-	try {
-		std::vector<float> pixels;
-		int width = 0;
-		int height = 0;
-		if (!frameToFloat(image, settings, &pixels, &width, &height) || width <= 0 || height <= 0) {
-			return;
-		}
-		const auto folder = livePreviewFolder();
-		if (folder.empty()) {
-			return;
-		}
-		std::filesystem::create_directories(folder);
-		// contrast from a sparse sample (1 % to 99.5 %), the same for every image of a kind is not needed: this is only to look at
-		std::vector<float> sample;
-		for (size_t i = 0; i < pixels.size(); i += 17) {
-			sample.push_back(pixels[i]);
-		}
-		std::sort(sample.begin(), sample.end());
-		const auto low = sample[(size_t)(0.01 * (double)(sample.size() - 1))];
-		auto high = sample[(size_t)(0.995 * (double)(sample.size() - 1))];
-		if (high <= low) {
-			high = low + 1.0f;
-		}
-		QImage preview(width, height, QImage::Format_Grayscale8);
-		for (int row = 0; row < height; row++) {
-			auto* line = preview.scanLine(row);
-			for (int col = 0; col < width; col++) {
-				const auto value = (pixels[(size_t)row * (size_t)width + (size_t)col] - low) / (high - low);
-				line[col] = (uchar)std::clamp((int)std::lround(255.0f * value), 0, 255);
-			}
-		}
-		if (!preview.save(QString::fromStdString(folder + "/" + name + ".png"), "PNG", 80)) {
-			m_livePreviewFailed = true;
-			qWarning(logWarning()) << "Brillouin: live previews switched off, the preview folder cannot be written:" << folder.c_str();
-		}
-	} catch (const std::exception& e) {
+	const auto folder = livePreviewFolder();
+	if (folder.empty()) {
+		return;
+	}
+	if (!m_livePreviewWorker) {
+		m_livePreviewWorker = std::make_shared<LivePreviewWorker>();
+	}
+	if (m_livePreviewWorker->failed()) {
 		m_livePreviewFailed = true;
-		qWarning(logWarning()) << "Brillouin: live previews switched off:" << e.what();
+		return;
+	}
+	// the raw frame is copied (a few ms at most), everything else - contrast, PNG, disk - happens on the worker's thread
+	if (!m_livePreviewWorker->enqueue(LivePreviewWorker::Job{ folder + "/" + name + ".png", image, settings })) {
+		qWarning(logWarning()) << "Brillouin: live preview" << name.c_str() << "dropped, the writer is behind.";
 	}
 }
 
@@ -919,7 +1068,7 @@ void Brillouin::writePointGridOffsets(std::unique_ptr<StorageWrapper>& storage) 
 }
 
 void Brillouin::repeatSurfaceScan(std::unique_ptr<StorageWrapper>& storage, gsl::index pointIndex, const std::vector<double>& directionsZ) {
-	if (!m_scanControl || !m_settings.useSurfaceFollow || m_abort || directionsZ.empty()) {
+	if (!m_scanControl || !useSurfaceFollowActive() || m_abort || directionsZ.empty()) {
 		return;
 	}
 	const auto t0 = steadySeconds();

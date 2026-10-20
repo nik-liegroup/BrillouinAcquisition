@@ -272,6 +272,7 @@
 		<QtMoc Include="src\Acquisition\AcquisitionModes\Brillouin.h" />
 		<ClInclude Include="src\Acquisition\AcquisitionModes\BrillouinResume.h" />
 		<ClInclude Include="src\Acquisition\AcquisitionModes\ResumeRecord.h" />
+		<ClInclude Include="src\Acquisition\AcquisitionModes\ResumeFile.h" />
 		<QtMoc Include="src\Acquisition\AcquisitionModes\AcquisitionMode.h" />
 		<ClInclude Include="external\unwrap\unwrap2D.h" />
 		<QtMoc Include="src\BrillouinAcquisition.h" />

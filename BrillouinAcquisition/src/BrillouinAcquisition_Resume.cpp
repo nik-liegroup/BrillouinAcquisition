@@ -50,18 +50,37 @@ void BrillouinAcquisition::updateContinueAvailability() {
 		"stopped). Not available before a measurement was started, and not after it finished.");
 	const auto running = status == ACQUISITION_STATUS::WAITFORREPETITION || status == ACQUISITION_STATUS::STARTED
 		|| status == ACQUISITION_STATUS::RUNNING || status == ACQUISITION_STATUS::WAITFORSURFACEREVIEW || status == ACQUISITION_STATUS::ALIGNING;
-	auto resumable = false;
 	auto* storage = m_acquisition->m_storage.get();
 	if (storage && !running && m_enabledModes == ACQUISITION_MODE::NONE) {
-		// only what the file says about its last repetition (two small reads), the details are read when Continue is pressed
-		std::string state;
-		QMetaObject::invokeMethod(storage, [storage, &state]() {
+		// Only what the file says about its last repetition (two small reads), the details are read when Continue is pressed. Asked on the
+		// storage thread without waiting for it, so the interface never stands still for the file: the answer comes back as a queued call.
+		QMetaObject::invokeMethod(storage, [this, storage]() {
 			const auto repetition = storage->lastRepetition(ACQUISITION_MODE::BRILLOUIN);
-			state = repetition < 0 ? std::string{} : storage->getRepetitionState(ACQUISITION_MODE::BRILLOUIN, repetition);
-		}, Qt::BlockingQueuedConnection);
-		resumable = state == "measuring" || state == "stopped" || state == "surface-scan" || state == "surface-scan-stopped";
+			const auto state = repetition < 0 ? std::string{} : storage->getRepetitionState(ACQUISITION_MODE::BRILLOUIN, repetition);
+			QMetaObject::invokeMethod(this, [this, state]() { applyContinueAvailability(state, false); }, Qt::QueuedConnection);
+		}, Qt::QueuedConnection);
+		return;
 	}
-	m_brillouinContinueButton->setEnabled(resumable);
+	applyContinueAvailability(std::string{}, running);
+}
+
+void BrillouinAcquisition::applyContinueAvailability(const std::string& state, bool running) {
+	// a measurement started in the meantime: nothing to show
+	const auto status = m_Brillouin->getStatus();
+	if (status == ACQUISITION_STATUS::WAITFORREPETITION || status == ACQUISITION_STATUS::STARTED || status == ACQUISITION_STATUS::RUNNING
+		|| status == ACQUISITION_STATUS::WAITFORSURFACEREVIEW || status == ACQUISITION_STATUS::ALIGNING || m_enabledModes != ACQUISITION_MODE::NONE) {
+		running = true;
+	}
+	const auto resumable = !running && (state == "measuring" || state == "stopped" || state == "surface-scan" || state == "surface-scan-stopped");
+	// a finished repetition: Continue starts the next one with the drift carried over, as in an automatic series (needs the drift measured in
+	// this session)
+	m_continueIsNextRepetition = !running && state == "finished" && m_Brillouin->canCarryDriftToNextStart();
+	m_brillouinContinueButton->setEnabled(resumable || m_continueIsNextRepetition);
+	m_brillouinContinueButton->setToolTip(m_continueIsNextRepetition
+		? "Start the next repetition in this file with the drift measured so far carried over, as the repetitions of an automatic series do. "
+			"Start begins without any drift."
+		: "Continue the last Brillouin measurement of the open file where it stopped (cancelled, or the software stopped). Not available before "
+			"a measurement was started; after it finished only to go on with the drift correction (same session).");
 	if (resumable) {
 		// Start makes a new repetition in the same file, as it always did; Continue appends to the one that was interrupted
 		ui->BrillouinStart->setText("Restart");
@@ -102,6 +121,25 @@ void BrillouinAcquisition::onBrillouinContinueClicked() {
 			[&m_Brillouin = m_Brillouin]() { m_Brillouin->continueAfterSurfaceReview(false); },
 			Qt::AutoConnection
 		);
+		return;
+	}
+	if (m_continueIsNextRepetition) {
+		bool sameStart = true;
+		if (!m_Brillouin->canCarryDriftToNextStart(&sameStart)) {
+			updateContinueAvailability();
+			return;
+		}
+		if (!sameStart) {
+			const auto answer = QMessageBox::question(this, "Drift correction",
+				"The grid is relative to the start position, and the stage is not at the start of the last repetition (more than 5 \u00b5m away), so "
+				"the drift cannot be carried over.\n\nStart the next repetition without it?",
+				QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+			if (answer != QMessageBox::Yes) {
+				return;
+			}
+		}
+		m_Brillouin->setCarryDriftOnStart(sameStart);
+		on_BrillouinStart_clicked();
 		return;
 	}
 	auto* storage = m_acquisition ? m_acquisition->m_storage.get() : nullptr;
@@ -193,7 +231,7 @@ void BrillouinAcquisition::onBrillouinContinueClicked() {
 	);
 }
 
-void BrillouinAcquisition::showSurfacePriorQuestion(const QString& text, bool offerReuse, int timeoutSeconds) {
+void BrillouinAcquisition::showSurfacePriorQuestion(const QString& text, bool offerPrior, bool offerReuse, int timeoutSeconds) {
 	QDialog dialog(this);
 	dialog.setWindowTitle("Surface scan");
 	auto* layout = new QVBoxLayout(&dialog);
@@ -214,21 +252,26 @@ void BrillouinAcquisition::showSurfacePriorQuestion(const QString& text, bool of
 		reuse->hide();
 	}
 	layout->addLayout(buttons);
-	no->setDefault(true);
-	no->setFocus();
+	// the default is to start from the earlier scan (Yes) if that is possible, else a new scan
+	yes->setEnabled(offerPrior);
+	const auto defaultAnswer = offerPrior ? 1 : 0;
+	(offerPrior ? yes : no)->setDefault(true);
+	(offerPrior ? yes : no)->setFocus();
 
-	auto answer = 0;
+	auto answer = defaultAnswer;
 	connect(yes, &QPushButton::clicked, &dialog, [&]() { answer = 1; dialog.accept(); });
 	connect(no, &QPushButton::clicked, &dialog, [&]() { answer = 0; dialog.accept(); });
 	connect(reuse, &QPushButton::clicked, &dialog, [&]() { answer = 2; dialog.accept(); });
 	auto remaining = timeoutSeconds;
-	const auto showRemaining = [&]() { countdown->setText(QString("Without an answer: new scan from scratch in %1 s").arg(remaining)); };
+	const auto showRemaining = [&]() {
+		countdown->setText(QString("Without an answer: %1 in %2 s").arg(offerPrior ? "scan starting from the earlier one" : "new scan from scratch").arg(remaining));
+	};
 	showRemaining();
 	QTimer timer;
 	connect(&timer, &QTimer::timeout, &dialog, [&]() {
 		remaining--;
 		if (remaining <= 0) {
-			answer = 0;
+			answer = defaultAnswer;
 			dialog.accept();
 			return;
 		}
