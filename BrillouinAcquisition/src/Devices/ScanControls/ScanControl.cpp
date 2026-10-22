@@ -538,7 +538,29 @@ bool ScanControl::switchObjectiveSlot(int slot, std::string* error) {
 		// swap the overview settings of the GUI; the caller has checked the calibrations and handles the consequences.
 		m_quietObjectiveSwitch = true;
 		setElement(element, (double)slot);
+		// setElement() does not wait for the turret everywhere (MTB: SetPosition returns after a 500 ms timeout, a turn takes longer) and
+		// reports the COMMANDED slot. A reading taken later - the getElements() of the next setPreset() - then still saw the old slot and
+		// was taken for an operator's switch back: the software believed the measuring objective was in the beam, never turned back, and
+		// every other z plane was measured with the overview objective (the operator's switch also swapped the overview settings in the
+		// GUI). So: read the changer until it reports the slot twice in a row, still quietly.
+		const auto index = element.index;
+		const auto start = std::chrono::steady_clock::now();
+		auto confirmed = 0;
+		while (confirmed < 2 && std::chrono::steady_clock::now() - start < std::chrono::seconds(15)) {
+			getElements();
+			const auto reported = (size_t)index < m_elementPositions.size() ? (int)m_elementPositions[index] : slot;
+			confirmed = reported == slot ? confirmed + 1 : 0;
+			if (confirmed < 2) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			}
+		}
 		m_quietObjectiveSwitch = false;
+		if (confirmed < 2) {
+			if (error) {
+				*error = "The objective changer did not report slot " + std::to_string(slot) + " within 15 s.";
+			}
+			return false;
+		}
 		if (m_activeObjectiveSlot != slot) {
 			if (error) {
 				*error = "Expected objective slot " + std::to_string(slot) + " but the changer reports slot " + std::to_string(m_activeObjectiveSlot) + ".";
@@ -695,7 +717,8 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	// Apply it once in EVERY display mode, just as announcePositionScanner() does.
 	// Dropping it on Start moves only the overlay, although the stage still measures
 	// the correct sample points.
-	const auto fovOffset = getActiveObjectiveFovOffsetUm();
+	// + the drift the measurement adds to every stage target, so the grid is drawn where the laser really goes.
+	const auto fovOffset = getActiveObjectiveFovOffsetUm() + m_driftDisplayUm;
 	if (positionIsAbsolute) {
 		return POINT2{} - m_positionStage + fovOffset;
 	}
@@ -707,6 +730,14 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	}
 	// At Start, start - stage == scanner, so the relative grid stays continuous.
 	return m_positionScanner + fovOffset;
+}
+
+void ScanControl::setDriftDisplayOffset(POINT2 offsetUm) {
+	m_driftDisplayUm = offsetUm;
+	// as after a calibration change: the stage and the scanner did not move, so announcePositions() would not re-emit; the offset before the
+	// positions computed with it (see BrillouinAcquisition::on_gridOffsetChanged())
+	emit(s_gridOffsetChanged(getPositionOffset(m_AOI_positionsAbsolute), m_AOI_positionsAbsolute));
+	emit(s_scaleCalibrationChanged(convertPositionsToPix()));
 }
 
 /*

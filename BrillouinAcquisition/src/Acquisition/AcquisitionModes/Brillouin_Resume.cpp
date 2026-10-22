@@ -84,6 +84,7 @@ void Brillouin::writeSurfaceCheckpointColumn(gsl::index xi, gsl::index yi, bool 
 
 void Brillouin::continueRepetition() {
 	m_seriesActive = false;
+	m_overviewSeriesBegun = false;
 	auto* storagePtr = m_acquisition ? m_acquisition->m_storage.get() : nullptr;
 	if (!storagePtr) {
 		return;
@@ -141,7 +142,14 @@ void Brillouin::continueRepetition() {
 		case resume::ObjectiveAction::SWITCH: {
 			closeDoseProtectionShutter();
 			// away from the sample first, as in every automatic switch
+			const auto before = m_scanControl->getPosition();
 			m_scanControl->movePosition(POINT3{ 0.0, 0.0, m_settings.overviewObjectiveRetractUm });
+			// only turn once the objective is away from the sample
+			waitForStage(before + POINT3{ 0.0, 0.0, m_settings.overviewObjectiveRetractUm }, 30.0);
+			if (std::abs(m_scanControl->getPosition().z - before.z) < 0.5 * std::abs(m_settings.overviewObjectiveRetractUm)) {
+				refuse("z did not move away from the sample (retract), so the nosepiece was not turned.");
+				return;
+			}
 			std::string error;
 			if (!m_scanControl->switchObjectiveSlot(info.objectiveSlot, &error)) {
 				refuse("The nosepiece could not be turned to slot " + std::to_string(info.objectiveSlot) + ": " + error);
@@ -172,6 +180,9 @@ void Brillouin::continueRepetition() {
 	m_resuming = true;
 	m_resumeStartIndex = info.pointsDone;
 	m_resumeCarry = POINT2{ 0.0, 0.0 };
+	// the grid is the one of the file again, not the one moved at the end of the stopped run: the drift reference is used as it is
+	m_lastRunGridShift = POINT2{ 0.0, 0.0 };
+	m_pendingDriftHandOver.reset();
 
 	// the file: same repetitions, nothing created, points that were cut short removed, what exists is not written again
 	auto prepared = false;
@@ -356,9 +367,12 @@ Brillouin::SURFACE_STRATEGY Brillouin::chooseSurfaceStrategy(std::unique_ptr<Sto
 	now.preScanXYBin = m_settings.preScanXYBin;
 	now.originX = m_settings.absoluteGridOriginUm.x;
 	now.originY = m_settings.absoluteGridOriginUm.y;
+	now.shiftX = m_lastRunGridShift.x;
+	now.shiftY = m_lastRunGridShift.y;
 	const auto options = resume::surfaceOptions(*previous, now, xSamples.size() * ySamples.size());
 	if (!options.priorCompatible && !options.canReuse) {
-		qInfo(logInfo()) << "The surface scan of repetition" << previous->repetition << "is not offered: the grid or the surface scan settings differ.";
+		qInfo(logInfo()) << "The surface scan of repetition" << previous->repetition << "is not offered: the grid or the surface scan settings differ ("
+			<< (options.differences.empty() ? std::string("the number of coarse columns") : options.differences).c_str() << ").";
 		return SURFACE_STRATEGY::NEW_SCAN;
 	}
 

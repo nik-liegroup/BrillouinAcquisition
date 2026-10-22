@@ -4,6 +4,9 @@
 
 namespace {
 	constexpr const char* kMtbUnitMicrometer = "\xB5m";
+	// [ms] a synchronous MTB command returns false after this long even though the motor keeps going - it has to cover the slowest move
+	// (a long stage travel, the z retract, a nosepiece turn), or the software goes on before the hardware has arrived
+	constexpr long kMtbSyncTimeoutMs = 30000;
 }
 
 /*
@@ -84,7 +87,7 @@ void ZeissMTB_Erlangen::setPosition(POINT2 position) {
 	auto positionStage = position - m_positionScanner;
 	if (abs(m_positionStage.x - positionStage.x) > 1e-6) {
 		try {
-			if (m_stageX->SetPosition(positionStage.x, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500)) {
+			if (m_stageX->SetPosition(positionStage.x, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, kMtbSyncTimeoutMs)) {
 				m_positionStage.x = positionStage.x;
 			} else {
 				qWarning(logWarning()) << "ZeissMTB_Erlangen::setPosition() - stage X move was not confirmed, cached position left unchanged.";
@@ -95,7 +98,7 @@ void ZeissMTB_Erlangen::setPosition(POINT2 position) {
 	}
 	if (abs(m_positionStage.y - positionStage.y) > 1e-6) {
 		try {
-			if (m_stageY->SetPosition(positionStage.y, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500)) {
+			if (m_stageY->SetPosition(positionStage.y, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, kMtbSyncTimeoutMs)) {
 				m_positionStage.y = positionStage.y;
 			} else {
 				qWarning(logWarning()) << "ZeissMTB_Erlangen::setPosition() - stage Y move was not confirmed, cached position left unchanged.";
@@ -117,7 +120,7 @@ void ZeissMTB_Erlangen::setPosition(POINT3 position) {
 	// Only set position if it has changed
 	if (abs(m_positionFocus - position.z) > 1e-6) {
 		try {
-			if (m_ObjectiveFocus->SetPosition(position.z, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500)) {
+			if (m_ObjectiveFocus->SetPosition(position.z, kMtbUnitMicrometer, MTBCmdSetModes::MTBCmdSetModes_Synchronous, kMtbSyncTimeoutMs)) {
 				m_positionFocus = position.z;
 			} else {
 				qWarning(logWarning()) << "ZeissMTB_Erlangen::setPosition() - focus move was not confirmed, cached position left unchanged.";
@@ -135,7 +138,7 @@ void ZeissMTB_Erlangen::movePosition(POINT2 distance) {
 	}
 	if (abs(distance.x) > 1e-6) {
 		try {
-			if (m_stageX->SetPosition(distance.x, kMtbUnitMicrometer, (MTBCmdSetModes)(MTBCmdSetModes::MTBCmdSetModes_Synchronous | MTBCmdSetModes::MTBCmdSetModes_Relative), 500)) {
+			if (m_stageX->SetPosition(distance.x, kMtbUnitMicrometer, (MTBCmdSetModes)(MTBCmdSetModes::MTBCmdSetModes_Synchronous | MTBCmdSetModes::MTBCmdSetModes_Relative), kMtbSyncTimeoutMs)) {
 				m_positionStage.x += distance.x;
 			} else {
 				qWarning(logWarning()) << "ZeissMTB_Erlangen::movePosition() - stage X move was not confirmed, cached position left unchanged.";
@@ -146,7 +149,7 @@ void ZeissMTB_Erlangen::movePosition(POINT2 distance) {
 	}
 	if (abs(distance.y) > 1e-6) {
 		try {
-			if (m_stageY->SetPosition(distance.y, kMtbUnitMicrometer, (MTBCmdSetModes)(MTBCmdSetModes::MTBCmdSetModes_Synchronous | MTBCmdSetModes::MTBCmdSetModes_Relative), 500)) {
+			if (m_stageY->SetPosition(distance.y, kMtbUnitMicrometer, (MTBCmdSetModes)(MTBCmdSetModes::MTBCmdSetModes_Synchronous | MTBCmdSetModes::MTBCmdSetModes_Relative), kMtbSyncTimeoutMs)) {
 				m_positionStage.y += distance.y;
 			} else {
 				qWarning(logWarning()) << "ZeissMTB_Erlangen::movePosition() - stage Y move was not confirmed, cached position left unchanged.";
@@ -380,7 +383,7 @@ bool ZeissMTB_Erlangen::setElement(IMTBChangerPtr element, int position) {
 		return false;
 	}
 	try {
-		return element->SetPosition(position, MTBCmdSetModes::MTBCmdSetModes_Synchronous, 500);
+		return element->SetPosition(position, MTBCmdSetModes::MTBCmdSetModes_Synchronous, kMtbSyncTimeoutMs);
 	} catch (_com_error& e) {
 		qDebug() << "Error setting element position:" << e.ErrorMessage();
 		return false;

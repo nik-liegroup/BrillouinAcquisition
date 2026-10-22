@@ -283,6 +283,40 @@ bool Brillouin::canCarryDriftToNextStart(bool* sameStart) {
 	return true;
 }
 
+bool Brillouin::driftCarriesOverToThisStart() {
+	// (an absolute grid hangs on the stage coordinates, not on where the repetition starts)
+	const auto sameStart = m_settings.gridCoordinatesAbsolute
+		|| std::hypot(m_startPosition.x - m_driftSeriesStart.x, m_startPosition.y - m_driftSeriesStart.y) < kSeriesCarryOverDistanceUm;
+	return m_settings.driftCorrectionEnabled && m_driftController.hasReference() && sameStart
+		&& m_driftReferenceSlot == m_settings.driftObjectiveSlot && !m_driftReferenceTiles.empty();
+}
+
+void Brillouin::measureDriftBeforeSurfaceScan(std::unique_ptr<StorageWrapper>& storage) {
+	// The surface scan sets the z of every column, so it has to be placed on the sample as it is now: the drift left over from the end of
+	// the previous repetition is the offset of a sample that has kept moving since. Only worth it with a drift to carry over - without
+	// one the first overview of the measurement is the reference, taken right after the scan.
+	if (!useOverviewEngine() || !m_settings.useSurfaceFollow || !m_settings.driftCorrectionEnabled || m_abort || !m_scanControl) {
+		return;
+	}
+	// the overview z follows the surface of the previous repetition (still held, as the drift is): this repetition's own is not known yet
+	if (!driftCarriesOverToThisStart() || !m_surfaceZRangeValid) {
+		return;
+	}
+	beginOverviewSeries(storage);
+	m_overviewSeriesBegun = true;
+	const auto directionsZ = simplemath::linspace(m_settings.zMin, m_settings.zMax, m_settings.zSteps);
+	OverviewMoment moment;
+	moment.kind = OVERVIEW_MOMENT_KIND::BEFORE;
+	moment.zIndex = 0;
+	const auto ok = runOverviewEvent(storage, moment, directionsZ, -1, true);
+	// the event's entries go to the file through the storage thread; the setup of the measurement phase writes directly, so let it finish
+	auto* storageObject = storage.get();
+	QMetaObject::invokeMethod(storageObject, []() {}, Qt::BlockingQueuedConnection);
+	if (!ok && !m_abort) {
+		qWarning(logWarning()) << "Brillouin: the drift could not be measured before the surface scan; it runs with the drift carried over.";
+	}
+}
+
 void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	m_runDriftCorrection = m_settings.driftCorrectionEnabled;
 	m_runDriftObjectiveSlot = m_settings.driftObjectiveSlot;
@@ -309,10 +343,7 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	// The next repetition of a series starts where the sample was at the end of the previous one (the stage went back to the start
 	// position, but the sample did not): carry the drift over if the repetition starts at the same place and with the same objective.
 	// (an absolute grid hangs on the stage coordinates, not on where the repetition starts)
-	const auto sameStart = m_settings.gridCoordinatesAbsolute
-		|| std::hypot(m_startPosition.x - m_driftSeriesStart.x, m_startPosition.y - m_driftSeriesStart.y) < kSeriesCarryOverDistanceUm;
-	if (m_settings.driftCorrectionEnabled && m_driftController.hasReference() && sameStart && m_driftReferenceSlot == m_settings.driftObjectiveSlot
-		&& !m_driftReferenceTiles.empty()) {
+	if (driftCarriesOverToThisStart()) {
 		m_gridOffset = m_driftController.totalUm();
 	} else {
 		m_driftController.reset();
@@ -340,6 +371,7 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 		m_gridOffset = m_resumeInfo.eventOffsetAfter.empty() ? m_resumeInfo.carriedOffset : m_resumeInfo.eventOffsetAfter.back();
 		m_resumeCarry = m_gridOffset;
 	}
+	publishGridOffset();
 
 	// What this repetition was set up with and the calibrations of the objectives that take overviews, written before the measurement
 	// starts (the storage thread is not writing yet).
@@ -417,6 +449,58 @@ bool Brillouin::liveOverviewCamera(int slot, int* exposureMs, double* gain) cons
 
 void Brillouin::refreshGridOffset() {
 	m_gridOffset = driftCorrectionActive() ? m_driftController.offsetAt(steadySeconds()) : POINT2{ 0.0, 0.0 };
+	publishGridOffset();
+}
+
+void Brillouin::publishGridOffset() {
+	// with extrapolation the offset changes at every point: only redraw the overlay (every point projected again) for a visible change
+	const auto exact = m_gridOffset.x == 0.0 && m_gridOffset.y == 0.0;
+	if (std::abs(m_gridOffset.x - m_publishedGridOffset.x) < (exact ? 1e-12 : 0.2)
+		&& std::abs(m_gridOffset.y - m_publishedGridOffset.y) < (exact ? 1e-12 : 0.2)) {
+		return;
+	}
+	m_publishedGridOffset = m_gridOffset;
+	if (m_scanControl) {
+		// Directly: the scan control lives on this (the acquisition) thread, which does not get back to its event loop while a
+		// measurement runs - a queued call would only be shown after the run.
+		m_scanControl->setDriftDisplayOffset(m_gridOffset);
+	}
+}
+
+void Brillouin::bakeDriftIntoGrid() {
+	const auto offset = m_gridOffset;
+	// the next run's surface scan compares its grid with this run's: moved by exactly this, it is the same grid (see chooseSurfaceStrategy())
+	m_lastRunGridShift = offset;
+	// The drift reference stays as it is: a Continue of this run (from the file, with the original grid and its offsets) needs it unchanged.
+	// A new Start takes it over instead, minus what the grid has been moved by (see handOverDriftToNewStart()).
+	m_pendingDriftHandOver = offset;
+	if (offset.x == 0.0 && offset.y == 0.0) {
+		return;
+	}
+	// the GUI moves the grid and the ROIs by the drift and takes the drift out of the live view in one step
+	m_publishedGridOffset = POINT2{ 0.0, 0.0 };
+	emit(s_driftBakedIntoGrid(offset));
+}
+
+bool Brillouin::handOverDriftToNewStart() {
+	if (!m_pendingDriftHandOver || !m_driftController.hasReference() || m_driftReferenceTiles.empty()) {
+		return false;
+	}
+	const auto moved = *m_pendingDriftHandOver;
+	m_pendingDriftHandOver.reset();
+	// The grid now carries `moved`: the drift still to apply is the drift since the series began minus that. The reference images stay -
+	// the next overview is registered against them, so the drift since the end of the last run is measured (the step is computed from the
+	// stage positions the frames were taken at, not from the grid). Their place in the planned layout moves with the grid, so they pair
+	// with the same tiles of the moved grid.
+	m_driftController.setReference(m_driftController.referenceTime(), POINT2{ m_driftController.totalUm().x - moved.x, m_driftController.totalUm().y - moved.y });
+	for (auto& tile : m_driftReferenceTiles) {
+		if (std::isfinite(tile.anchorUm.x) && std::isfinite(tile.anchorUm.y)) {
+			tile.anchorUm.x += moved.x;
+			tile.anchorUm.y += moved.y;
+		}
+	}
+	m_gridOffset = m_driftController.totalUm();
+	return true;
 }
 
 bool Brillouin::grabBrightfieldFrame(int exposureMs, double gain, std::vector<std::byte>* image, CAMERA_SETTINGS* usedSettings) {
@@ -443,14 +527,52 @@ bool Brillouin::grabBrightfieldFrame(int exposureMs, double gain, std::vector<st
 	return true;
 }
 
+bool Brillouin::waitForStage(const POINT3& target, double timeoutS) {
+	if (!m_scanControl) {
+		return false;
+	}
+	// at the target: within 2 um on every axis; done moving elsewhere (a limit, a stand that stops short): no change of more than
+	// 0.2 um for 0.5 s, once 1.5 s have passed (a stand that has not started to move yet looks the same)
+	const auto isNear = [](const POINT3& a, const POINT3& b, double tolerance) {
+		return std::abs(a.x - b.x) < tolerance && std::abs(a.y - b.y) < tolerance && std::abs(a.z - b.z) < tolerance;
+	};
+	const auto start = steadySeconds();
+	auto last = m_scanControl->getPosition();
+	auto restingSince = start;
+	while (true) {
+		const auto now = m_scanControl->getPosition();
+		if (isNear(now, target, 2.0)) {
+			return true;
+		}
+		const auto t = steadySeconds();
+		if (!isNear(now, last, 0.2)) {
+			last = now;
+			restingSince = t;
+		}
+		if ((t - restingSince > 0.5 && t - start > 1.5) || t - start > timeoutS) {
+			qWarning(logWarning()) << "Brillouin: the stage stopped at" << now.x << now.y << now.z << "um, not at the target" << target.x << target.y
+				<< target.z << "um.";
+			return false;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
+}
+
 void Brillouin::returnToMeasurementObjective(int measurementSlot, const POINT3& restorePosition, bool restorePositionToo) {
 	if (!m_scanControl) {
 		return;
 	}
 	closeDoseProtectionShutter();
 	if (m_scanControl->getActiveObjectiveSlot() != measurementSlot) {
-		// away from the sample before the nosepiece turns, as on the way there
+		// away from the sample before the nosepiece turns, as on the way there - and only turn once z is really there
+		const auto before = m_scanControl->getPosition();
 		m_scanControl->movePosition(POINT3{ 0.0, 0.0, overviewRetractUmActive() });
+		waitForStage(before + POINT3{ 0.0, 0.0, overviewRetractUmActive() }, 30.0);
+		if (std::abs(m_scanControl->getPosition().z - before.z) < 0.5 * std::abs(overviewRetractUmActive())) {
+			qCritical(logCritical()) << "Brillouin: z did not reach the retract position, the nosepiece is not turned back; the measurement stops.";
+			m_abort = true;
+			return;
+		}
 		std::string error;
 		if (!m_scanControl->switchObjectiveSlot(measurementSlot, &error)) {
 			qCritical(logCritical()) << "Brillouin: could not turn back to the measuring objective:" << error.c_str();
@@ -460,6 +582,7 @@ void Brillouin::returnToMeasurementObjective(int measurementSlot, const POINT3& 
 	}
 	if (restorePositionToo) {
 		m_scanControl->setPositionCompensated(restorePosition);
+		waitForStage(restorePosition, 30.0);
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
 }
@@ -590,6 +713,15 @@ bool Brillouin::captureObjectiveOverview(
 		closeDoseProtectionShutter();
 		const auto t0 = steadySeconds();
 		m_scanControl->movePosition(POINT3{ 0.0, 0.0, overviewRetractUmActive() });
+		// the nosepiece only turns once the objective is away from the sample (at least half the retract distance, if a limit stopped it)
+		waitForStage(positionBefore + POINT3{ 0.0, 0.0, overviewRetractUmActive() }, 30.0);
+		if (std::abs(m_scanControl->getPosition().z - positionBefore.z) < 0.5 * std::abs(overviewRetractUmActive())) {
+			log->skippedReason = "z retract not reached";
+			qCritical(logCritical()) << "Brillouin: z did not reach the retract position, the overview with objective" << plan.slot << "is skipped.";
+			m_scanControl->setPositionCompensated(positionBefore);
+			waitForStage(positionBefore, 30.0);
+			return !m_abort;
+		}
 		std::string error;
 		if (!m_scanControl->switchObjectiveSlot(plan.slot, &error)) {
 			qCritical(logCritical()) << "Brillouin: could not turn to objective" << plan.slot << ":" << error.c_str();
@@ -626,6 +758,7 @@ bool Brillouin::captureObjectiveOverview(
 			}
 			const auto target = tiles[tileIndex][stackIndex];
 			m_scanControl->setPositionCompensated(target);
+			waitForStage(target, 30.0);
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			const auto stageRaw = m_scanControl->getPosition();
 
@@ -769,7 +902,8 @@ bool Brillouin::runOverviewMoments(
 }
 
 bool Brillouin::runOverviewEvent(
-	std::unique_ptr<StorageWrapper>& storage, const OverviewMoment& moment, const std::vector<double>& directionsZ, gsl::index pointIndex
+	std::unique_ptr<StorageWrapper>& storage, const OverviewMoment& moment, const std::vector<double>& directionsZ, gsl::index pointIndex,
+	bool driftOnly
 ) {
 	if (!m_scanControl || m_abort) {
 		return false;
@@ -791,6 +925,9 @@ bool Brillouin::runOverviewEvent(
 	auto driftSlot = -1;
 	auto objectiveOrder = 0;
 	for (const auto& plan : m_overviewPlans) {
+		if (driftOnly && plan.slot != driftObjectiveSlotActive()) {
+			continue;
+		}
 		OverviewCaptureLog captureLog;
 		const auto isDriftObjective = driftCorrectionActive() && plan.slot == driftObjectiveSlotActive();
 		std::vector<drift::TileFrame> tiles;
@@ -820,7 +957,7 @@ bool Brillouin::runOverviewEvent(
 
 	// The overview moved the stage away from the grid point: back to it, with the offset as it is now (the drift just measured, if any).
 	if (pointIndex >= 0 && pointIndex < (gsl::index)m_orderedPositions.size()) {
-		approachGridPosition(m_orderedPositions[pointIndex]);
+		waitForStage(approachGridPosition(m_orderedPositions[pointIndex]), 30.0);
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
 	return !m_abort;

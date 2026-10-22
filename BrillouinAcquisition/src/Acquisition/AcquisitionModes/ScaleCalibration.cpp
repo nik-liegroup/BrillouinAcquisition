@@ -673,6 +673,8 @@ void ScaleCalibration::__acquire() {
 	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
 	// Get the current stage position
+	// The translation distances are edited on the GUI thread: take both once, so the stage moves and the division below use the same values.
+	const auto Ds = m_Ds;
 	m_startPosition = m_scanControl->getPosition();
 
 	/*
@@ -680,7 +682,7 @@ void ScaleCalibration::__acquire() {
 	 */
 	auto hysteresisCompensation{ 10.0 };// [µm] distance for compensation of the stage hysteresis
 	// Construct the positions
-	auto positions = std::vector<POINT2>{ { 0, 0 }, { m_Ds.x, 0 }, { 0, m_Ds.y } };
+	auto positions = std::vector<POINT2>{ { 0, 0 }, { Ds.x, 0 }, { 0, Ds.y } };
 
 	// Acquire memory for image acquisition
 	auto images = std::vector<std::vector<std::byte>>(positions.size());
@@ -763,6 +765,18 @@ void ScaleCalibration::__acquire() {
 	// We use template matching, so we have to create a template from the origin image
 	auto padding = 200.0;
 	auto size = imagesCV[0].size();
+	if (size.width <= 2 * padding + 2 || size.height <= 2 * padding + 2) {
+		emit(s_scaleCalibrationStatus("Scale calibration failed", "The camera image is too small for the calibration (needs more than "
+			+ std::to_string((int)(2 * padding) + 2) + " pixels in both directions)."));
+		m_scanControl->setPosition(m_startPosition);
+		QMetaObject::invokeMethod(
+			m_scanControl,
+			[scanControl = m_scanControl]() { scanControl->startAnnouncing(); },
+			Qt::AutoConnection
+		);
+		setAcquisitionStatus(ACQUISITION_STATUS::FINISHED);
+		return;
+	}
 	auto templateROI = cv::Rect(padding, padding, size.width - 2 * padding, size.height - 2 * padding);
 	auto templ = imagesCV[0](templateROI);
 
@@ -793,10 +807,44 @@ void ScaleCalibration::__acquire() {
 	auto shiftDy = minLocY - cv::Point(padding, padding);
 
 	/*
+	 * A shift on the border of the search window is only a lower bound: the image moved at least that far, so the step was too large
+	 * for the matching (the template is the image without a border of `padding` pixels, so it can follow +-padding pixels).
+	 */
+	auto onBorder = [&](const cv::Point& location, const cv::Mat& output) {
+		return location.x <= 1 || location.y <= 1 || location.x >= output.cols - 2 || location.y >= output.rows - 2;
+	};
+	const auto stepTooLargeX = onBorder(minLocX, outputX);
+	const auto stepTooLargeY = onBorder(minLocY, outputY);
+	if (stepTooLargeX || stepTooLargeY) {
+		// the true shift is at least `padding` pixels; a step of half the size is then at most half of it, well inside the window
+		auto suggestion = [](double step, bool tooLarge) { return tooLarge ? std::max(1.0, std::floor(0.5 * step)) : step; };
+		const auto suggestedX = suggestion(Ds.x, stepTooLargeX);
+		const auto suggestedY = suggestion(Ds.y, stepTooLargeY);
+		std::ostringstream message;
+		message << "The image moved further than the matching can follow (" << (int)padding << " pixels): the step size is too large for this objective. ";
+		if (stepTooLargeX) {
+			message << "x step " << Ds.x << " um -> use about " << suggestedX << " um. ";
+		}
+		if (stepTooLargeY) {
+			message << "y step " << Ds.y << " um -> use about " << suggestedY << " um. ";
+		}
+		message << "(The shift found is only a lower bound, so the suggestion is a safe step, not the largest possible one.)";
+		emit(s_scaleCalibrationStatus("Scale calibration failed: step size too large", message.str().c_str()));
+		m_scanControl->setPosition(m_startPosition);
+		QMetaObject::invokeMethod(
+			m_scanControl,
+			[scanControl = m_scanControl]() { scanControl->startAnnouncing(); },
+			Qt::AutoConnection
+		);
+		setAcquisitionStatus(ACQUISITION_STATUS::FINISHED);
+		return;
+	}
+
+	/*
 	 * Construct the scale calibration
 	 */
-	m_scaleCalibration.micrometerToPixX = { -1.0 * shiftDx.x / m_Ds.x, shiftDx.y / m_Ds.x };
-	m_scaleCalibration.micrometerToPixY = { -1.0 * shiftDy.x / m_Ds.y, shiftDy.y / m_Ds.y };
+	m_scaleCalibration.micrometerToPixX = { -1.0 * shiftDx.x / Ds.x, shiftDx.y / Ds.x };
+	m_scaleCalibration.micrometerToPixY = { -1.0 * shiftDy.x / Ds.y, shiftDy.y / Ds.y };
 	try {
 		// Can throw an exception (if the provided calibration is invalid):
 		ScaleCalibrationHelper::initializeCalibrationFromMicrometer(&m_scaleCalibration);

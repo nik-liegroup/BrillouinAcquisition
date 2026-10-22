@@ -1,6 +1,38 @@
 ## Unreleased
 
 ### Fixed
+- Zeiss MTB stands (all three variants): every stage, focus and stand-element command waited at most 500 ms for the hardware and then
+  went on while the motor was still moving (the cache of the position was not updated either, so a later move back to the old position
+  could be skipped). Long moves - the jump to a new line or plane, overview tiles, the z retract - were not finished when the next
+  image or spectrum was taken, and the nosepiece could start to turn while z was still retracting. The commands now wait up to 30 s.
+- The nosepiece only turns once z has really moved away from the sample (at least half the retract distance), on the way to an overview
+  objective, back, and when a continue turns it back; otherwise the overview is skipped (or the measurement stops / the continue is
+  refused). Overview tiles, the return to the grid point after an overview and every long move of the measurement (more than 10 um:
+  new line, new plane, surface-scan column) wait until the stage is there (ZeissECU returns from a move at once).
+- ZeissECU: waiting for the RL shutter and the lamp checked the reflector instead (dose protection could open the exposure before the
+  shutter was open).
+- The live view did not follow the drift during a measurement after all (the update was queued to the busy acquisition thread); it
+  is redrawn when the offset changes by more than 0.2 um.
+- Overviews with another objective could leave that objective in the beam for the next z plane (every other plane measured with the
+  overview objective). The changer's set call returns before the turret has arrived (MTB: 500 ms timeout) and reported the commanded
+  slot; the next reading of the stand (the brightfield preset) still saw the old slot, which was taken for a switch back by the
+  operator, so the software did not turn back. That same false "operator switch" swapped the overview settings in the GUI (the overview
+  box of the other objective went off at the start of a measurement). An automatic switch now waits until the changer reports the new
+  slot twice in a row (at most 15 s, else the overview is skipped and the measurement stops as before).
+- With drift correction the grid, the ROIs and the overview outlines in the live view follow the sample (they were drawn at the planned
+  positions while the laser went to the drifted ones). When a run finishes or is stopped, the grid limits and both ROI polygons are moved by
+  the drift of the run and stay there. A new Start takes the drift reference of that run over, minus the move of the grid: its first
+  overview (before the surface scan, if there is one) measures the drift since the end of that run, so nothing is applied twice and the
+  drift during the pause is corrected too (same rules as before: drift correction on, same drift objective, same start position in
+  relative coordinates). Continuing a stopped run loads the settings and the offsets of the file and uses the reference unchanged. A grid
+  moved this way still counts as the same grid for the surface scan of the earlier run (start from it / reuse). Grid limits are compared
+  to 0.05 um (the GUI keeps one decimal; conversions between absolute and relative coordinates are not exact), and the log names the
+  setting that differs when an earlier surface is not offered. Stopping between two repetitions moves the grid as well.
+- The yellow mosaic outlines in the live view also show the overview mosaic of every other objective that takes one (dash-dot, with that
+  objective's field of view), not only the one of the measuring objective (dashed).
+- A repetition that goes on with the drift of the previous one (Continue after a finished repetition, or an automatic series) measures the
+  drift with the drift objective before the surface scan, so the scan columns are placed on the sample as it is now, not with the offset
+  left over from the end of the last repetition. The overview z of that measurement follows the surface of the previous repetition.
 - Overview images are centred on the centre of gravity of the active grid points (one tile or a mosaic), the image centre now being the
   planned point: the targets are shifted by the scanner offset, the pixel-to-um conversion of the image centre and the FOV offset of the
   measuring objective (the laser, not the image centre, sits on a target). With a surface scan the overview z starts at the median of the

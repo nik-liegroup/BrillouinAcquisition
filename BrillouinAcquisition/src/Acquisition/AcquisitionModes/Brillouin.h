@@ -611,6 +611,8 @@ public slots:
 	// tiled together - i.e. the outline of the area actually covered by that group's tiles,
 	// not each individual tile.
 	std::vector<std::pair<POINT2, POINT2>> overviewTileOutlinesUm() const;
+	// The same for the frames of another objective (its scale calibration): the area its mosaic covers, in the same frame
+	std::vector<std::pair<POINT2, POINT2>> overviewTileOutlinesUmFor(const ScaleCalibrationData& scaleCalibration) const;
 	// The single grid-center point used by the "single image" coverage mode.
 	POINT2 overviewGridCenterXY() const;
 	// centre of gravity of the active grid points, kept so that an image of this field of view still covers the grid where it can
@@ -811,7 +813,13 @@ private:
 	// useGridHysteresisCompensation (compensated approach vs. a direct move).
 	// With the drift offset (see gridOffset()) added to x and y, unless applyGridOffset is false (the medium reference of the surface
 	// scan is always taken at the same stage position).
-	void approachGridPosition(const POINT3& position, bool applyGridOffset = true);
+	// Returns the target that was sent (with the offset).
+	POINT3 approachGridPosition(const POINT3& position, bool applyGridOffset = true);
+	// Polls the position until it is within 2 um of target (every axis), it has come to rest elsewhere, or timeoutS has passed; true only at
+	// the target. Not every stand reports the end of a move
+	// (ZeissECU sends and returns at once), and nothing that needs the stage to be there - turning the nosepiece after the z retract, an
+	// image - may go on before it is.
+	bool waitForStage(const POINT3& target, double timeoutS);
 
 	std::string getRepetitionFilename();
 
@@ -885,9 +893,17 @@ private:
 		std::unique_ptr<StorageWrapper>& storage, const std::vector<OverviewMoment>& moments, const std::vector<double>& directionsZ,
 		gsl::index pointIndex
 	);
+	// driftOnly: only the drift objective takes its overview (see measureDriftBeforeSurfaceScan()).
 	bool runOverviewEvent(
-		std::unique_ptr<StorageWrapper>& storage, const OverviewMoment& moment, const std::vector<double>& directionsZ, gsl::index pointIndex
+		std::unique_ptr<StorageWrapper>& storage, const OverviewMoment& moment, const std::vector<double>& directionsZ, gsl::index pointIndex,
+		bool driftOnly = false
 	);
+	// Repetition that goes on with the drift of the previous one (see beginOverviewSeries()), with a surface scan to follow: measures the
+	// drift now, before that scan, so its columns are placed with the current offset and not the one left over from the end of the last
+	// repetition. Does the overview series setup (beginOverviewSeries()) early; runMeasurementPhase() then does not repeat it.
+	void measureDriftBeforeSurfaceScan(std::unique_ptr<StorageWrapper>& storage);
+	bool driftCarriesOverToThisStart();
+	bool m_overviewSeriesBegun{ false };
 	// One objective's overview of one event: for another objective the whole cycle (retract, switch, focus, capture, switch back, restore).
 	// The centre slices of its tiles go to `driftTiles` if given.
 	bool captureObjectiveOverview(
@@ -904,6 +920,20 @@ private:
 	// The offset that every stage target of the grid and the overviews carries (the drift, 0 if drift correction is off).
 	POINT2 gridOffset() const { return m_gridOffset; }
 	void refreshGridOffset();
+	// Shows the grid offset in the live view: the overlay (grid, ROIs, overview outlines) follows the sample like the stage targets do.
+	void publishGridOffset();
+	// At the end of a run (finished or stopped): the drift goes into the grid and the ROIs of the GUI (s_driftBakedIntoGrid). The engine keeps
+	// its drift reference unchanged for a Continue of the run (which loads the original grid and the offsets from the file); a new Start takes
+	// it over with handOverDriftToNewStart().
+	void bakeDriftIntoGrid();
+	// A new Start after a run whose drift went into the grid: the drift reference of that run stays (its next overview measures the drift
+	// since the end of that run), the total drift minus what the grid was moved by. False if there is nothing to hand over.
+	bool handOverDriftToNewStart();
+	std::optional<POINT2> m_pendingDriftHandOver;
+	POINT2 m_publishedGridOffset{ 0.0, 0.0 };
+	// [um] how far bakeDriftIntoGrid() moved the grid at the end of the last run; only the first repetition of the next run compares its grid
+	// with that run's (later repetitions compare with repetitions of their own run, which were not moved)
+	POINT2 m_lastRunGridShift{ 0.0, 0.0 };
 	// Repeats the surface scan after point ll and moves the remaining points to the new surface (everything of it is saved).
 	void repeatSurfaceScan(std::unique_ptr<StorageWrapper>& storage, gsl::index pointIndex, const std::vector<double>& directionsZ);
 	// Writes an event's record to the file, and the offset every measured point carried.
@@ -1117,6 +1147,8 @@ signals:
 	void s_timeToCalibration(int);	// time to next calibration
 	void s_calibrationRunning(bool);	// is calibration running
 	void s_scanOrderChanged(SCAN_ORDER);
+	// The drift [um] of a finished or stopped run, to be added to the grid limits and the ROI polygons (the live view shows it already).
+	void s_driftBakedIntoGrid(POINT2);
 	// The mode flag travels with the positions rather than being re-read by the receiver -
 	// this signal crosses threads via a queued connection, so by the time a receiver's slot
 	// actually runs, gridCoordinatesAbsolute may already have changed again (e.g. the operator

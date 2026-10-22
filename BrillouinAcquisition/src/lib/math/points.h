@@ -11,7 +11,7 @@ struct POINT3 {
 		z += pos.z;
 		return *this;
 	}
-	POINT3 operator+(const POINT3& pos) {
+	POINT3 operator+(const POINT3& pos) const {
 		return POINT3{ x + pos.x, y + pos.y, z + pos.z };
 	}
 	POINT3& operator-=(const POINT3& pos) {
@@ -20,7 +20,7 @@ struct POINT3 {
 		z -= pos.z;
 		return *this;
 	}
-	POINT3 operator-(const POINT3& pos) {
+	POINT3 operator-(const POINT3& pos) const {
 		return POINT3{ x - pos.x, y - pos.y, z - pos.z };
 	}
 	POINT3 operator*(double scaling) const {
@@ -53,7 +53,7 @@ struct POINT2 {
 		y += pos.y;
 		return *this;
 	}
-	POINT2 operator+(const POINT2& pos) {
+	POINT2 operator+(const POINT2& pos) const {
 		return POINT2{ x + pos.x, y + pos.y };
 	}
 	POINT2& operator-=(const POINT2& pos) {
@@ -61,7 +61,7 @@ struct POINT2 {
 		y -= pos.y;
 		return *this;
 	}
-	POINT2 operator-(const POINT2& pos) {
+	POINT2 operator-(const POINT2& pos) const {
 		return POINT2{ x - pos.x, y - pos.y };
 	}
 	POINT2 operator*(double scaling) const {
@@ -89,10 +89,10 @@ struct INDEX3 {
 	int x{ 0 };
 	int y{ 0 };
 	int z{ 0 };
-	INDEX3 operator+(const INDEX3& pos) {
+	INDEX3 operator+(const INDEX3& pos) const {
 		return INDEX3{ x + pos.x, y + pos.y, z + pos.z };
 	}
-	INDEX3 operator-(const INDEX3& pos) {
+	INDEX3 operator-(const INDEX3& pos) const {
 		return INDEX3{ x - pos.x, y - pos.y, z - pos.z };
 	}
 };

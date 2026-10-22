@@ -270,6 +270,7 @@ void BrillouinAcquisition::setupOverviewTab() {
 			}
 		} else if (auto* entry = findOverviewObjectiveEntry(m_overviewSelectedSlot, true)) {
 			entry->active = checked;
+			updateOverviewTileOutlines();
 		}
 		updateOverviewTab();
 		updateEstimatedAcquisitionTime();
@@ -316,6 +317,7 @@ void BrillouinAcquisition::setupOverviewTab() {
 			}
 		} else if (auto* entry = findOverviewObjectiveEntry(m_overviewSelectedSlot, true)) {
 			entry->fullGrid = checked;
+			updateOverviewTileOutlines();
 		}
 		updateOverviewTab();
 	});
@@ -690,6 +692,11 @@ void BrillouinAcquisition::syncOverviewObjectiveSettingsOnSwitch(int previousSlo
 	auto& settings = m_Brillouin->settings;
 	// The Fluorescence tab's BF overview settings belong to the objective that measures. Store them as the entry of the one that leaves
 	// and take over the entry of the one that arrives (if it has one: otherwise the settings stay as they are, the new objective inherits).
+	// While a measurement runs, every objective change is the software's own (overview cycles, resume): the settings belong to the objective
+	// that measures and must stay as they are, whatever a late report of the nosepiece looks like.
+	if (m_enabledModes != ACQUISITION_MODE::NONE) {
+		return;
+	}
 	const auto legacyAsEntry = [&settings](int slot) {
 		OVERVIEW_OBJECTIVE_SETTINGS entry;
 		entry.slot = slot;

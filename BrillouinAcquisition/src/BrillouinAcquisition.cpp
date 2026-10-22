@@ -319,6 +319,13 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		this,
 		[this](SCAN_ORDER scanOrder) { scanOrderChanged(scanOrder); }
 	);
+	// the drift of a finished or stopped run moves into the grid and the ROIs
+	connection = QWidget::connect(
+		m_Brillouin,
+		&Brillouin::s_driftBakedIntoGrid,
+		this,
+		[this](POINT2 driftUm) { applyDriftToGrid(driftUm); }
+	);
 
 	// slot to positions in brightfield
 	connection = QWidget::connect(
@@ -3140,6 +3147,44 @@ void BrillouinAcquisition::relocateBeamKeepingGridFixed(POINT2 newMarkerPix) {
 	QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
 }
 
+/*
+ * The grid limits and both ROI polygons move by the drift the run ended with, in the frame they are stored in (grid coordinates: the
+ * drift is added to every stage target the same way in relative and absolute mode). The live view showed them there already; its drift
+ * offset is taken out in the same step, so nothing moves on screen. A new start begins from these and measures without remembering a drift.
+ */
+void BrillouinAcquisition::applyDriftToGrid(POINT2 driftUm) {
+	if (!m_Brillouin || !std::isfinite(driftUm.x) || !std::isfinite(driftUm.y)) {
+		return;
+	}
+	auto& settings = m_Brillouin->settings;
+	settings.setXMin(settings.xMin + driftUm.x);
+	settings.setXMax(settings.xMax + driftUm.x);
+	settings.setYMin(settings.yMin + driftUm.y);
+	settings.setYMax(settings.yMax + driftUm.y);
+	for (const auto& target : { mainRoiTarget(), backgroundRoiTarget() }) {
+		// the polygon and the one an undo of "clear" would bring back
+		for (auto* polygon : { target.polygon, target.lastCleared }) {
+			if (!polygon) {
+				continue;
+			}
+			for (auto& point : *polygon) {
+				point.x += driftUm.x;
+				point.y += driftUm.y;
+			}
+		}
+		updateRoiPolygonPreviewFor(target);
+	}
+	if (m_scanControl) {
+		QMetaObject::invokeMethod(
+			m_scanControl,
+			[scanControl = m_scanControl]() { scanControl->setDriftDisplayOffset(POINT2{ 0.0, 0.0 }); },
+			Qt::QueuedConnection
+		);
+	}
+	updateBrillouinSettings();
+	QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
+}
+
 void BrillouinAcquisition::drawPositionScannerMarker(POINT2 positionScanner) {
 	m_positionScanner = positionScanner;
 	if (m_scanControl) {
@@ -4285,7 +4330,11 @@ void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 }
 
 void BrillouinAcquisition::updateScaleCalibrationTranslationValue(POINT2 translation) {
-	// Initialize all values
+	// Blocked, like updateScaleCalibrationData(): this signal carries a snapshot of both values, which can be older than what was typed
+	// since. Setting a box from it would then call setTranslationDistanceX/Y() with that stale value, which sends the next snapshot, ...
+	// - with x and y different, the two boxes and the values the calibration uses could end up disagreeing.
+	const QSignalBlocker blockerDx(m_scaleCalibrationDialogUi.dx);
+	const QSignalBlocker blockerDy(m_scaleCalibrationDialogUi.dy);
 	m_scaleCalibrationDialogUi.dx->setValue(translation.x);
 	m_scaleCalibrationDialogUi.dy->setValue(translation.y);
 }
@@ -6981,7 +7030,6 @@ void BrillouinAcquisition::updateBackgroundPositionsPreview() {
  */
 void BrillouinAcquisition::updateOverviewTileOutlines() {
 	const bool overviewActive = m_showPositions && m_scanControl && m_Brillouin->settings.saveOverviewBrightfieldPerZ;
-	const bool showTiles = overviewActive && m_Brillouin->settings.overviewBrightfieldFullGrid;
 	// Shows whenever the overview image isn't the mosaic.
 	const bool showPoints = overviewActive && !m_Brillouin->settings.overviewBrightfieldFullGrid;
 	const bool gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
@@ -6989,7 +7037,26 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 	// point markers below live in the same frame and need the same conversion.
 	const auto offset = currentGridOffset(gridAbsolute);
 
-	if (!showTiles) {
+	// Every objective that takes a mosaic: the objective that measures (dashed) and the others with their own field of view (dash-dot).
+	std::vector<std::pair<std::pair<POINT2, POINT2>, bool>> outlines;
+	if (m_showPositions && m_scanControl) {
+		if (overviewActive && m_Brillouin->settings.overviewBrightfieldFullGrid) {
+			for (const auto& outline : m_Brillouin->overviewTileOutlinesUm()) {
+				outlines.push_back({ outline, true });
+			}
+		}
+		const auto measuringSlot = overviewMeasuringSlot();
+		for (const auto& entry : m_Brillouin->settings.overviewObjectives) {
+			if (!entry.active || !entry.fullGrid || entry.slot == measuringSlot || !m_scanControl->hasObjectiveCalibration(entry.slot)) {
+				continue;
+			}
+			for (const auto& outline : m_Brillouin->overviewTileOutlinesUmFor(m_scanControl->getObjectiveCalibration(entry.slot))) {
+				outlines.push_back({ outline, false });
+			}
+		}
+	}
+
+	if (outlines.empty()) {
 		if (!m_overviewTileRects.empty()) {
 			for (auto* rect : m_overviewTileRects) {
 				ui->customplot_brightfield->removeItem(rect);
@@ -6998,20 +7065,20 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 			ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 		}
 	} else {
-		const auto outlines = m_Brillouin->overviewTileOutlinesUm();
-
 		while (m_overviewTileRects.size() > outlines.size()) {
 			ui->customplot_brightfield->removeItem(m_overviewTileRects.back());
 			m_overviewTileRects.pop_back();
 		}
 		while (m_overviewTileRects.size() < outlines.size()) {
 			auto* rect = new QCPItemRect(ui->customplot_brightfield);
-			QPen pen(Qt::yellow);
-			pen.setStyle(Qt::DashLine);
-			pen.setWidth(2);
-			rect->setPen(pen);
 			rect->setBrush(Qt::NoBrush);
 			m_overviewTileRects.push_back(rect);
+		}
+		for (size_t i = 0; i < outlines.size(); i++) {
+			QPen pen(Qt::yellow);
+			pen.setStyle(outlines[i].second ? Qt::DashLine : Qt::DashDotLine);
+			pen.setWidth(2);
+			m_overviewTileRects[i]->setPen(pen);
 		}
 
 		// corner.first/second come from overviewTileOutlinesUm(), which - like m_orderedPositions/
@@ -7024,7 +7091,7 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 		// rather than a live getPositionOffset() call, for the same cross-thread-race reason the
 		// ROI polygon overlay was fixed for.
 		for (size_t i = 0; i < outlines.size(); i++) {
-			const auto& corner = outlines[i];
+			const auto& corner = outlines[i].first;
 			const auto topLeft = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ corner.first.x + offset.x, corner.first.y + offset.y }));
 			const auto bottomRight = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ corner.second.x + offset.x, corner.second.y + offset.y }));
 			m_overviewTileRects[i]->topLeft->setCoords(topLeft.x, topLeft.y);

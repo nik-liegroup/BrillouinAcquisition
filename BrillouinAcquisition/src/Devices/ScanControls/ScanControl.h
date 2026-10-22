@@ -298,6 +298,9 @@ public slots:
 	// what let those overlays drift apart from the AOI markers whenever the scanner
 	// position was non-zero.
 	POINT2 getPositionOffset(bool positionIsAbsolute);
+	// The drift [um] a measurement applies to its stage targets: the overlay of grid, ROIs and outlines is drawn that far from the planned
+	// positions, so it stays on the sample the laser is sent to. Display only; set by the engine (queued), 0 outside a drift-corrected run.
+	void setDriftDisplayOffset(POINT2 offsetUm);
 
 	virtual POINT2 pixToMicroMeter(POINT2 positionPix);
 	virtual POINT2 microMeterToPix(POINT2 positionMicrometer);
@@ -339,6 +342,7 @@ protected:
 	bool m_AOI_positionsAbsolute{ false };
 	POINT2 m_positionStageOld{ 0, 0 };
 	POINT2 m_positionScannerOld{ 0, 0 };
+	POINT2 m_driftDisplayUm{ 0, 0 };		// [um] drift added to the displayed grid (see setDriftDisplayOffset())
 
 private:
 	std::vector<POINT2> convertPositionsToPix();

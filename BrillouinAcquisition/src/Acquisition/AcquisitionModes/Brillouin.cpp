@@ -300,6 +300,8 @@ void Brillouin::startRepetitions() {
 	if (m_repetitionTimer != nullptr && m_repetitionTimer->isActive()) {
 		m_repetitionTimer->stop();
 		m_startOfLastRepetition.invalidate();
+		// stopped between two repetitions: the finished ones carry the drift, as at the end of a series
+		bakeDriftIntoGrid();
 		finaliseRepetitions(m_currentRepetition, -2);
 		setAcquisitionStatus(ACQUISITION_STATUS::STOPPED);
 		return;
@@ -312,14 +314,19 @@ void Brillouin::startRepetitions() {
 
 	m_currentRepetition = 0;
 	m_startOfLastRepetition.start();
-	// a new start begins without any drift measured before - except the "Continue" of a finished repetition, which goes on as the next repetition
-	// of an automatic series would (beginOverviewSeries() carries the drift over if the start fits)
-	if (!(m_carryDriftOnStart && m_driftController.hasReference())) {
+	// After a run whose drift went into the grid, the drift reference of that run is taken over (minus the move of the grid), so the
+	// next overview - before the surface scan if there is one - measures the drift since the end of that run. beginOverviewSeries() still
+	// decides whether it applies (drift correction on, same drift objective, and in relative coordinates the same start position).
+	// Without one, a new start begins without any drift measured before - except the "Continue" of a finished repetition, which goes on as the
+	// next repetition of an automatic series would.
+	if (!handOverDriftToNewStart() && !(m_carryDriftOnStart && m_driftController.hasReference())) {
 		m_driftController.reset();
 		m_driftReferenceTiles.clear();
 		m_driftReferenceSlot = -1;
 		m_gridOffset = POINT2{ 0.0, 0.0 };
 	}
+	m_pendingDriftHandOver.reset();
+	publishGridOffset();
 	m_carryDriftOnStart = false;
 
 	m_repetitionTimer = new QTimer();
@@ -404,7 +411,10 @@ void Brillouin::waitForNextRepetition() {
 }
 
 void Brillouin::finishRepetition() {
+	// the next repetition of this run compares its grid with this one, which has not been moved
+	m_lastRunGridShift = POINT2{ 0.0, 0.0 };
 	m_seriesActive = false;
+	m_overviewSeriesBegun = false;
 	m_currentRepetition++;
 	// Check if this was the last repetition
 	if (m_currentRepetition < m_settings.repetitions.count) {
@@ -412,6 +422,8 @@ void Brillouin::finishRepetition() {
 		setAcquisitionStatus(ACQUISITION_STATUS::WAITFORREPETITION);
 	} else {
 		m_startOfLastRepetition.invalidate();
+		// The drift of the whole run moves into the grid and the ROIs (the next start begins with them where the sample is now)
+		bakeDriftIntoGrid();
 		// Cleanup after last repetition
 		finaliseRepetitions();
 		setAcquisitionStatus(ACQUISITION_STATUS::FINISHED);
@@ -597,6 +609,7 @@ std::set<std::pair<int, int>> Brillouin::getSurfaceInterpolatedXYIndices() const
 
 void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 	m_seriesActive = false;
+	m_overviewSeriesBegun = false;
 	m_repetitionTimer->stop();
 	m_startOfLastRepetition.invalidate();
 	if (m_andor) {
@@ -634,6 +647,9 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 		);
 	}
 
+	// The grid and the ROIs follow the sample to where the drift has put them; the file keeps the original ones and the offsets, so a
+	// continue starts from those, not from these.
+	bakeDriftIntoGrid();
 	m_acquisition->disableMode(ACQUISITION_MODE::BRILLOUIN);
 
 	// Here we wait until the storage object indicate it finished to write to the file.
@@ -2553,6 +2569,10 @@ std::vector<POINT2> Brillouin::surfacePreScanGridXY() const {
 }
 
 std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUm() const {
+	return overviewTileOutlinesUmFor(m_scanControl ? m_scanControl->getScaleCalibration() : ScaleCalibrationData{});
+}
+
+std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUmFor(const ScaleCalibrationData& scaleCalibration) const {
 	// See overviewTileCentersXY() for why relative mode must use m_orderedPositionsRelative
 	// and a zero origin here, not m_orderedPositions/m_startPosition.
 	const auto& positions = m_settings.gridCoordinatesAbsolute ? m_orderedPositions : m_orderedPositionsRelative;
@@ -2567,7 +2587,7 @@ std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUm() const
 		return { { gridCenter, gridCenter } };
 	}
 
-	const auto fov = overviewTileFootprintUm();
+	const auto fov = overviewTileFootprintUmFor(scaleCalibration);
 	const auto fovWidthUm = fov.x;
 	const auto fovHeightUm = fov.y;
 	if (fovWidthUm <= 0.0 || fovHeightUm <= 0.0) {
@@ -3133,6 +3153,7 @@ std::string Brillouin::getRepetitionFilename() {
 
 void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	m_seriesActive = false;
+	m_overviewSeriesBegun = false;
 	setAcquisitionStatus(ACQUISITION_STATUS::STARTED);
 	// prepare camera for image acquisition
 
@@ -3218,6 +3239,11 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	 * Update the positions vector
 	 */
 	updatePositions();
+	// A repetition that goes on with the drift of the last one: measured now, so the surface scan below (or the surface reused) is placed
+	// on the sample as it is, not as it was at the end of the last repetition
+	if (!m_abort && !m_resumeSurface) {
+		measureDriftBeforeSurfaceScan(storage);
+	}
 	// A surface scan of an earlier repetition of this file: the operator decides (popup with a timer, default new scan as always)
 	PreviousSurface previousSurface;
 	const auto surfaceStrategy = (m_abort || m_resumeSurface) ? SURFACE_STRATEGY::NEW_SCAN : chooseSurfaceStrategy(storage, &previousSurface);
@@ -3415,9 +3441,9 @@ void Brillouin::closeDoseProtectionShutter() {
 	m_scanControl->setRLShutterOpen(false);
 }
 
-void Brillouin::approachGridPosition(const POINT3& positionPlanned, bool applyGridOffset) {
+POINT3 Brillouin::approachGridPosition(const POINT3& positionPlanned, bool applyGridOffset) {
 	if (!m_scanControl) {
-		return;
+		return positionPlanned;
 	}
 	// The drift measured from the overviews moves every target with the sample (0 unless drift correction is on).
 	auto position = positionPlanned;
@@ -3433,11 +3459,20 @@ void Brillouin::approachGridPosition(const POINT3& positionPlanned, bool applyGr
 	// opened for the narrow window immediately around an actual camera exposure, so a move
 	// (like any other non-integrating moment) is simply left in whatever state the last
 	// acquireAndorFrame() call left it - already closed, with nothing extra to do here.
+	// Before a long move the start of the next exposure must not fall into the travel (ZeissECU returns from a move at once): the jump to
+	// a new line, plane, surface-scan column or back from an overview. A short step is over before an exposure starts and is not waited for.
+	// (the cached position - no hardware query per point)
+	const auto previous = m_scanControl->ScanControl::getPosition(PositionType::BOTH);
+	const auto longMove = std::abs(position.x - previous.x) > 10.0 || std::abs(position.y - previous.y) > 10.0 || std::abs(position.z - previous.z) > 10.0;
 	if (m_settings.useGridHysteresisCompensation) {
 		m_scanControl->setPositionCompensated(position);
 	} else {
 		m_scanControl->setPosition(position);
 	}
+	if (longMove) {
+		waitForStage(position, 30.0);
+	}
+	return position;
 }
 
 void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
@@ -3816,7 +3851,16 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 
 	// settings used and calibrations of the overview objectives (only written when the feature is on)
 	if (engine) {
-		beginOverviewSeries(storage);
+		if (m_overviewSeriesBegun) {
+			// set up before the surface scan (measureDriftBeforeSurfaceScan()); only the per-point arrays follow the plan as it is now
+			// (the surface review may have dropped points)
+			const auto nan = std::numeric_limits<double>::quiet_NaN();
+			m_pointOffsetX.assign(m_orderedPositions.size(), nan);
+			m_pointOffsetY.assign(m_orderedPositions.size(), nan);
+		} else {
+			beginOverviewSeries(storage);
+		}
+		m_overviewSeriesBegun = false;
 	}
 
 	if (legacyOverviewMetadata) {
