@@ -38,6 +38,10 @@ void Acquisition::openFile(const StoragePath& path, int flag, bool forceOpen) {
 	m_path = path;
 	
 	emit(s_filenameChanged(m_path.filename));
+	// (a series that opens its own files, a new file per repetition, forces the open: it is the same sample)
+	if (!forceOpen) {
+		emit(s_newSample());
+	}
 	m_storage = std::make_unique <StorageWrapper>(nullptr, m_path.fullPath(), flag);
 
 	if (!m_storage->isWritable()) {

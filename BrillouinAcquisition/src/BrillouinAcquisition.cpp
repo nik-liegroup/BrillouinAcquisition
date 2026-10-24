@@ -212,6 +212,16 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		[this](std::string filename) { updateFilename(filename); }
 	);
 
+	// a file created or opened by hand is another sample: the drift reference of the last run does not belong to it
+	connection = QWidget::connect(
+		m_acquisition,
+		&Acquisition::s_newSample,
+		this,
+		[this]() {
+			QMetaObject::invokeMethod(m_Brillouin, [brillouin = m_Brillouin]() { brillouin->forgetDriftReference(); }, Qt::AutoConnection);
+		}
+	);
+
 	// slot to show current acquisition progress
 	connection = QWidget::connect(
 		m_acquisition,

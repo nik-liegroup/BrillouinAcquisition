@@ -548,6 +548,10 @@ public slots:
 	// stage has to be at the start of the earlier repetition as well (sameStart tells), in an absolute grid the position does not matter.
 	bool canCarryDriftToNextStart(bool* sameStart = nullptr);
 	void setCarryDriftOnStart(bool carry) { m_carryDriftOnStart = carry; }
+	// A new file was created or opened by hand: the drift reference (and the drift of the sample it belongs to) is of another sample, so
+	// nothing of it is carried over into the next run. Does nothing while a run is going. A series that opens its own files (a new file per
+	// repetition) does not call this: it is the same sample.
+	void forgetDriftReference();
 	void setResumeOptions(bool moveToStart, bool switchObjective) {
 		m_resumeMoveToStart = moveToStart;
 		m_resumeSwitchObjective = switchObjective;
@@ -768,11 +772,13 @@ private:
 	// mosaic tile centers (full grid).
 	std::vector<POINT2> overviewImageXY() const;
 	// z-targets to capture at the overview image's xy point(s) for the given z-index: a
-	// single flat value (overviewFlatZAbs(), active full-stack toggle off), or zSteps values
-	// spanning either the grid's own zMin..zMax (surface-follow off) or the global
-	// lowest-to-highest found surface offset by zMin/zMax (surface-follow on, see
-	// m_surfaceZMinAbs/m_surfaceZMaxAbs).
+	// single flat value (overviewFlatZAbs(), active full-stack toggle off), or one value per
+	// plane of the grid: the grid's own planes (surface-follow off: the same set for every
+	// point) or spread evenly between the lowest and the highest z the grid is measured at
+	// (surface-follow on, see overviewSpreadZAbs()).
 	std::vector<double> overviewStackZAbs(int zIndex, const std::vector<double>& directionsZ) const;
+	// `planes` z values evenly spread between the lowest and highest z of m_orderedPositions
+	std::vector<double> overviewSpreadZAbs(size_t planes) const;
 	// the same for a given choice of stack or single plane (the overview objectives each have their own)
 	std::vector<double> overviewStackZAbsFor(bool fullStack, int zIndex, const std::vector<double>& directionsZ) const;
 	// One xy/z target per image actually captured for this z-index: the overview image's
@@ -874,6 +880,9 @@ private:
 		int tilesUsed{ 0 };
 		double secondsSinceReference{ 0.0 };
 		double registrationSeconds{ 0.0 };
+		// The reference carried over from the previous run could not be used for the first overview of this one (no tile paired, or the
+		// correlation too low: another ROI, another sample): the overview became the new reference instead (decision REFERENCE).
+		bool referenceReplaced{ false };
 	};
 
 	// True if any setting that needs the overview engine is on; false: the measurement loop is the original one.
@@ -952,6 +961,9 @@ private:
 	void setStorageState(const std::string& state);
 	bool m_resuming{ false };
 	bool m_carryDriftOnStart{ false };
+	// The drift reference of this run was taken over from the previous run and has not been compared with an overview of this run yet
+	// (set by beginOverviewSeries(), cleared by the first drift evaluation of the run, see processDriftOverview()).
+	bool m_driftCarriedUnverified{ false };
 	// What the running repetition uses of the drift correction, the overviews and the surface following. `settings` (what the GUI edits) is the
 	// same object as m_settings, so a change made while a repetition runs - typically to prepare the next one - would reach it at once: it is
 	// taken when the overview series of the repetition begins and used from then on (m_seriesActive), not what the GUI holds now.

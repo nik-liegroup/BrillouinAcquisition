@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "BrillouinAcquisition"
+abstract: >-
+  Software for acquiring Brillouin microscopy data; this version adds multi-objective overviews, drift
+  correction during the measurement, surface rescans and the continuation of interrupted measurements.
+authors:
+  - family-names: Gampl
+    given-names: Niklas
+  - name: "BrillouinAcquisition contributors"
+version: 0.4.0
+license: GPL-3.0-only
+repository-code: "https://github.com/nik-liegroup/BrillouinAcquisition"
+keywords:
+  - Brillouin microscopy
+  - microscope control
+references:
+  - type: software
+    title: "BrillouinAcquisition"
+    authors:
+      - name: "BrillouinAcquisition contributors"
+    repository-code: "https://github.com/BrillouinMicroscopy/BrillouinAcquisition"
+    license: GPL-3.0-only

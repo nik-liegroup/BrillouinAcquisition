@@ -74,14 +74,27 @@ namespace drift {
 		double maxNcc{ 0.0 };			// the best tile's correlation (also if below minNcc)
 	};
 
-	// Registers every tile of `moved` against the tile of `reference` at (nearly) the same stage position and combines the results: the
-	// median step over the tiles with a correlation >= minNcc, the tiles further than outlierUm from it dropped, and the mean of the rest
-	// weighted by correlation. Searches shifts up to maxShiftUm; tiles are paired if their stage positions are within
-	// maxTileDistanceUm.
+	// Registers every tile of `moved` against a tile of `reference` and combines the results: the median step over the tiles with a
+	// correlation >= minNcc, the tiles further than outlierUm from it dropped, and the mean of the rest weighted by correlation.
+	// Searches shifts up to maxShiftUm.
+	//
+	// Pairing: a tile is registered against the reference tile whose planned position (TileFrame::pairingPositionUm()) is nearest.
+	//  - If both overviews consist of one tile, the two are always paired, however far apart their planned positions are (the ROI or the
+	//    grid centre may have been moved): the registration (overlap, correlation limit) decides whether they show the same sample, and
+	//    shiftToDriftUm() takes the difference of the stage positions into account.
+	//  - With several tiles the nearest one is used only if it is within half the tile spacing (the smallest distance between two tiles
+	//    of the overview), so that a tile is never registered against its neighbour.
+	// maxTileDistanceUm >= 0 replaces this by a fixed limit for every pairing.
 	StepMeasurement measureStep(
 		const std::vector<TileFrame>& reference, const std::vector<TileFrame>& moved, const StageMap& map,
-		double minNcc = 0.6, double maxShiftUm = 250.0, double maxTileDistanceUm = 60.0, double outlierUm = 3.0
+		double minNcc = 0.6, double maxShiftUm = 250.0, double maxTileDistanceUm = -1.0, double outlierUm = 3.0
 	);
+
+	// The distance [um] up to which the registration of two overviews searches for a shift: 1.5 times the largest step that would be
+	// believed (so that a step slightly above it is found and rejected as implausible instead of not being found), but not more than the
+	// shift at which two frames of the smallest field of view among `tiles` still overlap by minOverlap, and at least 50 um (as long as the
+	// field of view allows it). Without usable tiles or scale: 1.5 times maxStepUm limited to 50..500 um.
+	double maxSearchShiftUm(double maxStepUm, const std::vector<TileFrame>& tiles, const StageMap& map, double minOverlap = 0.4);
 
 	struct DriftSettings {
 		bool enabled{ false };

@@ -2224,15 +2224,36 @@ void Brillouin::applySurfaceFollowPlan() {
 }
 
 /*
- * Flat plan z for this z-index - origin.z + directionsZ[zIndex], always, regardless of
- * surface-follow state or grid coordinate mode. Surface-tracking for the overview image is
- * expressed exclusively through overviewStackZAbs()'s full-stack mode; "sampled grid points"
- * always uses this flat value directly, never a stack.
+ * `planes` z values spread evenly between the lowest and the highest z any point of the grid is measured at (m_orderedPositions: with
+ * the surface scan these are the z of the found surface plus the point's own offset), or the middle of that range for a single plane.
+ * Empty if there are no positions.
+ */
+std::vector<double> Brillouin::overviewSpreadZAbs(size_t planes) const {
+	if (m_orderedPositions.empty() || planes == 0) {
+		return {};
+	}
+	const auto range = std::minmax_element(
+		m_orderedPositions.begin(), m_orderedPositions.end(), [](const POINT3& a, const POINT3& b) { return a.z < b.z; }
+	);
+	if (planes == 1) {
+		return { 0.5 * (range.first->z + range.second->z) };
+	}
+	return simplemath::linspace(range.first->z, range.second->z, planes);
+}
+
+/*
+ * Flat plan z for this z-index, regardless of grid coordinate mode. Without the surface scan: origin.z + directionsZ[zIndex], the z of
+ * that plane of the grid (the same for every point). With the surface scan the planes are spread between the lowest and the highest z the
+ * grid is measured at (overviewSpreadZAbs()), the same number of planes as the grid has. Surface-tracking for the overview image is
+ * otherwise expressed through overviewStackZAbs()'s full-stack mode.
  */
 double Brillouin::overviewFlatZAbs(int zIndex, const std::vector<double>& directionsZ) const {
 	const auto clampedZIndex = std::clamp(zIndex, 0, (int)directionsZ.size() - 1);
-	// with the surface scan: starting at the median z of the found surface, the planes spaced as the grid has them
 	if (useSurfaceFollowActive() && m_surfaceZRangeValid) {
+		const auto spread = overviewSpreadZAbs(directionsZ.size());
+		if (!spread.empty()) {
+			return spread[(size_t)clampedZIndex];
+		}
 		return m_surfaceZMedianAbs + (directionsZ[clampedZIndex] - directionsZ.front());
 	}
 	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
@@ -2261,12 +2282,12 @@ std::vector<POINT2> Brillouin::overviewImageXY() const {
  * (overviewBrightfieldFullGrid) - overviewBrightfieldFullStackSingle for "single image",
  * overviewBrightfieldFullStackMosaic for "full grid (mosaic)", independent of each other. With
  * the active one off, this is just the single flat plan z (legacy behaviour, 1 image per
- * z-plane). With it on, this is zSteps values spanning either the grid's own zMin..zMax
- * (surface-follow off), or the global lowest-to-highest found surface offset by zMin/zMax
- * (surface-follow on) - e.g. lowest surface 100, highest 120, zMin/zMax -10/20 -> stack from
- * 90 to 140 at zSteps points. Falls back to the non-surface-follow range if surface-follow is
- * on but nothing was ever found, so this degrades gracefully instead of using stale/default
- * zero bounds.
+ * z-plane). With it on, this is one image per plane of the grid (zSteps): without the surface
+ * scan at the z of the grid's own planes (origin.z + directionsZ - every point has the same
+ * set), with the surface scan spread evenly between the lowest and the highest z the grid is
+ * measured at (overviewSpreadZAbs()) - e.g. lowest 90, highest 140, 5 planes -> 90, 102.5, ...,
+ * 140. Falls back to the grid's own planes if surface-follow is on but nothing was ever found,
+ * so this degrades gracefully instead of using stale/default zero bounds.
  */
 std::vector<double> Brillouin::overviewStackZAbs(int zIndex, const std::vector<double>& directionsZ) const {
 	const auto fullStackActive = m_settings.overviewBrightfieldFullGrid
@@ -2280,16 +2301,22 @@ std::vector<double> Brillouin::overviewStackZAbsFor(bool fullStackActive, int zI
 		return { overviewFlatZAbs(zIndex, directionsZ) };
 	}
 
-	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
+	if (directionsZ.empty()) {
+		return {};
+	}
 	if (useSurfaceFollowActive() && m_surfaceZRangeValid) {
-		return simplemath::linspace(
-			m_surfaceZMedianAbs,
-			m_surfaceZMedianAbs + (m_settings.zMax - m_settings.zMin),
-			m_settings.zSteps
-		);
+		const auto spread = overviewSpreadZAbs(directionsZ.size());
+		if (!spread.empty()) {
+			return spread;
+		}
 	}
 
-	return simplemath::linspace(origin.z + m_settings.zMin, origin.z + m_settings.zMax, m_settings.zSteps);
+	const auto origin = m_settings.gridCoordinatesAbsolute ? resolvedGridOriginUm() : m_startPosition;
+	std::vector<double> planes;
+	for (const auto z : directionsZ) {
+		planes.push_back(origin.z + z);
+	}
+	return planes;
 }
 
 /*
