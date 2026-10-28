@@ -611,6 +611,8 @@ public slots:
 	// tiled together - i.e. the outline of the area actually covered by that group's tiles,
 	// not each individual tile.
 	std::vector<std::pair<POINT2, POINT2>> overviewTileOutlinesUm() const;
+	// The same for the frames of another objective (its scale calibration): the area its mosaic covers, in the same frame
+	std::vector<std::pair<POINT2, POINT2>> overviewTileOutlinesUmFor(const ScaleCalibrationData& scaleCalibration) const;
 	// The single grid-center point used by the "single image" coverage mode.
 	POINT2 overviewGridCenterXY() const;
 	// centre of gravity of the active grid points, kept so that an image of this field of view still covers the grid where it can
@@ -919,6 +921,9 @@ private:
 	// run is continued from the file with that offset).
 	void bakeDriftIntoGrid(bool keepForContinue);
 	POINT2 m_publishedGridOffset{ 0.0, 0.0 };
+	// [um] how far bakeDriftIntoGrid() moved the grid at the end of the last run; only the first repetition of the next run compares its grid
+	// with that run's (later repetitions compare with repetitions of their own run, which were not moved)
+	POINT2 m_lastRunGridShift{ 0.0, 0.0 };
 	// Repeats the surface scan after point ll and moves the remaining points to the new surface (everything of it is saved).
 	void repeatSurfaceScan(std::unique_ptr<StorageWrapper>& storage, gsl::index pointIndex, const std::vector<double>& directionsZ);
 	// Writes an event's record to the file, and the offset every measured point carried.

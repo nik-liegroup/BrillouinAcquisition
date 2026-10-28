@@ -468,6 +468,8 @@ void Brillouin::publishGridOffset() {
 
 void Brillouin::bakeDriftIntoGrid(bool keepForContinue) {
 	const auto offset = m_gridOffset;
+	// the next run's surface scan compares its grid with this run's: moved by exactly this, it is the same grid (see chooseSurfaceStrategy())
+	m_lastRunGridShift = offset;
 	if (offset.x == 0.0 && offset.y == 0.0) {
 		return;
 	}

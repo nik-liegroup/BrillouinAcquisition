@@ -270,6 +270,7 @@ void BrillouinAcquisition::setupOverviewTab() {
 			}
 		} else if (auto* entry = findOverviewObjectiveEntry(m_overviewSelectedSlot, true)) {
 			entry->active = checked;
+			updateOverviewTileOutlines();
 		}
 		updateOverviewTab();
 		updateEstimatedAcquisitionTime();
@@ -316,6 +317,7 @@ void BrillouinAcquisition::setupOverviewTab() {
 			}
 		} else if (auto* entry = findOverviewObjectiveEntry(m_overviewSelectedSlot, true)) {
 			entry->fullGrid = checked;
+			updateOverviewTileOutlines();
 		}
 		updateOverviewTab();
 	});

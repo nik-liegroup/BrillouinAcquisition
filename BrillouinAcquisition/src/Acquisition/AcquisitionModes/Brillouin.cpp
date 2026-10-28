@@ -300,6 +300,8 @@ void Brillouin::startRepetitions() {
 	if (m_repetitionTimer != nullptr && m_repetitionTimer->isActive()) {
 		m_repetitionTimer->stop();
 		m_startOfLastRepetition.invalidate();
+		// stopped between two repetitions: the finished ones carry the drift, as at the end of a series
+		bakeDriftIntoGrid(false);
 		finaliseRepetitions(m_currentRepetition, -2);
 		setAcquisitionStatus(ACQUISITION_STATUS::STOPPED);
 		return;
@@ -405,6 +407,8 @@ void Brillouin::waitForNextRepetition() {
 }
 
 void Brillouin::finishRepetition() {
+	// the next repetition of this run compares its grid with this one, which has not been moved
+	m_lastRunGridShift = POINT2{ 0.0, 0.0 };
 	m_seriesActive = false;
 	m_overviewSeriesBegun = false;
 	m_currentRepetition++;
@@ -2561,6 +2565,10 @@ std::vector<POINT2> Brillouin::surfacePreScanGridXY() const {
 }
 
 std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUm() const {
+	return overviewTileOutlinesUmFor(m_scanControl ? m_scanControl->getScaleCalibration() : ScaleCalibrationData{});
+}
+
+std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUmFor(const ScaleCalibrationData& scaleCalibration) const {
 	// See overviewTileCentersXY() for why relative mode must use m_orderedPositionsRelative
 	// and a zero origin here, not m_orderedPositions/m_startPosition.
 	const auto& positions = m_settings.gridCoordinatesAbsolute ? m_orderedPositions : m_orderedPositionsRelative;
@@ -2575,7 +2583,7 @@ std::vector<std::pair<POINT2, POINT2>> Brillouin::overviewTileOutlinesUm() const
 		return { { gridCenter, gridCenter } };
 	}
 
-	const auto fov = overviewTileFootprintUm();
+	const auto fov = overviewTileFootprintUmFor(scaleCalibration);
 	const auto fovWidthUm = fov.x;
 	const auto fovHeightUm = fov.y;
 	if (fovWidthUm <= 0.0 || fovHeightUm <= 0.0) {

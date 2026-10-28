@@ -466,6 +466,10 @@ namespace resume {
 		double preScanXYBin{ 0.0 };
 		double originX{ 0.0 };
 		double originY{ 0.0 };
+		// [um] how far the software itself has moved the grid since that repetition (the drift of the run, see Brillouin::bakeDriftIntoGrid()):
+		// a grid moved by exactly this is still the same grid on the sample
+		double shiftX{ 0.0 };
+		double shiftY{ 0.0 };
 	};
 
 	struct SurfaceOptions {
@@ -483,7 +487,13 @@ namespace resume {
 			return found != previous.settings.end() && std::abs(found->second - current) < 1e-9;
 		};
 		SurfaceOptions options;
-		options.xyGridSame = same("xMin", now.xMin) && same("xMax", now.xMax) && same("xSteps", now.xSteps) && same("yMin", now.yMin) && same("yMax", now.yMax)
+		// a tolerance that covers the rounding of adding the shift and taking it off again
+		const auto shifted = [&](const char* name, double current, double shift) {
+			const auto found = previous.settings.find(name);
+			return found != previous.settings.end() && std::abs(found->second + shift - current) < 1e-6;
+		};
+		options.xyGridSame = shifted("xMin", now.xMin, now.shiftX) && shifted("xMax", now.xMax, now.shiftX) && same("xSteps", now.xSteps)
+			&& shifted("yMin", now.yMin, now.shiftY) && shifted("yMax", now.yMax, now.shiftY)
 			&& same("ySteps", now.ySteps) && same("gridCoordinatesAbsolute", now.absolute ? 1.0 : 0.0) && same("preScanXYBin", now.preScanXYBin)
 			&& (!now.absolute || (same("absoluteGridOriginUm.x", now.originX) && same("absoluteGridOriginUm.y", now.originY)));
 		options.zGridSame = same("zMin", now.zMin) && same("zMax", now.zMax) && same("zSteps", now.zSteps);

@@ -3162,10 +3162,15 @@ void BrillouinAcquisition::applyDriftToGrid(POINT2 driftUm) {
 	settings.setYMin(settings.yMin + driftUm.y);
 	settings.setYMax(settings.yMax + driftUm.y);
 	for (const auto& target : { mainRoiTarget(), backgroundRoiTarget() }) {
-		auto& polygon = *target.polygon;
-		for (auto& point : polygon) {
-			point.x += driftUm.x;
-			point.y += driftUm.y;
+		// the polygon and the one an undo of "clear" would bring back
+		for (auto* polygon : { target.polygon, target.lastCleared }) {
+			if (!polygon) {
+				continue;
+			}
+			for (auto& point : *polygon) {
+				point.x += driftUm.x;
+				point.y += driftUm.y;
+			}
 		}
 		updateRoiPolygonPreviewFor(target);
 	}
@@ -7025,7 +7030,6 @@ void BrillouinAcquisition::updateBackgroundPositionsPreview() {
  */
 void BrillouinAcquisition::updateOverviewTileOutlines() {
 	const bool overviewActive = m_showPositions && m_scanControl && m_Brillouin->settings.saveOverviewBrightfieldPerZ;
-	const bool showTiles = overviewActive && m_Brillouin->settings.overviewBrightfieldFullGrid;
 	// Shows whenever the overview image isn't the mosaic.
 	const bool showPoints = overviewActive && !m_Brillouin->settings.overviewBrightfieldFullGrid;
 	const bool gridAbsolute = m_Brillouin->settings.gridCoordinatesAbsolute;
@@ -7033,7 +7037,26 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 	// point markers below live in the same frame and need the same conversion.
 	const auto offset = currentGridOffset(gridAbsolute);
 
-	if (!showTiles) {
+	// Every objective that takes a mosaic: the objective that measures (dashed) and the others with their own field of view (dash-dot).
+	std::vector<std::pair<std::pair<POINT2, POINT2>, bool>> outlines;
+	if (m_showPositions && m_scanControl) {
+		if (overviewActive && m_Brillouin->settings.overviewBrightfieldFullGrid) {
+			for (const auto& outline : m_Brillouin->overviewTileOutlinesUm()) {
+				outlines.push_back({ outline, true });
+			}
+		}
+		const auto measuringSlot = overviewMeasuringSlot();
+		for (const auto& entry : m_Brillouin->settings.overviewObjectives) {
+			if (!entry.active || !entry.fullGrid || entry.slot == measuringSlot || !m_scanControl->hasObjectiveCalibration(entry.slot)) {
+				continue;
+			}
+			for (const auto& outline : m_Brillouin->overviewTileOutlinesUmFor(m_scanControl->getObjectiveCalibration(entry.slot))) {
+				outlines.push_back({ outline, false });
+			}
+		}
+	}
+
+	if (outlines.empty()) {
 		if (!m_overviewTileRects.empty()) {
 			for (auto* rect : m_overviewTileRects) {
 				ui->customplot_brightfield->removeItem(rect);
@@ -7042,20 +7065,20 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 			ui->customplot_brightfield->replot(QCustomPlot::rpQueuedReplot);
 		}
 	} else {
-		const auto outlines = m_Brillouin->overviewTileOutlinesUm();
-
 		while (m_overviewTileRects.size() > outlines.size()) {
 			ui->customplot_brightfield->removeItem(m_overviewTileRects.back());
 			m_overviewTileRects.pop_back();
 		}
 		while (m_overviewTileRects.size() < outlines.size()) {
 			auto* rect = new QCPItemRect(ui->customplot_brightfield);
-			QPen pen(Qt::yellow);
-			pen.setStyle(Qt::DashLine);
-			pen.setWidth(2);
-			rect->setPen(pen);
 			rect->setBrush(Qt::NoBrush);
 			m_overviewTileRects.push_back(rect);
+		}
+		for (size_t i = 0; i < outlines.size(); i++) {
+			QPen pen(Qt::yellow);
+			pen.setStyle(outlines[i].second ? Qt::DashLine : Qt::DashDotLine);
+			pen.setWidth(2);
+			m_overviewTileRects[i]->setPen(pen);
 		}
 
 		// corner.first/second come from overviewTileOutlinesUm(), which - like m_orderedPositions/
@@ -7068,7 +7091,7 @@ void BrillouinAcquisition::updateOverviewTileOutlines() {
 		// rather than a live getPositionOffset() call, for the same cross-thread-race reason the
 		// ROI polygon overlay was fixed for.
 		for (size_t i = 0; i < outlines.size(); i++) {
-			const auto& corner = outlines[i];
+			const auto& corner = outlines[i].first;
 			const auto topLeft = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ corner.first.x + offset.x, corner.first.y + offset.y }));
 			const auto bottomRight = brightfieldRawToDisplay(m_scanControl->microMeterToPix(POINT2{ corner.second.x + offset.x, corner.second.y + offset.y }));
 			m_overviewTileRects[i]->topLeft->setCoords(topLeft.x, topLeft.y);

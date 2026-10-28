@@ -555,6 +555,30 @@ namespace BrillouinAcquisitionUnitTest {
 			Assert::IsFalse(resume::surfaceOptions(unknown, gridNow(), 70).priorCompatible);
 		}
 
+		TEST_METHOD(A_grid_moved_by_the_drift_of_the_last_run_is_still_the_same_grid) {
+			const auto previous = previousSurface();
+			// the run ended with a drift of (3.25, -1.5) um: the software moved the grid by that much
+			auto now = gridNow();
+			now.xMin += 3.25;
+			now.xMax += 3.25;
+			now.yMin -= 1.5;
+			now.yMax -= 1.5;
+			// without knowing about the move: another grid
+			Assert::IsFalse(resume::surfaceOptions(previous, now, 70).priorCompatible);
+			// moved by exactly the drift: the same columns on the sample
+			now.shiftX = 3.25;
+			now.shiftY = -1.5;
+			const auto options = resume::surfaceOptions(previous, now, 70);
+			Assert::IsTrue(options.priorCompatible && options.canReuse);
+			// moved further by hand: another grid
+			now.xMax += 1.0;
+			Assert::IsFalse(resume::surfaceOptions(previous, now, 70).priorCompatible);
+			// a shift that does not match the move
+			now = gridNow();
+			now.shiftX = 3.25;
+			Assert::IsFalse(resume::surfaceOptions(previous, now, 70).priorCompatible);
+		}
+
 		TEST_METHOD(The_answer_to_the_surface_question_defaults_to_starting_from_the_earlier_scan) {
 			const auto both = resume::surfaceOptions(previousSurface(), gridNow(), 70);
 			Assert::AreEqual(1, resume::resolveSurfaceAnswer(-1, both));		// nobody answered: Yes

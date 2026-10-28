@@ -173,6 +173,8 @@ void Brillouin::continueRepetition() {
 	m_resuming = true;
 	m_resumeStartIndex = info.pointsDone;
 	m_resumeCarry = POINT2{ 0.0, 0.0 };
+	// the grid is the one of the file again, not the one moved at the end of the stopped run
+	m_lastRunGridShift = POINT2{ 0.0, 0.0 };
 
 	// the file: same repetitions, nothing created, points that were cut short removed, what exists is not written again
 	auto prepared = false;
@@ -357,6 +359,8 @@ Brillouin::SURFACE_STRATEGY Brillouin::chooseSurfaceStrategy(std::unique_ptr<Sto
 	now.preScanXYBin = m_settings.preScanXYBin;
 	now.originX = m_settings.absoluteGridOriginUm.x;
 	now.originY = m_settings.absoluteGridOriginUm.y;
+	now.shiftX = m_lastRunGridShift.x;
+	now.shiftY = m_lastRunGridShift.y;
 	const auto options = resume::surfaceOptions(*previous, now, xSamples.size() * ySamples.size());
 	if (!options.priorCompatible && !options.canReuse) {
 		qInfo(logInfo()) << "The surface scan of repetition" << previous->repetition << "is not offered: the grid or the surface scan settings differ.";
