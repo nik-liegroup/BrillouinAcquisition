@@ -1,6 +1,18 @@
 ## Unreleased
 
 ### Fixed
+- Zeiss MTB stands (all three variants): every stage, focus and stand-element command waited at most 500 ms for the hardware and then
+  went on while the motor was still moving (the cache of the position was not updated either, so a later move back to the old position
+  could be skipped). Long moves - the jump to a new line or plane, overview tiles, the z retract - were not finished when the next
+  image or spectrum was taken, and the nosepiece could start to turn while z was still retracting. The commands now wait up to 30 s.
+- The nosepiece only turns once z has really moved away from the sample (at least half the retract distance), on the way to an overview
+  objective, back, and when a continue turns it back; otherwise the overview is skipped (or the measurement stops / the continue is
+  refused). Overview tiles, the return to the grid point after an overview and every long move of the measurement (more than 10 um:
+  new line, new plane, surface-scan column) wait until the stage is there (ZeissECU returns from a move at once).
+- ZeissECU: waiting for the RL shutter and the lamp checked the reflector instead (dose protection could open the exposure before the
+  shutter was open).
+- The live view did not follow the drift during a measurement after all (the update was queued to the busy acquisition thread); it
+  is redrawn when the offset changes by more than 0.2 um.
 - Overviews with another objective could leave that objective in the beam for the next z plane (every other plane measured with the
   overview objective). The changer's set call returns before the turret has arrived (MTB: 500 ms timeout) and reported the commanded
   slot; the next reading of the stand (the brightfield preset) still saw the old slot, which was taken for a switch back by the

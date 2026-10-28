@@ -142,7 +142,14 @@ void Brillouin::continueRepetition() {
 		case resume::ObjectiveAction::SWITCH: {
 			closeDoseProtectionShutter();
 			// away from the sample first, as in every automatic switch
+			const auto before = m_scanControl->getPosition();
 			m_scanControl->movePosition(POINT3{ 0.0, 0.0, m_settings.overviewObjectiveRetractUm });
+			// only turn once the objective is away from the sample
+			waitForStage(before + POINT3{ 0.0, 0.0, m_settings.overviewObjectiveRetractUm }, 30.0);
+			if (std::abs(m_scanControl->getPosition().z - before.z) < 0.5 * std::abs(m_settings.overviewObjectiveRetractUm)) {
+				refuse("z did not move away from the sample (retract), so the nosepiece was not turned.");
+				return;
+			}
 			std::string error;
 			if (!m_scanControl->switchObjectiveSlot(info.objectiveSlot, &error)) {
 				refuse("The nosepiece could not be turned to slot " + std::to_string(info.objectiveSlot) + ": " + error);

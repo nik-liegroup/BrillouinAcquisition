@@ -813,7 +813,13 @@ private:
 	// useGridHysteresisCompensation (compensated approach vs. a direct move).
 	// With the drift offset (see gridOffset()) added to x and y, unless applyGridOffset is false (the medium reference of the surface
 	// scan is always taken at the same stage position).
-	void approachGridPosition(const POINT3& position, bool applyGridOffset = true);
+	// Returns the target that was sent (with the offset).
+	POINT3 approachGridPosition(const POINT3& position, bool applyGridOffset = true);
+	// Polls the position until it is within 2 um of target (every axis), it has come to rest elsewhere, or timeoutS has passed; true only at
+	// the target. Not every stand reports the end of a move
+	// (ZeissECU sends and returns at once), and nothing that needs the stage to be there - turning the nosepiece after the z retract, an
+	// image - may go on before it is.
+	bool waitForStage(const POINT3& target, double timeoutS);
 
 	std::string getRepetitionFilename();
 

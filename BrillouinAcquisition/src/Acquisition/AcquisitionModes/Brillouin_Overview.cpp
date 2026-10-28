@@ -453,16 +453,17 @@ void Brillouin::refreshGridOffset() {
 }
 
 void Brillouin::publishGridOffset() {
-	if (m_gridOffset.x == m_publishedGridOffset.x && m_gridOffset.y == m_publishedGridOffset.y) {
+	// with extrapolation the offset changes at every point: only redraw the overlay (every point projected again) for a visible change
+	const auto exact = m_gridOffset.x == 0.0 && m_gridOffset.y == 0.0;
+	if (std::abs(m_gridOffset.x - m_publishedGridOffset.x) < (exact ? 1e-12 : 0.2)
+		&& std::abs(m_gridOffset.y - m_publishedGridOffset.y) < (exact ? 1e-12 : 0.2)) {
 		return;
 	}
 	m_publishedGridOffset = m_gridOffset;
 	if (m_scanControl) {
-		QMetaObject::invokeMethod(
-			m_scanControl,
-			[scanControl = m_scanControl, offset = m_gridOffset]() { scanControl->setDriftDisplayOffset(offset); },
-			Qt::QueuedConnection
-		);
+		// Directly: the scan control lives on this (the acquisition) thread, which does not get back to its event loop while a
+		// measurement runs - a queued call would only be shown after the run.
+		m_scanControl->setDriftDisplayOffset(m_gridOffset);
 	}
 }
 
@@ -510,14 +511,52 @@ bool Brillouin::grabBrightfieldFrame(int exposureMs, double gain, std::vector<st
 	return true;
 }
 
+bool Brillouin::waitForStage(const POINT3& target, double timeoutS) {
+	if (!m_scanControl) {
+		return false;
+	}
+	// at the target: within 2 um on every axis; done moving elsewhere (a limit, a stand that stops short): no change of more than
+	// 0.2 um for 0.5 s, once 1.5 s have passed (a stand that has not started to move yet looks the same)
+	const auto near = [](const POINT3& a, const POINT3& b, double tolerance) {
+		return std::abs(a.x - b.x) < tolerance && std::abs(a.y - b.y) < tolerance && std::abs(a.z - b.z) < tolerance;
+	};
+	const auto start = steadySeconds();
+	auto last = m_scanControl->getPosition();
+	auto restingSince = start;
+	while (true) {
+		const auto now = m_scanControl->getPosition();
+		if (near(now, target, 2.0)) {
+			return true;
+		}
+		const auto t = steadySeconds();
+		if (!near(now, last, 0.2)) {
+			last = now;
+			restingSince = t;
+		}
+		if ((t - restingSince > 0.5 && t - start > 1.5) || t - start > timeoutS) {
+			qWarning(logWarning()) << "Brillouin: the stage stopped at" << now.x << now.y << now.z << "um, not at the target" << target.x << target.y
+				<< target.z << "um.";
+			return false;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
+}
+
 void Brillouin::returnToMeasurementObjective(int measurementSlot, const POINT3& restorePosition, bool restorePositionToo) {
 	if (!m_scanControl) {
 		return;
 	}
 	closeDoseProtectionShutter();
 	if (m_scanControl->getActiveObjectiveSlot() != measurementSlot) {
-		// away from the sample before the nosepiece turns, as on the way there
+		// away from the sample before the nosepiece turns, as on the way there - and only turn once z is really there
+		const auto before = m_scanControl->getPosition();
 		m_scanControl->movePosition(POINT3{ 0.0, 0.0, overviewRetractUmActive() });
+		waitForStage(before + POINT3{ 0.0, 0.0, overviewRetractUmActive() }, 30.0);
+		if (std::abs(m_scanControl->getPosition().z - before.z) < 0.5 * std::abs(overviewRetractUmActive())) {
+			qCritical(logCritical()) << "Brillouin: z did not reach the retract position, the nosepiece is not turned back; the measurement stops.";
+			m_abort = true;
+			return;
+		}
 		std::string error;
 		if (!m_scanControl->switchObjectiveSlot(measurementSlot, &error)) {
 			qCritical(logCritical()) << "Brillouin: could not turn back to the measuring objective:" << error.c_str();
@@ -527,6 +566,7 @@ void Brillouin::returnToMeasurementObjective(int measurementSlot, const POINT3& 
 	}
 	if (restorePositionToo) {
 		m_scanControl->setPositionCompensated(restorePosition);
+		waitForStage(restorePosition, 30.0);
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
 }
@@ -657,6 +697,15 @@ bool Brillouin::captureObjectiveOverview(
 		closeDoseProtectionShutter();
 		const auto t0 = steadySeconds();
 		m_scanControl->movePosition(POINT3{ 0.0, 0.0, overviewRetractUmActive() });
+		// the nosepiece only turns once the objective is away from the sample (at least half the retract distance, if a limit stopped it)
+		waitForStage(positionBefore + POINT3{ 0.0, 0.0, overviewRetractUmActive() }, 30.0);
+		if (std::abs(m_scanControl->getPosition().z - positionBefore.z) < 0.5 * std::abs(overviewRetractUmActive())) {
+			log->skippedReason = "z retract not reached";
+			qCritical(logCritical()) << "Brillouin: z did not reach the retract position, the overview with objective" << plan.slot << "is skipped.";
+			m_scanControl->setPositionCompensated(positionBefore);
+			waitForStage(positionBefore, 30.0);
+			return !m_abort;
+		}
 		std::string error;
 		if (!m_scanControl->switchObjectiveSlot(plan.slot, &error)) {
 			qCritical(logCritical()) << "Brillouin: could not turn to objective" << plan.slot << ":" << error.c_str();
@@ -693,6 +742,7 @@ bool Brillouin::captureObjectiveOverview(
 			}
 			const auto target = tiles[tileIndex][stackIndex];
 			m_scanControl->setPositionCompensated(target);
+			waitForStage(target, 30.0);
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			const auto stageRaw = m_scanControl->getPosition();
 
@@ -891,7 +941,7 @@ bool Brillouin::runOverviewEvent(
 
 	// The overview moved the stage away from the grid point: back to it, with the offset as it is now (the drift just measured, if any).
 	if (pointIndex >= 0 && pointIndex < (gsl::index)m_orderedPositions.size()) {
-		approachGridPosition(m_orderedPositions[pointIndex]);
+		waitForStage(approachGridPosition(m_orderedPositions[pointIndex]), 30.0);
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
 	return !m_abort;

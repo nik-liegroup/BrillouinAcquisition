@@ -500,11 +500,12 @@ void Stand::blockUntilPositionReached(bool block, const std::string& elementNr, 
 	// don't return until the position or the timeout is reached
 	if (block) {
 		auto count{ 0 };
-		auto pos = getElementPosition(elementNr);
+		// with the identifier of the element: without it, the RL shutter ("k") and the lamp ("v") waited on the reflector ("r") instead
+		auto pos = getElementPosition(elementNr, identifier);
 		// wait for one second max
 		while (!pos && count < 100) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
-			pos = getElementPosition(elementNr);
+			pos = getElementPosition(elementNr, identifier);
 			count++;
 		}
 		//TODO: Emit an error when count==100 (timeout reached)

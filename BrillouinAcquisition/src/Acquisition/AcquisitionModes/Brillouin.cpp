@@ -3437,9 +3437,9 @@ void Brillouin::closeDoseProtectionShutter() {
 	m_scanControl->setRLShutterOpen(false);
 }
 
-void Brillouin::approachGridPosition(const POINT3& positionPlanned, bool applyGridOffset) {
+POINT3 Brillouin::approachGridPosition(const POINT3& positionPlanned, bool applyGridOffset) {
 	if (!m_scanControl) {
-		return;
+		return positionPlanned;
 	}
 	// The drift measured from the overviews moves every target with the sample (0 unless drift correction is on).
 	auto position = positionPlanned;
@@ -3455,11 +3455,20 @@ void Brillouin::approachGridPosition(const POINT3& positionPlanned, bool applyGr
 	// opened for the narrow window immediately around an actual camera exposure, so a move
 	// (like any other non-integrating moment) is simply left in whatever state the last
 	// acquireAndorFrame() call left it - already closed, with nothing extra to do here.
+	// Before a long move the start of the next exposure must not fall into the travel (ZeissECU returns from a move at once): the jump to
+	// a new line, plane, surface-scan column or back from an overview. A short step is over before an exposure starts and is not waited for.
+	// (the cached position - no hardware query per point)
+	const auto previous = m_scanControl->ScanControl::getPosition(PositionType::BOTH);
+	const auto longMove = std::abs(position.x - previous.x) > 10.0 || std::abs(position.y - previous.y) > 10.0 || std::abs(position.z - previous.z) > 10.0;
 	if (m_settings.useGridHysteresisCompensation) {
 		m_scanControl->setPositionCompensated(position);
 	} else {
 		m_scanControl->setPosition(position);
 	}
+	if (longMove) {
+		waitForStage(position, 30.0);
+	}
+	return position;
 }
 
 void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
