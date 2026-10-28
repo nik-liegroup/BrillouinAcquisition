@@ -1,6 +1,9 @@
 ## Unreleased
 
 ### Fixed
+- A repetition that goes on with the drift of the previous one (Continue after a finished repetition, or an automatic series) measures the
+  drift with the drift objective before the surface scan, so the scan columns are placed on the sample as it is now, not with the offset
+  left over from the end of the last repetition. The overview z of that measurement follows the surface of the previous repetition.
 - Overview images are centred on the centre of gravity of the active grid points (one tile or a mosaic), the image centre now being the
   planned point: the targets are shifted by the scanner offset, the pixel-to-um conversion of the image centre and the FOV offset of the
   measuring objective (the laser, not the image centre, sits on a target). With a surface scan the overview z starts at the median of the

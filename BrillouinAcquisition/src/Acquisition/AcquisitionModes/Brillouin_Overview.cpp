@@ -283,6 +283,40 @@ bool Brillouin::canCarryDriftToNextStart(bool* sameStart) {
 	return true;
 }
 
+bool Brillouin::driftCarriesOverToThisStart() {
+	// (an absolute grid hangs on the stage coordinates, not on where the repetition starts)
+	const auto sameStart = m_settings.gridCoordinatesAbsolute
+		|| std::hypot(m_startPosition.x - m_driftSeriesStart.x, m_startPosition.y - m_driftSeriesStart.y) < kSeriesCarryOverDistanceUm;
+	return m_settings.driftCorrectionEnabled && m_driftController.hasReference() && sameStart
+		&& m_driftReferenceSlot == m_settings.driftObjectiveSlot && !m_driftReferenceTiles.empty();
+}
+
+void Brillouin::measureDriftBeforeSurfaceScan(std::unique_ptr<StorageWrapper>& storage) {
+	// The surface scan sets the z of every column, so it has to be placed on the sample as it is now: the drift left over from the end of
+	// the previous repetition is the offset of a sample that has kept moving since. Only worth it with a drift to carry over - without
+	// one the first overview of the measurement is the reference, taken right after the scan.
+	if (!useOverviewEngine() || !m_settings.useSurfaceFollow || !m_settings.driftCorrectionEnabled || m_abort || !m_scanControl) {
+		return;
+	}
+	// the overview z follows the surface of the previous repetition (still held, as the drift is): this repetition's own is not known yet
+	if (!driftCarriesOverToThisStart() || !m_surfaceZRangeValid) {
+		return;
+	}
+	beginOverviewSeries(storage);
+	m_overviewSeriesBegun = true;
+	const auto directionsZ = simplemath::linspace(m_settings.zMin, m_settings.zMax, m_settings.zSteps);
+	OverviewMoment moment;
+	moment.kind = OVERVIEW_MOMENT_KIND::BEFORE;
+	moment.zIndex = 0;
+	const auto ok = runOverviewEvent(storage, moment, directionsZ, -1, true);
+	// the event's entries go to the file through the storage thread; the setup of the measurement phase writes directly, so let it finish
+	auto* storageObject = storage.get();
+	QMetaObject::invokeMethod(storageObject, []() {}, Qt::BlockingQueuedConnection);
+	if (!ok && !m_abort) {
+		qWarning(logWarning()) << "Brillouin: the drift could not be measured before the surface scan; it runs with the drift carried over.";
+	}
+}
+
 void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	m_runDriftCorrection = m_settings.driftCorrectionEnabled;
 	m_runDriftObjectiveSlot = m_settings.driftObjectiveSlot;
@@ -309,10 +343,7 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	// The next repetition of a series starts where the sample was at the end of the previous one (the stage went back to the start
 	// position, but the sample did not): carry the drift over if the repetition starts at the same place and with the same objective.
 	// (an absolute grid hangs on the stage coordinates, not on where the repetition starts)
-	const auto sameStart = m_settings.gridCoordinatesAbsolute
-		|| std::hypot(m_startPosition.x - m_driftSeriesStart.x, m_startPosition.y - m_driftSeriesStart.y) < kSeriesCarryOverDistanceUm;
-	if (m_settings.driftCorrectionEnabled && m_driftController.hasReference() && sameStart && m_driftReferenceSlot == m_settings.driftObjectiveSlot
-		&& !m_driftReferenceTiles.empty()) {
+	if (driftCarriesOverToThisStart()) {
 		m_gridOffset = m_driftController.totalUm();
 	} else {
 		m_driftController.reset();
@@ -769,7 +800,8 @@ bool Brillouin::runOverviewMoments(
 }
 
 bool Brillouin::runOverviewEvent(
-	std::unique_ptr<StorageWrapper>& storage, const OverviewMoment& moment, const std::vector<double>& directionsZ, gsl::index pointIndex
+	std::unique_ptr<StorageWrapper>& storage, const OverviewMoment& moment, const std::vector<double>& directionsZ, gsl::index pointIndex,
+	bool driftOnly
 ) {
 	if (!m_scanControl || m_abort) {
 		return false;
@@ -791,6 +823,9 @@ bool Brillouin::runOverviewEvent(
 	auto driftSlot = -1;
 	auto objectiveOrder = 0;
 	for (const auto& plan : m_overviewPlans) {
+		if (driftOnly && plan.slot != driftObjectiveSlotActive()) {
+			continue;
+		}
 		OverviewCaptureLog captureLog;
 		const auto isDriftObjective = driftCorrectionActive() && plan.slot == driftObjectiveSlotActive();
 		std::vector<drift::TileFrame> tiles;

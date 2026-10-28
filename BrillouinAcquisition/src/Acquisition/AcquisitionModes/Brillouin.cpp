@@ -405,6 +405,7 @@ void Brillouin::waitForNextRepetition() {
 
 void Brillouin::finishRepetition() {
 	m_seriesActive = false;
+	m_overviewSeriesBegun = false;
 	m_currentRepetition++;
 	// Check if this was the last repetition
 	if (m_currentRepetition < m_settings.repetitions.count) {
@@ -597,6 +598,7 @@ std::set<std::pair<int, int>> Brillouin::getSurfaceInterpolatedXYIndices() const
 
 void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 	m_seriesActive = false;
+	m_overviewSeriesBegun = false;
 	m_repetitionTimer->stop();
 	m_startOfLastRepetition.invalidate();
 	if (m_andor) {
@@ -3133,6 +3135,7 @@ std::string Brillouin::getRepetitionFilename() {
 
 void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	m_seriesActive = false;
+	m_overviewSeriesBegun = false;
 	setAcquisitionStatus(ACQUISITION_STATUS::STARTED);
 	// prepare camera for image acquisition
 
@@ -3218,6 +3221,11 @@ void Brillouin::acquire(std::unique_ptr <StorageWrapper>& storage) {
 	 * Update the positions vector
 	 */
 	updatePositions();
+	// A repetition that goes on with the drift of the last one: measured now, so the surface scan below (or the surface reused) is placed
+	// on the sample as it is, not as it was at the end of the last repetition
+	if (!m_abort && !m_resumeSurface) {
+		measureDriftBeforeSurfaceScan(storage);
+	}
 	// A surface scan of an earlier repetition of this file: the operator decides (popup with a timer, default new scan as always)
 	PreviousSurface previousSurface;
 	const auto surfaceStrategy = (m_abort || m_resumeSurface) ? SURFACE_STRATEGY::NEW_SCAN : chooseSurfaceStrategy(storage, &previousSurface);
@@ -3816,7 +3824,16 @@ void Brillouin::runMeasurementPhase(std::unique_ptr<StorageWrapper>& storage) {
 
 	// settings used and calibrations of the overview objectives (only written when the feature is on)
 	if (engine) {
-		beginOverviewSeries(storage);
+		if (m_overviewSeriesBegun) {
+			// set up before the surface scan (measureDriftBeforeSurfaceScan()); only the per-point arrays follow the plan as it is now
+			// (the surface review may have dropped points)
+			const auto nan = std::numeric_limits<double>::quiet_NaN();
+			m_pointOffsetX.assign(m_orderedPositions.size(), nan);
+			m_pointOffsetY.assign(m_orderedPositions.size(), nan);
+		} else {
+			beginOverviewSeries(storage);
+		}
+		m_overviewSeriesBegun = false;
 	}
 
 	if (legacyOverviewMetadata) {

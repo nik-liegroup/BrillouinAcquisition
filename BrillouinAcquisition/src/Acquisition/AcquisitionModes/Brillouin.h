@@ -885,9 +885,17 @@ private:
 		std::unique_ptr<StorageWrapper>& storage, const std::vector<OverviewMoment>& moments, const std::vector<double>& directionsZ,
 		gsl::index pointIndex
 	);
+	// driftOnly: only the drift objective takes its overview (see measureDriftBeforeSurfaceScan()).
 	bool runOverviewEvent(
-		std::unique_ptr<StorageWrapper>& storage, const OverviewMoment& moment, const std::vector<double>& directionsZ, gsl::index pointIndex
+		std::unique_ptr<StorageWrapper>& storage, const OverviewMoment& moment, const std::vector<double>& directionsZ, gsl::index pointIndex,
+		bool driftOnly = false
 	);
+	// Repetition that goes on with the drift of the previous one (see beginOverviewSeries()), with a surface scan to follow: measures the
+	// drift now, before that scan, so its columns are placed with the current offset and not the one left over from the end of the last
+	// repetition. Does the overview series setup (beginOverviewSeries()) early; runMeasurementPhase() then does not repeat it.
+	void measureDriftBeforeSurfaceScan(std::unique_ptr<StorageWrapper>& storage);
+	bool driftCarriesOverToThisStart();
+	bool m_overviewSeriesBegun{ false };
 	// One objective's overview of one event: for another objective the whole cycle (retract, switch, focus, capture, switch back, restore).
 	// The centre slices of its tiles go to `driftTiles` if given.
 	bool captureObjectiveOverview(
