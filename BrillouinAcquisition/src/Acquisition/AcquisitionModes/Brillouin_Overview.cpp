@@ -371,6 +371,7 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 		m_gridOffset = m_resumeInfo.eventOffsetAfter.empty() ? m_resumeInfo.carriedOffset : m_resumeInfo.eventOffsetAfter.back();
 		m_resumeCarry = m_gridOffset;
 	}
+	publishGridOffset();
 
 	// What this repetition was set up with and the calibrations of the objectives that take overviews, written before the measurement
 	// starts (the storage thread is not writing yet).
@@ -448,6 +449,39 @@ bool Brillouin::liveOverviewCamera(int slot, int* exposureMs, double* gain) cons
 
 void Brillouin::refreshGridOffset() {
 	m_gridOffset = driftCorrectionActive() ? m_driftController.offsetAt(steadySeconds()) : POINT2{ 0.0, 0.0 };
+	publishGridOffset();
+}
+
+void Brillouin::publishGridOffset() {
+	if (m_gridOffset.x == m_publishedGridOffset.x && m_gridOffset.y == m_publishedGridOffset.y) {
+		return;
+	}
+	m_publishedGridOffset = m_gridOffset;
+	if (m_scanControl) {
+		QMetaObject::invokeMethod(
+			m_scanControl,
+			[scanControl = m_scanControl, offset = m_gridOffset]() { scanControl->setDriftDisplayOffset(offset); },
+			Qt::QueuedConnection
+		);
+	}
+}
+
+void Brillouin::bakeDriftIntoGrid(bool keepForContinue) {
+	const auto offset = m_gridOffset;
+	if (offset.x == 0.0 && offset.y == 0.0) {
+		return;
+	}
+	// the GUI moves the grid and the ROIs by the drift and takes the drift out of the live view in one step
+	m_publishedGridOffset = POINT2{ 0.0, 0.0 };
+	emit(s_driftBakedIntoGrid(offset));
+	if (keepForContinue) {
+		return;
+	}
+	// finished: the next start begins on the sample as it is, with the grid where the drift has put it - no drift remembered
+	m_driftController.reset();
+	m_driftReferenceTiles.clear();
+	m_driftReferenceSlot = -1;
+	m_gridOffset = POINT2{ 0.0, 0.0 };
 }
 
 bool Brillouin::grabBrightfieldFrame(int exposureMs, double gain, std::vector<std::byte>* image, CAMERA_SETTINGS* usedSettings) {

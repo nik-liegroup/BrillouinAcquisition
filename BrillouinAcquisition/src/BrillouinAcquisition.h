@@ -1003,6 +1003,8 @@ private slots:
 	void on_buttonGroup_3_buttonClicked(int);
 
 	void scanOrderChanged(SCAN_ORDER scanOrder);
+	// Moves the grid limits and the ROI polygons by the drift a run ended with (see Brillouin::bakeDriftIntoGrid())
+	void applyDriftToGrid(POINT2 driftUm);
 
 	/*
 	 * Save and restore application settings

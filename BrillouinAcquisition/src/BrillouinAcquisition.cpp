@@ -319,6 +319,13 @@ BrillouinAcquisition::BrillouinAcquisition(QWidget *parent) noexcept :
 		this,
 		[this](SCAN_ORDER scanOrder) { scanOrderChanged(scanOrder); }
 	);
+	// the drift of a finished or stopped run moves into the grid and the ROIs
+	connection = QWidget::connect(
+		m_Brillouin,
+		&Brillouin::s_driftBakedIntoGrid,
+		this,
+		[this](POINT2 driftUm) { applyDriftToGrid(driftUm); }
+	);
 
 	// slot to positions in brightfield
 	connection = QWidget::connect(
@@ -3140,6 +3147,39 @@ void BrillouinAcquisition::relocateBeamKeepingGridFixed(POINT2 newMarkerPix) {
 	QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
 }
 
+/*
+ * The grid limits and both ROI polygons move by the drift the run ended with, in the frame they are stored in (grid coordinates: the
+ * drift is added to every stage target the same way in relative and absolute mode). The live view showed them there already; its drift
+ * offset is taken out in the same step, so nothing moves on screen. A new start begins from these and measures without remembering a drift.
+ */
+void BrillouinAcquisition::applyDriftToGrid(POINT2 driftUm) {
+	if (!m_Brillouin || !std::isfinite(driftUm.x) || !std::isfinite(driftUm.y)) {
+		return;
+	}
+	auto& settings = m_Brillouin->settings;
+	settings.setXMin(settings.xMin + driftUm.x);
+	settings.setXMax(settings.xMax + driftUm.x);
+	settings.setYMin(settings.yMin + driftUm.y);
+	settings.setYMax(settings.yMax + driftUm.y);
+	for (const auto& target : { mainRoiTarget(), backgroundRoiTarget() }) {
+		auto& polygon = *target.polygon;
+		for (auto& point : polygon) {
+			point.x += driftUm.x;
+			point.y += driftUm.y;
+		}
+		updateRoiPolygonPreviewFor(target);
+	}
+	if (m_scanControl) {
+		QMetaObject::invokeMethod(
+			m_scanControl,
+			[scanControl = m_scanControl]() { scanControl->setDriftDisplayOffset(POINT2{ 0.0, 0.0 }); },
+			Qt::QueuedConnection
+		);
+	}
+	updateBrillouinSettings();
+	QMetaObject::invokeMethod(m_Brillouin, "updatePositions", Qt::AutoConnection);
+}
+
 void BrillouinAcquisition::drawPositionScannerMarker(POINT2 positionScanner) {
 	m_positionScanner = positionScanner;
 	if (m_scanControl) {
@@ -4285,7 +4325,11 @@ void BrillouinAcquisition::on_action_Scale_calibration_acquire_triggered() {
 }
 
 void BrillouinAcquisition::updateScaleCalibrationTranslationValue(POINT2 translation) {
-	// Initialize all values
+	// Blocked, like updateScaleCalibrationData(): this signal carries a snapshot of both values, which can be older than what was typed
+	// since. Setting a box from it would then call setTranslationDistanceX/Y() with that stale value, which sends the next snapshot, ...
+	// - with x and y different, the two boxes and the values the calibration uses could end up disagreeing.
+	const QSignalBlocker blockerDx(m_scaleCalibrationDialogUi.dx);
+	const QSignalBlocker blockerDy(m_scaleCalibrationDialogUi.dy);
 	m_scaleCalibrationDialogUi.dx->setValue(translation.x);
 	m_scaleCalibrationDialogUi.dy->setValue(translation.y);
 }

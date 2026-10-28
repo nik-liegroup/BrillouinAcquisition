@@ -1,6 +1,11 @@
 ## Unreleased
 
 ### Fixed
+- With drift correction the grid, the ROIs and the overview outlines in the live view follow the sample (they were drawn at the planned
+  positions while the laser went to the drifted ones). When a run finishes or is stopped, the grid limits and both ROI polygons are moved by
+  the drift of the run and stay there: a new start measures on the sample as it is, without remembering a drift (so "Continue" as next
+  repetition of a finished run is gone). Continuing a stopped run loads the settings and the offsets of the file, so the drift is not
+  applied twice.
 - A repetition that goes on with the drift of the previous one (Continue after a finished repetition, or an automatic series) measures the
   drift with the drift objective before the surface scan, so the scan columns are placed on the sample as it is now, not with the offset
   left over from the end of the last repetition. The overview z of that measurement follows the surface of the previous repetition.

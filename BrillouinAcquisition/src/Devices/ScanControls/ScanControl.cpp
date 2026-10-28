@@ -695,7 +695,8 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	// Apply it once in EVERY display mode, just as announcePositionScanner() does.
 	// Dropping it on Start moves only the overlay, although the stage still measures
 	// the correct sample points.
-	const auto fovOffset = getActiveObjectiveFovOffsetUm();
+	// + the drift the measurement adds to every stage target, so the grid is drawn where the laser really goes.
+	const auto fovOffset = getActiveObjectiveFovOffsetUm() + m_driftDisplayUm;
 	if (positionIsAbsolute) {
 		return POINT2{} - m_positionStage + fovOffset;
 	}
@@ -707,6 +708,14 @@ POINT2 ScanControl::getPositionOffset(bool positionIsAbsolute) {
 	}
 	// At Start, start - stage == scanner, so the relative grid stays continuous.
 	return m_positionScanner + fovOffset;
+}
+
+void ScanControl::setDriftDisplayOffset(POINT2 offsetUm) {
+	m_driftDisplayUm = offsetUm;
+	// as after a calibration change: the stage and the scanner did not move, so announcePositions() would not re-emit; the offset before the
+	// positions computed with it (see BrillouinAcquisition::on_gridOffsetChanged())
+	emit(s_gridOffsetChanged(getPositionOffset(m_AOI_positionsAbsolute), m_AOI_positionsAbsolute));
+	emit(s_scaleCalibrationChanged(convertPositionsToPix()));
 }
 
 /*

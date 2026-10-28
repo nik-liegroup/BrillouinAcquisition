@@ -912,6 +912,13 @@ private:
 	// The offset that every stage target of the grid and the overviews carries (the drift, 0 if drift correction is off).
 	POINT2 gridOffset() const { return m_gridOffset; }
 	void refreshGridOffset();
+	// Shows the grid offset in the live view: the overlay (grid, ROIs, overview outlines) follows the sample like the stage targets do.
+	void publishGridOffset();
+	// At the end of a run: the drift leaves the engine and goes into the grid and the ROIs of the GUI (s_driftBakedIntoGrid), so that a new
+	// start begins on the sample as it is and nothing is applied twice. With keepForContinue the engine keeps the drift reference (an aborted
+	// run is continued from the file with that offset).
+	void bakeDriftIntoGrid(bool keepForContinue);
+	POINT2 m_publishedGridOffset{ 0.0, 0.0 };
 	// Repeats the surface scan after point ll and moves the remaining points to the new surface (everything of it is saved).
 	void repeatSurfaceScan(std::unique_ptr<StorageWrapper>& storage, gsl::index pointIndex, const std::vector<double>& directionsZ);
 	// Writes an event's record to the file, and the offset every measured point carried.
@@ -1125,6 +1132,8 @@ signals:
 	void s_timeToCalibration(int);	// time to next calibration
 	void s_calibrationRunning(bool);	// is calibration running
 	void s_scanOrderChanged(SCAN_ORDER);
+	// The drift [um] of a finished or stopped run, to be added to the grid limits and the ROI polygons (the live view shows it already).
+	void s_driftBakedIntoGrid(POINT2);
 	// The mode flag travels with the positions rather than being re-read by the receiver -
 	// this signal crosses threads via a queued connection, so by the time a receiver's slot
 	// actually runs, gridCoordinatesAbsolute may already have changed again (e.g. the operator

@@ -319,6 +319,7 @@ void Brillouin::startRepetitions() {
 		m_driftReferenceTiles.clear();
 		m_driftReferenceSlot = -1;
 		m_gridOffset = POINT2{ 0.0, 0.0 };
+		publishGridOffset();
 	}
 	m_carryDriftOnStart = false;
 
@@ -413,6 +414,8 @@ void Brillouin::finishRepetition() {
 		setAcquisitionStatus(ACQUISITION_STATUS::WAITFORREPETITION);
 	} else {
 		m_startOfLastRepetition.invalidate();
+		// The drift of the whole run moves into the grid and the ROIs (the next start begins with them where the sample is now)
+		bakeDriftIntoGrid(false);
 		// Cleanup after last repetition
 		finaliseRepetitions();
 		setAcquisitionStatus(ACQUISITION_STATUS::FINISHED);
@@ -636,6 +639,9 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 		);
 	}
 
+	// The grid and the ROIs follow the sample to where the drift has put them; the file keeps the original ones and the offsets, so a
+	// continue starts from those, not from these.
+	bakeDriftIntoGrid(true);
 	m_acquisition->disableMode(ACQUISITION_MODE::BRILLOUIN);
 
 	// Here we wait until the storage object indicate it finished to write to the file.
