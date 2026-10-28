@@ -477,26 +477,55 @@ namespace resume {
 		bool zGridSame{ false };
 		bool priorCompatible{ false };		// the earlier scan can be the start of the new one
 		bool canReuse{ false };				// its surface can be used without a new scan
+		std::string differences;			// the grid settings that differ from that repetition (for the log)
 	};
 
 	// A surface of an earlier repetition only fits the same grid: its columns are where this repetition's columns are only if the extent, steps
 	// and surface scan bin are the same (and in absolute coordinates the same origin); its plan only if the z planes are the same too.
 	inline SurfaceOptions surfaceOptions(const PreviousSurface& previous, const GridSignature& now, size_t currentCoarseColumns) {
+		// counts and switches: exactly
 		const auto same = [&](const char* name, double current) {
 			const auto found = previous.settings.find(name);
 			return found != previous.settings.end() && std::abs(found->second - current) < 1e-9;
 		};
-		SurfaceOptions options;
-		// a tolerance that covers the rounding of adding the shift and taking it off again
+		// Positions [um]: within 0.05 um. The GUI keeps one decimal of the limits (a grid moved by the drift is rounded to it), and a switch
+		// between absolute and relative coordinates converts them in floating point - neither is another grid on the sample.
 		const auto shifted = [&](const char* name, double current, double shift) {
 			const auto found = previous.settings.find(name);
-			return found != previous.settings.end() && std::abs(found->second + shift - current) < 1e-6;
+			return found != previous.settings.end() && std::abs(found->second + shift - current) < 0.051;
 		};
+		SurfaceOptions options;
 		options.xyGridSame = shifted("xMin", now.xMin, now.shiftX) && shifted("xMax", now.xMax, now.shiftX) && same("xSteps", now.xSteps)
 			&& shifted("yMin", now.yMin, now.shiftY) && shifted("yMax", now.yMax, now.shiftY)
 			&& same("ySteps", now.ySteps) && same("gridCoordinatesAbsolute", now.absolute ? 1.0 : 0.0) && same("preScanXYBin", now.preScanXYBin)
-			&& (!now.absolute || (same("absoluteGridOriginUm.x", now.originX) && same("absoluteGridOriginUm.y", now.originY)));
-		options.zGridSame = same("zMin", now.zMin) && same("zMax", now.zMax) && same("zSteps", now.zSteps);
+			&& (!now.absolute || (shifted("absoluteGridOriginUm.x", now.originX, 0.0) && shifted("absoluteGridOriginUm.y", now.originY, 0.0)));
+		options.zGridSame = shifted("zMin", now.zMin, 0.0) && shifted("zMax", now.zMax, 0.0) && same("zSteps", now.zSteps);
+		// which settings differ, for the log (empty if the grid is the same)
+		for (const char* name : { "xSteps", "ySteps", "gridCoordinatesAbsolute", "preScanXYBin" }) {
+			const auto found = previous.settings.find(name);
+			if (found == previous.settings.end()) {
+				options.differences += std::string(options.differences.empty() ? "" : ", ") + name + " (not in the file)";
+			}
+		}
+		const auto describe = [&](const char* name, double current, double shift) {
+			const auto found = previous.settings.find(name);
+			if (found != previous.settings.end() && std::abs(found->second + shift - current) >= 0.051) {
+				options.differences += std::string(options.differences.empty() ? "" : ", ") + name + " " + std::to_string(found->second)
+					+ (shift != 0.0 ? " (+ " + std::to_string(shift) + " drift)" : std::string{}) + " -> " + std::to_string(current);
+			}
+		};
+		describe("xMin", now.xMin, now.shiftX);
+		describe("xMax", now.xMax, now.shiftX);
+		describe("yMin", now.yMin, now.shiftY);
+		describe("yMax", now.yMax, now.shiftY);
+		describe("xSteps", now.xSteps, 0.0);
+		describe("ySteps", now.ySteps, 0.0);
+		describe("preScanXYBin", now.preScanXYBin, 0.0);
+		describe("gridCoordinatesAbsolute", now.absolute ? 1.0 : 0.0, 0.0);
+		if (now.absolute) {
+			describe("absoluteGridOriginUm.x", now.originX, 0.0);
+			describe("absoluteGridOriginUm.y", now.originY, 0.0);
+		}
 		options.priorCompatible = options.xyGridSame && previous.z.size() == currentCoarseColumns;
 		options.canReuse = previous.hasPlan && options.xyGridSame && options.zGridSame;
 		return options;

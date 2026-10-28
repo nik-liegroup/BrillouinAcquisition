@@ -467,24 +467,40 @@ void Brillouin::publishGridOffset() {
 	}
 }
 
-void Brillouin::bakeDriftIntoGrid(bool keepForContinue) {
+void Brillouin::bakeDriftIntoGrid() {
 	const auto offset = m_gridOffset;
 	// the next run's surface scan compares its grid with this run's: moved by exactly this, it is the same grid (see chooseSurfaceStrategy())
 	m_lastRunGridShift = offset;
+	// The drift reference stays as it is: a Continue of this run (from the file, with the original grid and its offsets) needs it unchanged.
+	// A new Start takes it over instead, minus what the grid has been moved by (see handOverDriftToNewStart()).
+	m_pendingDriftHandOver = offset;
 	if (offset.x == 0.0 && offset.y == 0.0) {
 		return;
 	}
 	// the GUI moves the grid and the ROIs by the drift and takes the drift out of the live view in one step
 	m_publishedGridOffset = POINT2{ 0.0, 0.0 };
 	emit(s_driftBakedIntoGrid(offset));
-	if (keepForContinue) {
-		return;
+}
+
+bool Brillouin::handOverDriftToNewStart() {
+	if (!m_pendingDriftHandOver || !m_driftController.hasReference() || m_driftReferenceTiles.empty()) {
+		return false;
 	}
-	// finished: the next start begins on the sample as it is, with the grid where the drift has put it - no drift remembered
-	m_driftController.reset();
-	m_driftReferenceTiles.clear();
-	m_driftReferenceSlot = -1;
-	m_gridOffset = POINT2{ 0.0, 0.0 };
+	const auto moved = *m_pendingDriftHandOver;
+	m_pendingDriftHandOver.reset();
+	// The grid now carries `moved`: the drift still to apply is the drift since the series began minus that. The reference images stay -
+	// the next overview is registered against them, so the drift since the end of the last run is measured (the step is computed from the
+	// stage positions the frames were taken at, not from the grid). Their place in the planned layout moves with the grid, so they pair
+	// with the same tiles of the moved grid.
+	m_driftController.setReference(m_driftController.referenceTime(), POINT2{ m_driftController.totalUm().x - moved.x, m_driftController.totalUm().y - moved.y });
+	for (auto& tile : m_driftReferenceTiles) {
+		if (std::isfinite(tile.anchorUm.x) && std::isfinite(tile.anchorUm.y)) {
+			tile.anchorUm.x += moved.x;
+			tile.anchorUm.y += moved.y;
+		}
+	}
+	m_gridOffset = m_driftController.totalUm();
+	return true;
 }
 
 bool Brillouin::grabBrightfieldFrame(int exposureMs, double gain, std::vector<std::byte>* image, CAMERA_SETTINGS* usedSettings) {

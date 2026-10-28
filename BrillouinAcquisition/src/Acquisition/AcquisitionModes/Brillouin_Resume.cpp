@@ -180,8 +180,9 @@ void Brillouin::continueRepetition() {
 	m_resuming = true;
 	m_resumeStartIndex = info.pointsDone;
 	m_resumeCarry = POINT2{ 0.0, 0.0 };
-	// the grid is the one of the file again, not the one moved at the end of the stopped run
+	// the grid is the one of the file again, not the one moved at the end of the stopped run: the drift reference is used as it is
 	m_lastRunGridShift = POINT2{ 0.0, 0.0 };
+	m_pendingDriftHandOver.reset();
 
 	// the file: same repetitions, nothing created, points that were cut short removed, what exists is not written again
 	auto prepared = false;
@@ -370,7 +371,8 @@ Brillouin::SURFACE_STRATEGY Brillouin::chooseSurfaceStrategy(std::unique_ptr<Sto
 	now.shiftY = m_lastRunGridShift.y;
 	const auto options = resume::surfaceOptions(*previous, now, xSamples.size() * ySamples.size());
 	if (!options.priorCompatible && !options.canReuse) {
-		qInfo(logInfo()) << "The surface scan of repetition" << previous->repetition << "is not offered: the grid or the surface scan settings differ.";
+		qInfo(logInfo()) << "The surface scan of repetition" << previous->repetition << "is not offered: the grid or the surface scan settings differ ("
+			<< (options.differences.empty() ? std::string("the number of coarse columns") : options.differences).c_str() << ").";
 		return SURFACE_STRATEGY::NEW_SCAN;
 	}
 

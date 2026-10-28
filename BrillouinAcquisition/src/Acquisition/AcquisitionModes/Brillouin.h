@@ -922,10 +922,14 @@ private:
 	void refreshGridOffset();
 	// Shows the grid offset in the live view: the overlay (grid, ROIs, overview outlines) follows the sample like the stage targets do.
 	void publishGridOffset();
-	// At the end of a run: the drift leaves the engine and goes into the grid and the ROIs of the GUI (s_driftBakedIntoGrid), so that a new
-	// start begins on the sample as it is and nothing is applied twice. With keepForContinue the engine keeps the drift reference (an aborted
-	// run is continued from the file with that offset).
-	void bakeDriftIntoGrid(bool keepForContinue);
+	// At the end of a run (finished or stopped): the drift goes into the grid and the ROIs of the GUI (s_driftBakedIntoGrid). The engine keeps
+	// its drift reference unchanged for a Continue of the run (which loads the original grid and the offsets from the file); a new Start takes
+	// it over with handOverDriftToNewStart().
+	void bakeDriftIntoGrid();
+	// A new Start after a run whose drift went into the grid: the drift reference of that run stays (its next overview measures the drift
+	// since the end of that run), the total drift minus what the grid was moved by. False if there is nothing to hand over.
+	bool handOverDriftToNewStart();
+	std::optional<POINT2> m_pendingDriftHandOver;
 	POINT2 m_publishedGridOffset{ 0.0, 0.0 };
 	// [um] how far bakeDriftIntoGrid() moved the grid at the end of the last run; only the first repetition of the next run compares its grid
 	// with that run's (later repetitions compare with repetitions of their own run, which were not moved)

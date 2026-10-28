@@ -21,10 +21,13 @@
   slot twice in a row (at most 15 s, else the overview is skipped and the measurement stops as before).
 - With drift correction the grid, the ROIs and the overview outlines in the live view follow the sample (they were drawn at the planned
   positions while the laser went to the drifted ones). When a run finishes or is stopped, the grid limits and both ROI polygons are moved by
-  the drift of the run and stay there: a new start measures on the sample as it is, without remembering a drift (so "Continue" as next
-  repetition of a finished run is gone). Continuing a stopped run loads the settings and the offsets of the file, so the drift is not
-  applied twice. A grid moved this way still counts as the same grid for the surface scan of the earlier run (start from it / reuse),
-  as long as it was moved by exactly that drift. Stopping between two repetitions moves the grid as well.
+  the drift of the run and stay there. A new Start takes the drift reference of that run over, minus the move of the grid: its first
+  overview (before the surface scan, if there is one) measures the drift since the end of that run, so nothing is applied twice and the
+  drift during the pause is corrected too (same rules as before: drift correction on, same drift objective, same start position in
+  relative coordinates). Continuing a stopped run loads the settings and the offsets of the file and uses the reference unchanged. A grid
+  moved this way still counts as the same grid for the surface scan of the earlier run (start from it / reuse). Grid limits are compared
+  to 0.05 um (the GUI keeps one decimal; conversions between absolute and relative coordinates are not exact), and the log names the
+  setting that differs when an earlier surface is not offered. Stopping between two repetitions moves the grid as well.
 - The yellow mosaic outlines in the live view also show the overview mosaic of every other objective that takes one (dash-dot, with that
   objective's field of view), not only the one of the measuring objective (dashed).
 - A repetition that goes on with the drift of the previous one (Continue after a finished repetition, or an automatic series) measures the

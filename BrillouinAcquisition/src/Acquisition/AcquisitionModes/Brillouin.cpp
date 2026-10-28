@@ -301,7 +301,7 @@ void Brillouin::startRepetitions() {
 		m_repetitionTimer->stop();
 		m_startOfLastRepetition.invalidate();
 		// stopped between two repetitions: the finished ones carry the drift, as at the end of a series
-		bakeDriftIntoGrid(false);
+		bakeDriftIntoGrid();
 		finaliseRepetitions(m_currentRepetition, -2);
 		setAcquisitionStatus(ACQUISITION_STATUS::STOPPED);
 		return;
@@ -314,15 +314,19 @@ void Brillouin::startRepetitions() {
 
 	m_currentRepetition = 0;
 	m_startOfLastRepetition.start();
-	// a new start begins without any drift measured before - except the "Continue" of a finished repetition, which goes on as the next repetition
-	// of an automatic series would (beginOverviewSeries() carries the drift over if the start fits)
-	if (!(m_carryDriftOnStart && m_driftController.hasReference())) {
+	// After a run whose drift went into the grid, the drift reference of that run is taken over (minus the move of the grid), so the
+	// next overview - before the surface scan if there is one - measures the drift since the end of that run. beginOverviewSeries() still
+	// decides whether it applies (drift correction on, same drift objective, and in relative coordinates the same start position).
+	// Without one, a new start begins without any drift measured before - except the "Continue" of a finished repetition, which goes on as the
+	// next repetition of an automatic series would.
+	if (!handOverDriftToNewStart() && !(m_carryDriftOnStart && m_driftController.hasReference())) {
 		m_driftController.reset();
 		m_driftReferenceTiles.clear();
 		m_driftReferenceSlot = -1;
 		m_gridOffset = POINT2{ 0.0, 0.0 };
-		publishGridOffset();
 	}
+	m_pendingDriftHandOver.reset();
+	publishGridOffset();
 	m_carryDriftOnStart = false;
 
 	m_repetitionTimer = new QTimer();
@@ -419,7 +423,7 @@ void Brillouin::finishRepetition() {
 	} else {
 		m_startOfLastRepetition.invalidate();
 		// The drift of the whole run moves into the grid and the ROIs (the next start begins with them where the sample is now)
-		bakeDriftIntoGrid(false);
+		bakeDriftIntoGrid();
 		// Cleanup after last repetition
 		finaliseRepetitions();
 		setAcquisitionStatus(ACQUISITION_STATUS::FINISHED);
@@ -645,7 +649,7 @@ void Brillouin::abortMode(std::unique_ptr <StorageWrapper>& storage) {
 
 	// The grid and the ROIs follow the sample to where the drift has put them; the file keeps the original ones and the offsets, so a
 	// continue starts from those, not from these.
-	bakeDriftIntoGrid(true);
+	bakeDriftIntoGrid();
 	m_acquisition->disableMode(ACQUISITION_MODE::BRILLOUIN);
 
 	// Here we wait until the storage object indicate it finished to write to the file.
