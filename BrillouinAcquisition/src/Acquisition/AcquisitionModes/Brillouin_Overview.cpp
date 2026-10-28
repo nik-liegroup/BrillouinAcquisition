@@ -517,7 +517,7 @@ bool Brillouin::waitForStage(const POINT3& target, double timeoutS) {
 	}
 	// at the target: within 2 um on every axis; done moving elsewhere (a limit, a stand that stops short): no change of more than
 	// 0.2 um for 0.5 s, once 1.5 s have passed (a stand that has not started to move yet looks the same)
-	const auto near = [](const POINT3& a, const POINT3& b, double tolerance) {
+	const auto isNear = [](const POINT3& a, const POINT3& b, double tolerance) {
 		return std::abs(a.x - b.x) < tolerance && std::abs(a.y - b.y) < tolerance && std::abs(a.z - b.z) < tolerance;
 	};
 	const auto start = steadySeconds();
@@ -525,11 +525,11 @@ bool Brillouin::waitForStage(const POINT3& target, double timeoutS) {
 	auto restingSince = start;
 	while (true) {
 		const auto now = m_scanControl->getPosition();
-		if (near(now, target, 2.0)) {
+		if (isNear(now, target, 2.0)) {
 			return true;
 		}
 		const auto t = steadySeconds();
-		if (!near(now, last, 0.2)) {
+		if (!isNear(now, last, 0.2)) {
 			last = now;
 			restingSince = t;
 		}
