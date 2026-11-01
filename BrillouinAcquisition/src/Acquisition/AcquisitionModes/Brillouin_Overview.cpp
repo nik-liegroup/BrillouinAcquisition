@@ -345,11 +345,13 @@ void Brillouin::beginOverviewSeries(std::unique_ptr<StorageWrapper>& storage) {
 	// (an absolute grid hangs on the stage coordinates, not on where the repetition starts)
 	if (driftCarriesOverToThisStart()) {
 		m_gridOffset = m_driftController.totalUm();
+		m_driftCarriedUnverified = true;
 	} else {
 		m_driftController.reset();
 		m_driftReferenceTiles.clear();
 		m_driftReferenceSlot = -1;
 		m_gridOffset = POINT2{ 0.0, 0.0 };
+		m_driftCarriedUnverified = false;
 	}
 	m_driftSeriesStart = m_startPosition;
 
@@ -480,6 +482,21 @@ void Brillouin::bakeDriftIntoGrid() {
 	// the GUI moves the grid and the ROIs by the drift and takes the drift out of the live view in one step
 	m_publishedGridOffset = POINT2{ 0.0, 0.0 };
 	emit(s_driftBakedIntoGrid(offset));
+}
+
+void Brillouin::forgetDriftReference() {
+	// (a run that is going keeps its own reference; the file cannot be changed during one anyway)
+	if (m_seriesActive) {
+		return;
+	}
+	m_driftController.reset();
+	m_driftReferenceTiles.clear();
+	m_driftReferenceSlot = -1;
+	m_gridOffset = POINT2{ 0.0, 0.0 };
+	m_pendingDriftHandOver.reset();
+	m_carryDriftOnStart = false;
+	m_driftCarriedUnverified = false;
+	publishGridOffset();
 }
 
 bool Brillouin::handOverDriftToNewStart() {
@@ -866,21 +883,42 @@ void Brillouin::processDriftOverview(const std::vector<drift::TileFrame>& tiles,
 		const auto update = m_driftController.setReference(timeSeconds, carried);
 		m_driftReferenceTiles = tiles;
 		m_driftReferenceSlot = slot;
+		m_driftCarriedUnverified = false;
 		log->decision = update.decision;
 		log->totalUm = update.totalUm;
 	} else {
-		const auto maxShiftUm = std::clamp(1.5 * m_settings.driftMaxStepUm, 50.0, 500.0);
+		const auto maxShiftUm = drift::maxSearchShiftUm(m_settings.driftMaxStepUm, tiles, map);
 		const auto step = drift::measureStep(m_driftReferenceTiles, tiles, map, m_settings.driftMinNcc, maxShiftUm);
 		const auto update = m_driftController.update(step, timeSeconds);
-		log->decision = update.decision;
-		log->stepUm = update.stepUm;
-		log->totalUm = update.totalUm;
-		log->meanNcc = update.meanNcc;
-		log->tilesUsed = update.tilesUsed;
+		// The first overview of a run that took its reference over from the previous run: if it cannot be compared with it (no tile of the
+		// two pairs - another ROI -, or the correlation is too low - another sample), the reference is of no use and would stay for every
+		// following overview, since only an applied step replaces it. The overview becomes the new reference instead; the grid keeps the
+		// drift that was carried over, what the sample did in between is not known.
+		const auto carriedUnverified = m_driftCarriedUnverified;
+		m_driftCarriedUnverified = false;
 		log->tilesCompared = step.tilesCompared;
-		log->secondsSinceReference = update.secondsSinceReference;
-		if (update.decision == drift::DriftDecision::APPLIED) {
+		if (carriedUnverified
+			&& (update.decision == drift::DriftDecision::REJECTED_NO_MATCH || update.decision == drift::DriftDecision::REJECTED_LOW_CONFIDENCE)) {
+			qWarning(logWarning()) << "Brillouin: the first overview of this run cannot be compared with the drift reference of the previous run ("
+				<< step.tilesCompared << "tile pair(s) compared, correlation" << update.meanNcc << "); it becomes the new reference.";
+			const auto replaced = m_driftController.setReference(timeSeconds, m_driftController.totalUm());
 			m_driftReferenceTiles = tiles;
+			m_driftReferenceSlot = slot;
+			log->decision = replaced.decision;
+			log->totalUm = replaced.totalUm;
+			log->meanNcc = update.meanNcc;
+			log->secondsSinceReference = update.secondsSinceReference;
+			log->referenceReplaced = true;
+		} else {
+			log->decision = update.decision;
+			log->stepUm = update.stepUm;
+			log->totalUm = update.totalUm;
+			log->meanNcc = update.meanNcc;
+			log->tilesUsed = update.tilesUsed;
+			log->secondsSinceReference = update.secondsSinceReference;
+			if (update.decision == drift::DriftDecision::APPLIED) {
+				m_driftReferenceTiles = tiles;
+			}
 		}
 	}
 	refreshGridOffset();
@@ -1027,6 +1065,8 @@ void Brillouin::writeOverviewEvent(
 	put("drift-tiles-compared-used", { (double)driftLog.tilesCompared, (double)driftLog.tilesUsed });
 	put("drift-seconds-since-reference", { driftLog.secondsSinceReference });
 	put("drift-registration-seconds", { driftLog.registrationSeconds });
+	// 1: the reference of the previous run could not be used and this overview became the reference (decision 0 then)
+	put("drift-reference-replaced", { driftLog.referenceReplaced ? 1.0 : 0.0 });
 
 	// the same in the live log next to the file (one line per event)
 	std::string objectives;
@@ -1040,6 +1080,9 @@ void Brillouin::writeOverviewEvent(
 		// 0 reference, 1 applied, 2 no match, 3 low confidence, 4 implausible
 		line += ",drift " + std::to_string((int)driftLog.decision) + " step " + std::to_string(driftLog.stepUm.x) + " " + std::to_string(driftLog.stepUm.y)
 			+ " ncc " + std::to_string(driftLog.meanNcc) + " tiles " + std::to_string(driftLog.tilesUsed) + "/" + std::to_string(driftLog.tilesCompared);
+	}
+	if (driftLog.referenceReplaced) {
+		line += ",reference of the previous run could not be used: new reference";
 	}
 	line += ",grid offset " + std::to_string(m_gridOffset.x) + " " + std::to_string(m_gridOffset.y);
 	appendLiveLog(line);

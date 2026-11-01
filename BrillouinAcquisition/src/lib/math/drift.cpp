@@ -40,6 +40,46 @@ namespace drift {
 			return n % 2 == 1 ? values[n / 2] : 0.5 * (values[n / 2 - 1] + values[n / 2]);
 		}
 
+		// The smallest distance between two different tiles of an overview; infinity if there are fewer than two (tiles closer than this
+		// are the same tile).
+		double tileSpacing(const std::vector<TileFrame>& tiles) {
+			constexpr double sameTileUm = 1.0;
+			auto spacing = std::numeric_limits<double>::infinity();
+			for (size_t i = 0; i < tiles.size(); i++) {
+				for (size_t j = i + 1; j < tiles.size(); j++) {
+					if (!tiles[i].image.isValid() || !tiles[j].image.isValid()) {
+						continue;
+					}
+					const auto distance = std::hypot(tiles[i].pairingPositionUm().x - tiles[j].pairingPositionUm().x,
+							tiles[i].pairingPositionUm().y - tiles[j].pairingPositionUm().y);
+					if (distance > sameTileUm) {
+						spacing = std::min(spacing, distance);
+					}
+				}
+			}
+			return spacing;
+		}
+
+		int validTiles(const std::vector<TileFrame>& tiles) {
+			return (int)std::count_if(tiles.begin(), tiles.end(), [](const TileFrame& tile) { return tile.image.isValid(); });
+		}
+
+	}
+
+	double maxSearchShiftUm(double maxStepUm, const std::vector<TileFrame>& tiles, const StageMap& map, double minOverlap) {
+		const auto wanted = 1.5 * maxStepUm;
+		auto smallestSide = std::numeric_limits<double>::infinity();
+		if (map.isValid()) {
+			for (const auto& tile : tiles) {
+				if (tile.image.isValid() && tile.image.rawWidth > 0 && tile.image.rawHeight > 0) {
+					smallestSide = std::min(smallestSide, (double)std::min(tile.image.rawWidth, tile.image.rawHeight) / map.pixelsPerUm());
+				}
+			}
+		}
+		if (!std::isfinite(smallestSide)) {
+			return std::clamp(wanted, 50.0, 500.0);
+		}
+		return std::min(std::max(wanted, 50.0), (1.0 - minOverlap) * smallestSide);
 	}
 
 	StepMeasurement measureStep(
@@ -51,6 +91,16 @@ namespace drift {
 			return result;
 		}
 		const auto maxShiftRawPix = maxShiftUm * map.pixelsPerUm();
+
+		// how far apart the planned positions of two paired tiles may be
+		auto pairingLimitUm = maxTileDistanceUm;
+		if (pairingLimitUm < 0.0) {
+			if (validTiles(reference) == 1 && validTiles(moved) == 1) {
+				pairingLimitUm = std::numeric_limits<double>::infinity();
+			} else {
+				pairingLimitUm = 0.5 * std::min(tileSpacing(reference), tileSpacing(moved));
+			}
+		}
 
 		struct TileStep {
 			POINT2 drift;
@@ -75,7 +125,7 @@ namespace drift {
 					nearest = &candidate;
 				}
 			}
-			if (!nearest || nearestDistance > maxTileDistanceUm || nearest->image.factor != tile.image.factor) {
+			if (!nearest || nearestDistance > pairingLimitUm || nearest->image.factor != tile.image.factor) {
 				continue;
 			}
 			const auto match = registration::match(nearest->image, tile.image, maxShiftRawPix);

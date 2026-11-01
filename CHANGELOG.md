@@ -1,6 +1,24 @@
 ## Unreleased
 
 ### Fixed
+- Drift correction: a stale drift reference made every following run fail ("no match", offsets 0, 0 tiles compared). The reference of a
+  run is handed over to the next Start, but (1) it was also taken over into a NEW FILE, i.e. another sample - with absolute grid
+  coordinates the "same start" test is always true -, and (2) when the first overview of a run could not be compared with it (no tile
+  pairs: another ROI moves the planned centre of the grid by more than the pairing distance; or a correlation too low) it stayed the
+  reference, because only an applied step replaces it - for every later run too. Now a file that is created or opened by hand drops the
+  reference and the drift of the sample it belongs to (a series that opens its own files, a new file per repetition, still carries it),
+  and if the first overview of a run that took its reference over cannot be compared with it, that overview becomes the new reference
+  (the grid keeps the drift that was carried over; the event is marked `drift-reference-replaced` in the file and in the live log).
+- Drift correction, pairing of overview tiles: tiles of two overviews were paired only if their planned positions were within 60 um, so a
+  single-tile overview was not compared with the reference as soon as the ROI or the grid centre had moved by more than that. Now one tile
+  on each side is always paired (the registration - overlap, correlation limit - decides whether they show the same sample), and with
+  several tiles a tile is paired with the nearest reference tile if that is within half the tile spacing (never with its neighbour). The
+  largest shift searched is 1.5 times the largest believed step as before, but at most the shift at which two frames of the smallest
+  field of view still overlap by 40 % (60 % of the field of view of the objective used; it was a fixed 500 um at most), at least 50 um.
+- Overview z positions: without the surface scan the images of a stack are taken at the z of the planes of the grid (every point has the
+  same set). With the surface scan they are spread evenly between the lowest and the highest z the grid is measured at, with as many
+  planes as the grid has (they started at the median surface z and covered only the z range of the grid from there, which could lie
+  entirely above or below the tissue).
 - Zeiss MTB stands (all three variants): every stage, focus and stand-element command waited at most 500 ms for the hardware and then
   went on while the motor was still moving (the cache of the position was not updated either, so a later move back to the old position
   could be skipped). Long moves - the jump to a new line or plane, overview tiles, the z retract - were not finished when the next

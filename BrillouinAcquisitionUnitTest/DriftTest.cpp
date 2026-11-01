@@ -111,14 +111,65 @@ namespace BrillouinAcquisitionUnitTest {
 			Assert::AreEqual(3, step.tilesCompared);
 		}
 
-		TEST_METHOD(Tiles_at_different_stage_positions_are_not_paired) {
+		TEST_METHOD(Single_tiles_are_paired_however_far_apart_but_far_apart_frames_do_not_match) {
+			// one tile on each side is always paired; frames 500 um apart do not show the same sample (no overlap within the search range),
+			// which the registration finds out - the pairing is not what rejects them
 			const auto map = rotatedMap();
 			const auto blobs = testscenes::makeBlobs(2.0 * kWidth / map.pixelsPerUm(), 2.0 * kHeight / map.pixelsPerUm(), 8, 70, 2.5, 8.0);
 			const auto reference = std::vector<drift::TileFrame>{ tile(blobs, map, POINT2{ 0.0, 0.0 }, POINT2{ 0.0, 0.0 }) };
 			const auto moved = std::vector<drift::TileFrame>{ tile(blobs, map, POINT2{ 500.0, 500.0 }, POINT2{ 0.0, 0.0 }) };
 			const auto step = drift::measureStep(reference, moved, map);
 			Assert::IsFalse(step.valid);
-			Assert::AreEqual(0, step.tilesCompared);
+			Assert::AreEqual(1, step.tilesCompared);
+		}
+
+		TEST_METHOD(Single_tiles_are_paired_when_the_roi_moved_between_the_overviews) {
+			// the second overview is planned 160 um away from the first one (another ROI), the frames still overlap: the drift is found
+			const auto map = tiltedMap();
+			const auto blobs = testscenes::makeBlobs(2.0 * kWidth / map.pixelsPerUm(), 2.0 * kHeight / map.pixelsPerUm(), 10, 70, 2.5, 8.0);
+			auto first = tile(blobs, map, POINT2{ 40.0, 40.0 }, POINT2{ 0.0, 0.0 });
+			auto second = tile(blobs, map, POINT2{ 70.0, 45.0 }, POINT2{ 2.0, 1.0 }, 1.0, 3);
+			first.anchorUm = POINT2{ 40.0, 40.0 };
+			second.anchorUm = POINT2{ 200.0, 40.0 };
+			const auto step = drift::measureStep({ first }, { second }, map, 0.3);
+			Assert::IsTrue(step.valid);
+			Assert::AreEqual(2.0, step.driftUm.x, 0.2);
+			Assert::AreEqual(1.0, step.driftUm.y, 0.2);
+		}
+
+		TEST_METHOD(Tiles_of_a_mosaic_are_not_paired_with_a_tile_further_than_half_the_spacing_away) {
+			// two tiles 120 um apart: a tile is paired only if the planned position of a reference tile is within 60 um
+			const auto map = rotatedMap();
+			const auto blobs = testscenes::makeBlobs(2.0 * kWidth / map.pixelsPerUm(), 2.0 * kHeight / map.pixelsPerUm(), 11, 70, 2.5, 8.0);
+			const auto reference = std::vector<drift::TileFrame>{
+				tile(blobs, map, POINT2{ 0.0, 0.0 }, POINT2{ 0.0, 0.0 }), tile(blobs, map, POINT2{ 120.0, 0.0 }, POINT2{ 0.0, 0.0 }) };
+			const auto far = std::vector<drift::TileFrame>{
+				tile(blobs, map, POINT2{ 0.0, 300.0 }, POINT2{ 0.0, 0.0 }), tile(blobs, map, POINT2{ 120.0, 300.0 }, POINT2{ 0.0, 0.0 }) };
+			const auto none = drift::measureStep(reference, far, map);
+			Assert::IsFalse(none.valid);
+			Assert::AreEqual(0, none.tilesCompared);
+			// the same tiles 40 um off are the same tiles
+			const auto near = std::vector<drift::TileFrame>{
+				tile(blobs, map, POINT2{ 0.0, 0.0 }, POINT2{ 1.0, 0.5 }, 1.0, 4), tile(blobs, map, POINT2{ 120.0, 0.0 }, POINT2{ 1.0, 0.5 }, 1.0, 5) };
+			const auto step = drift::measureStep(reference, near, map);
+			Assert::IsTrue(step.valid);
+			Assert::AreEqual(2, step.tilesCompared);
+			Assert::AreEqual(1.0, step.driftUm.x, 0.2);
+			Assert::AreEqual(0.5, step.driftUm.y, 0.2);
+		}
+
+		TEST_METHOD(The_search_range_follows_the_largest_believed_step_and_the_field_of_view) {
+			const auto map = rotatedMap();
+			const auto blobs = testscenes::makeBlobs(2.0 * kWidth / map.pixelsPerUm(), 2.0 * kHeight / map.pixelsPerUm(), 12, 70, 2.5, 8.0);
+			// without a frame: 1.5 times the step, 50..500 um
+			Assert::AreEqual(50.0, drift::maxSearchShiftUm(10.0, {}, map), 1e-9);
+			Assert::AreEqual(150.0, drift::maxSearchShiftUm(100.0, {}, map), 1e-9);
+			Assert::AreEqual(500.0, drift::maxSearchShiftUm(1000.0, {}, map), 1e-9);
+			// a frame of kHeight pixels (the short side) overlapped by at least 40 %: 60 % of its field of view
+			const auto frames = std::vector<drift::TileFrame>{ tile(blobs, map, POINT2{ 0.0, 0.0 }, POINT2{ 0.0, 0.0 }) };
+			const auto fieldOfView = kHeight / map.pixelsPerUm();
+			Assert::AreEqual(0.6 * fieldOfView, drift::maxSearchShiftUm(1000.0, frames, map), 1e-9);
+			Assert::AreEqual(0.6 * fieldOfView, drift::maxSearchShiftUm(10.0, frames, map), 1e-9);
 		}
 
 		TEST_METHOD(Tiles_are_paired_by_their_planned_position_when_the_grid_followed_the_drift) {
