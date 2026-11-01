@@ -375,8 +375,11 @@ void Fluorescence::__acquire(std::unique_ptr <StorageWrapper>& storage, std::vec
 			// A target puts the laser on a point (stage = target - scanner) and pixel p shows target - scanner + A * (p - origin) - FOV
 			// offset; so the middle of the image is the target minus this shift (the same expression as the overview's centreShift
 			// together with its fovCompensation).
-			const auto dx = 0.5 * (double)m_settings.camera.roi.width_binned - scale.originPix.x;
-			const auto dy = 0.5 * (double)m_settings.camera.roi.height_binned - scale.originPix.y;
+			// The calibration's pixels are those of the whole sensor: a cropped ROI (e.g. 1024 x 1024 out of 1280 x 1024, left = 128) has
+			// its middle at its offset plus half its size (left/top as the brightfield camera reports them: 0 for the full sensor).
+			const auto& roi = m_settings.camera.roi;
+			const auto dx = (double)roi.left / (double)std::max(1LL, roi.binX) + 0.5 * (double)roi.width_binned - scale.originPix.x;
+			const auto dy = (double)roi.top / (double)std::max(1LL, roi.binY) + 0.5 * (double)roi.height_binned - scale.originPix.y;
 			auto centreShift = POINT2{
 				scanner.x - (dx * scale.pixToMicrometerX.x + dy * scale.pixToMicrometerY.x) + fov.x,
 				scanner.y - (dx * scale.pixToMicrometerX.y + dy * scale.pixToMicrometerY.y) + fov.y

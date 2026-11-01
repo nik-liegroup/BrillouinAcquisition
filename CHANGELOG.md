@@ -8,7 +8,7 @@
   transform matrices put them 0.15 - 0.25 mm (and with a changed coordinate mode several mm) away from the overviews. Now every such
   image also carries what the overview images carry: `stage_position_raw_*` (stage + scanner), `stage_only_position_*`,
   `scanner_position_*`, `grid_frame_origin_*` (what was subtracted from the raw position), `image_centre_shift_*` (middle of the image =
-  raw position - shift; `fov_compensation_*` = 0), the objective (`objective_name`, `_slot`, `_magnification`, `_fov_offset_*`) and its
+  raw position - shift; `fov_compensation_*` = 0; a cropped camera ROI enters with its offset on the sensor), the objective (`objective_name`, `_slot`, `_magnification`, `_fov_offset_*`) and its
   scale calibration (`scale_*`). `position_*` is unchanged.
 - Drift correction: a stale drift reference made every following run fail ("no match", offsets 0, 0 tiles compared). The reference of a
   run is handed over to the next Start, but (1) it was also taken over into a NEW FILE, i.e. another sample - with absolute grid
