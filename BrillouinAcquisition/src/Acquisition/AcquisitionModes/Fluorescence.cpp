@@ -2,6 +2,8 @@
 #include "Fluorescence.h"
 #include "Brillouin.h"
 
+#include <cmath>
+
 /*
  * Public definitions
  */
@@ -349,16 +351,56 @@ void Fluorescence::__acquire(std::unique_ptr <StorageWrapper>& storage, std::vec
 			.toString(Qt::ISODateWithMs).toStdString();
 		// Fluorescence mode has no grid/origin concept of its own (single-point capture, not
 		// a scan) - the raw absolute stage position at capture time is both "the position the
-		// scanner would normally image at" and the actual position, so no separate stage-
-		// position attribute is needed (unlike the Brillouin BF overview, which moves away and
-		// back). Still converted through rawPositionToGridFrame() so this position lands in
-		// the same frame as the Brillouin measurement grid's own positions-x/y/z - in
-		// absolute-grid mode that frame is offset from raw absolute stage um by the grid's
-		// saved origin, which this position would otherwise not account for at all.
+		// scanner would normally image at" and the actual position. Still converted through
+		// rawPositionToGridFrame() so this position lands in the same frame as the Brillouin
+		// measurement grid's own positions-x/y/z - in absolute-grid mode that frame is offset
+		// from raw absolute stage um by the grid's saved origin.
 		const auto rawPosition = m_scanControl ? m_scanControl->getPosition() : POINT3{ 0, 0, 0 };
 		const auto targetPosition = m_brillouinMode
 			? m_brillouinMode->rawPositionToGridFrame(rawPosition)
 			: rawPosition;
+		// That grid frame is the one in force NOW: an image taken before a Brillouin run is converted with the origin set before Start
+		// (absolute mode: whatever origin was saved then, relative mode: none), which need not be the frame of the run that follows. So
+		// the image also carries what the overview images carry (see Brillouin::captureOverviewEvent()): the raw position and the origin
+		// that was subtracted, the objective and its scale calibration, and the shift between the laser target and the middle of the
+		// image - with these a reader places the image in any run's frame: middle of the image = stage_position_raw - image_centre_shift.
+		std::vector<std::pair<std::string, double>> numbers;
+		std::vector<std::pair<std::string, std::string>> strings;
+		if (m_scanControl) {
+			const auto stage = m_scanControl->getPosition(PositionType::STAGE);
+			const auto scanner = m_scanControl->getPosition(PositionType::SCANNER);
+			const auto scale = m_scanControl->getScaleCalibration();
+			const auto objective = m_scanControl->getActiveObjectiveCalibration();
+			const auto fov = m_scanControl->getActiveObjectiveFovOffsetUm();
+			// A target puts the laser on a point (stage = target - scanner) and pixel p shows target - scanner + A * (p - origin) - FOV
+			// offset; so the middle of the image is the target minus this shift (the same expression as the overview's centreShift
+			// together with its fovCompensation).
+			const auto dx = 0.5 * (double)m_settings.camera.roi.width_binned - scale.originPix.x;
+			const auto dy = 0.5 * (double)m_settings.camera.roi.height_binned - scale.originPix.y;
+			auto centreShift = POINT2{
+				scanner.x - (dx * scale.pixToMicrometerX.x + dy * scale.pixToMicrometerY.x) + fov.x,
+				scanner.y - (dx * scale.pixToMicrometerX.y + dy * scale.pixToMicrometerY.y) + fov.y
+			};
+			if (!std::isfinite(centreShift.x) || !std::isfinite(centreShift.y)) {
+				centreShift = POINT2{ 0.0, 0.0 };
+			}
+			numbers = {
+				{ "stage_position_raw_x_um", rawPosition.x }, { "stage_position_raw_y_um", rawPosition.y }, { "stage_position_raw_z_um", rawPosition.z },
+				{ "stage_only_position_x_um", stage.x }, { "stage_only_position_y_um", stage.y },
+				{ "scanner_position_x_um", scanner.x }, { "scanner_position_y_um", scanner.y },
+				{ "grid_frame_origin_x_um", rawPosition.x - targetPosition.x }, { "grid_frame_origin_y_um", rawPosition.y - targetPosition.y },
+				{ "grid_frame_origin_z_um", rawPosition.z - targetPosition.z },
+				{ "fov_compensation_x_um", 0.0 }, { "fov_compensation_y_um", 0.0 },
+				{ "image_centre_shift_x_um", centreShift.x }, { "image_centre_shift_y_um", centreShift.y },
+				{ "objective_slot", (double)m_scanControl->getActiveObjectiveSlot() },
+				{ "objective_magnification", objective.magnification },
+				{ "objective_fov_offset_x_um", fov.x }, { "objective_fov_offset_y_um", fov.y },
+				{ "scale_micrometer_to_pix_x_col", scale.micrometerToPixX.x }, { "scale_micrometer_to_pix_x_row", scale.micrometerToPixX.y },
+				{ "scale_micrometer_to_pix_y_col", scale.micrometerToPixY.x }, { "scale_micrometer_to_pix_y_row", scale.micrometerToPixY.y },
+				{ "scale_origin_col", scale.originPix.x }, { "scale_origin_row", scale.originPix.y }
+			};
+			strings = { { "objective_name", objective.objectiveName } };
+		}
 		auto img = new FLUOIMAGE<T>(
 			imageNumber,
 			rank_data,
@@ -369,7 +411,12 @@ void Fluorescence::__acquire(std::unique_ptr <StorageWrapper>& storage, std::vec
 			m_settings.camera.exposureTime,
 			m_settings.camera.gain,
 			m_settings.camera.roi,
-			targetPosition
+			targetPosition,
+			false, POINT3{ 0, 0, 0 },
+			false,
+			false, -1,
+			numbers,
+			strings
 		);
 
 		QMetaObject::invokeMethod(

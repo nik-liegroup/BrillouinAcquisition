@@ -1,6 +1,15 @@
 ## Unreleased
 
 ### Fixed
+- Fluorescence / brightfield images ("Acquire" in the Fluorescence tab, e.g. the images taken before a Brillouin run) could not be placed
+  next to the overviews of the run: their position was stored in the grid frame in force when the image was taken (absolute grid
+  coordinates: minus the origin saved at that time; relative coordinates: the raw stage + scanner position), which is not the frame of the
+  run that follows (another origin, or none), and without the shift between the laser target and the middle of the image. The exported
+  transform matrices put them 0.15 - 0.25 mm (and with a changed coordinate mode several mm) away from the overviews. Now every such
+  image also carries what the overview images carry: `stage_position_raw_*` (stage + scanner), `stage_only_position_*`,
+  `scanner_position_*`, `grid_frame_origin_*` (what was subtracted from the raw position), `image_centre_shift_*` (middle of the image =
+  raw position - shift; `fov_compensation_*` = 0), the objective (`objective_name`, `_slot`, `_magnification`, `_fov_offset_*`) and its
+  scale calibration (`scale_*`). `position_*` is unchanged.
 - Drift correction: a stale drift reference made every following run fail ("no match", offsets 0, 0 tiles compared). The reference of a
   run is handed over to the next Start, but (1) it was also taken over into a NEW FILE, i.e. another sample - with absolute grid
   coordinates the "same start" test is always true -, and (2) when the first overview of a run could not be compared with it (no tile
