@@ -104,6 +104,22 @@ BrillouinAcquisition/
 
 - Visual differences between Debug & Release? - Ensure consistent runtime libraries and DLLs are being deployed (e.g., fonts/styles in Qt).
 
+# Fork and upstream attribution
+
+This repository is a modified fork of [BrillouinAcquisition](https://github.com/BrillouinMicroscopy/BrillouinAcquisition) (Raimund Schlüßler, as named in the `CREDITS` file (further upstream contributors in the commit history include Raghava Alajangi)). The upstream code, its history and its authorship are theirs and are kept as they are; the license (GNU General Public License v3.0, see `LICENSE`) and the `CREDITS` file are unchanged. The modifications were made in this fork by Niklas Gampl.
+
+## Modifications in this fork
+
+The modifications made in this fork are documented in the `CHANGELOG` and in the commit history.
+
+## Citing this fork
+
+If you use this fork, please cite its Zenodo record (see `CITATION.cff`) and the upstream project (see "How to cite" below).
+
+<!-- DOI badge placeholder: after the first Zenodo release replace XXXXXXX with the record number, uncomment the line below and remove this note.
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
+-->
+
 # How to cite
 
 If you use BrillouinAcquisition in a scientific publication, please cite it with:

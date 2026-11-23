@@ -1,0 +1,23 @@
+{
+  "upload_type": "software",
+  "access_right": "open",
+  "license": "gpl-3.0-only",
+  "title": "BrillouinAcquisition (fork)",
+  "description": "<p>Software for the acquisition of Brillouin microscopy data (Windows, C++/Qt). This is a modified fork of <a href=\"https://github.com/BrillouinMicroscopy/BrillouinAcquisition\">BrillouinAcquisition</a>, released under the GNU General Public License v3.0. The modifications by Niklas Gampl are documented in the CHANGELOG and the commit history.</p><p>The upstream code, its history and its authors are credited in the upstream repository; see the related identifier and the contributors listed here.</p>",
+  "creators": [
+    {"name": "Gampl, Niklas"}
+  ],
+  "contributors": [
+    {"name": "Alajangi, Raghava", "type": "Other"},
+    {"name": "Schlüßler, Raimund", "type": "Other"}
+  ],
+  "keywords": ["Brillouin microscopy", "microscope control", "BrillouinAcquisition"],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/BrillouinMicroscopy/BrillouinAcquisition",
+      "relation": "isDerivedFrom",
+      "resource_type": "software"
+    }
+  ],
+  "notes": "Derived work. The contributors listed are authors of the upstream BrillouinAcquisition on which this fork is based; they are not authors of the modifications made in this fork."
+}
